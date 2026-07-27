@@ -20,7 +20,6 @@ The description should explain:
 - what changed for users or maintainers
 - why the change was needed
 - which safeguards and compatibility boundaries remain
-- which compile and static checks completed
 - any effect on data, network access, or report accuracy
 - known limitations
 

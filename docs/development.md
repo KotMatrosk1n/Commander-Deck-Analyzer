@@ -33,5 +33,5 @@ workflow checks the public product source and does not package a release.
 ## Pull request scope
 
 Keep one user-visible or repository outcome per pull request. Describe the
-behavior first, then safeguards, validation, data effects, and known
-limitations. Use plain imperative titles without prefixes.
+behavior first, then safeguards, data effects, and known limitations. Use plain
+imperative titles without prefixes.
