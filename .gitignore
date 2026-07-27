@@ -1,0 +1,69 @@
+# Dependencies and generated output
+node_modules/
+dist/
+build/
+out/
+target/
+.vite/
+coverage/
+test-results/
+playwright-report/
+
+# Local validation
+tests/
+**/tests/
+fixtures/
+snapshots/
+*.test.*
+*.spec.*
+*.snap
+
+# Local application data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+runtime-data/
+provider-cache/
+card-data/
+combo-data/
+analysis-output/
+reports/generated/
+exports/
+
+# Environment and signing material
+.env
+.env.*
+!.env.example
+*.key
+*.key.pub
+*.pem
+*.pfx
+*.p12
+
+# Editors, logs, and transfer files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.log
+*.zip
+*.7z
+*.rar
+
+# Native packages
+*.dll
+*.dylib
+*.exe
+*.msi
+*.pdb
+*.so
+*.app
+*.deb
+*.rpm
+
+# Generated Tauri files
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/icons/android/
+apps/desktop/src-tauri/icons/ios/

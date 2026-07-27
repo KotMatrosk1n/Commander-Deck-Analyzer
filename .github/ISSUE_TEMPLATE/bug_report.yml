@@ -1,0 +1,39 @@
+name: Bug report
+description: Report incorrect or unexpected application behavior
+title: ""
+labels:
+  - bug
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the expected and observed behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest safe example that reproduces the issue.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 0.3.0
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the operating system and relevant application settings.
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Data check
+      options:
+        - label: I removed credentials, account details, and unrelated personal information.
+          required: true
