@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Commander Deck Analyzer">
+  <defs>
+    <linearGradient id="bg" x1="64" y1="36" x2="448" y2="476" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#211D34"/>
+      <stop offset="1" stop-color="#0D101B"/>
+    </linearGradient>
+    <linearGradient id="card" x1="150" y1="116" x2="354" y2="398" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B6A4FF"/>
+      <stop offset="1" stop-color="#6F5BDD"/>
+    </linearGradient>
+    <linearGradient id="signal" x1="310" y1="182" x2="402" y2="338" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F0D49A"/>
+      <stop offset="1" stop-color="#C39C55"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <path d="M80 166C119 86 199 52 290 65c82 12 144 68 159 142" fill="none" stroke="#8D78F0" stroke-opacity=".18" stroke-width="18" stroke-linecap="round"/>
+  <circle cx="425" cy="206" r="11" fill="#D7B66F"/>
+  <rect x="102" y="151" width="240" height="286" rx="34" transform="rotate(-10 102 151)" fill="#17192A" stroke="#514A7C" stroke-width="10"/>
+  <rect x="133" y="116" width="240" height="286" rx="34" transform="rotate(-3 133 116)" fill="#1C1D30" stroke="#7163B3" stroke-width="10"/>
+  <rect x="166" y="92" width="240" height="286" rx="34" fill="url(#card)"/>
+  <rect x="185" y="111" width="202" height="248" rx="21" fill="#171827" fill-opacity=".93"/>
+  <path d="M216 300V255M257 300V216M298 300V237M339 300V177" fill="none" stroke="url(#signal)" stroke-width="18" stroke-linecap="round"/>
+  <path d="M205 329h146" stroke="#A797F2" stroke-opacity=".55" stroke-width="10" stroke-linecap="round"/>
+</svg>

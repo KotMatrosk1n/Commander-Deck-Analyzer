@@ -1,0 +1,310 @@
+{
+  "schemaVersion": 1,
+  "packageVersion": "2026.02.09-r2",
+  "effectiveDate": "2026-02-09",
+  "verifiedAt": "2026-07-23",
+  "status": "beta",
+  "sources": [
+    {
+      "title": "MTG Commander Format",
+      "url": "https://magic.wizards.com/en/formats/commander",
+      "covers": [
+        "deck construction",
+        "color identity",
+        "bracket Game Changer limits"
+      ]
+    },
+    {
+      "title": "Introducing Commander Brackets Beta",
+      "url": "https://magic.wizards.com/en/news/announcements/introducing-commander-brackets-beta",
+      "covers": [
+        "mass land denial definition",
+        "two-card game-ending combo guidance",
+        "extra-turn guidance"
+      ]
+    },
+    {
+      "title": "Commander Brackets Beta Update: October 21, 2025",
+      "url": "https://magic.wizards.com/en/news/announcements/commander-brackets-beta-update-october-21-2025",
+      "covers": [
+        "bracket intent",
+        "October 2025 Game Changers"
+      ]
+    },
+    {
+      "title": "Commander Brackets Beta Update: February 9, 2026",
+      "url": "https://magic.wizards.com/en/news/announcements/commander-brackets-beta-update-february-9-2026",
+      "covers": [
+        "Farewell addition",
+        "Biorhythm addition",
+        "brackets remain beta"
+      ]
+    },
+    {
+      "title": "Commander Banned and Restricted Announcement: February 9, 2026",
+      "url": "https://magic.wizards.com/en/news/announcements/commander-banned-and-restricted-february-9-2026",
+      "covers": [
+        "Biorhythm unban",
+        "Lutri companion-only ban"
+      ]
+    },
+    {
+      "title": "Banned & Restricted",
+      "url": "https://magic.wizards.com/en/banned-restricted-list",
+      "covers": [
+        "current Commander named bans",
+        "categorical bans"
+      ]
+    },
+    {
+      "title": "Magic: The Gathering Comprehensive Rules: June 19, 2026",
+      "url": "https://media.wizards.com/2026/downloads/MagicCompRules%2020260619.txt",
+      "covers": [
+        "current Commander rules",
+        "color identity",
+        "deck construction"
+      ]
+    },
+    {
+      "title": "Depictions of Racism in Magic",
+      "url": "https://magic.wizards.com/en/news/announcements/depictions-racism-magic-2020-06-10",
+      "covers": [
+        "universally banned offensive cards"
+      ]
+    },
+    {
+      "title": "Edge of Eternities Update Bulletin",
+      "url": "https://magic.wizards.com/en/news/announcements/edge-of-eternities-update-bulletin",
+      "covers": [
+        "legendary Vehicle and Spacecraft commander eligibility"
+      ]
+    }
+  ],
+  "formatRules": {
+    "deckSize": 100,
+    "singleton": true,
+    "basicLandsExempt": true,
+    "colorIdentityRequired": true,
+    "minimumCommanders": 1,
+    "maximumCommanders": 2,
+    "legendaryCreaturesEligible": true,
+    "explicitOraclePermissionEligible": true,
+    "legendaryVehicleOrSpacecraftNeedsPrintedPowerToughness": true
+  },
+  "bracketPolicy": {
+    "gameChangerLimits": [
+      {
+        "bracket": 1,
+        "maximum": 0
+      },
+      {
+        "bracket": 2,
+        "maximum": 0
+      },
+      {
+        "bracket": 3,
+        "maximum": 3
+      },
+      {
+        "bracket": 4,
+        "maximum": null
+      },
+      {
+        "bracket": 5,
+        "maximum": null
+      }
+    ],
+    "floorWhenAtLeastOne": 3,
+    "floorWhenMoreThan": 3,
+    "floorAboveLimit": 4,
+    "intentOnlyBrackets": [
+      1,
+      5
+    ],
+    "guidance": {
+      "sourceUrls": [
+        "https://magic.wizards.com/en/news/announcements/introducing-commander-brackets-beta",
+        "https://magic.wizards.com/en/news/announcements/commander-brackets-beta-update-october-21-2025",
+        "https://magic.wizards.com/en/news/announcements/commander-brackets-beta-update-february-9-2026"
+      ],
+      "expectedMinimumTurns": [
+        {
+          "bracket": 1,
+          "minimumTurnsPlayed": 9
+        },
+        {
+          "bracket": 2,
+          "minimumTurnsPlayed": 8
+        },
+        {
+          "bracket": 3,
+          "minimumTurnsPlayed": 6
+        },
+        {
+          "bracket": 4,
+          "minimumTurnsPlayed": 4
+        },
+        {
+          "bracket": 5,
+          "minimumTurnsPlayed": null
+        }
+      ],
+      "massLandDenialFloor": 4,
+      "twoCardGameEndingFloor": 3,
+      "earlyTwoCardGameEndingFloor": 4,
+      "earlyGameThroughTurn": 6,
+      "frequentEarlyWinAttemptRate": 0.35,
+      "extraTurnCardFloor": 2,
+      "extraTurnChainFloor": 4
+    },
+    "notes": [
+      "Game Changers impose only a policy floor; zero Game Changers does not establish Bracket 1 or 2.",
+      "Mass land denial is excluded from Brackets 1 through 3 and can create a deterministic Bracket 4 floor when the semantic match is sufficiently confident.",
+      "Two-card game-ending lines, extra-turn chaining, and turn expectations include intent or model-dependent elements and must remain labeled as guidance or manual review.",
+      "The 35% early-attempt threshold is a versioned engineering trigger for surfacing review guidance; it is not a Wizards-authored cutoff.",
+      "Bracket 1 depends on theme and pod-approved flexibility, so it cannot be inferred from a decklist.",
+      "Bracket 5 depends on cEDH metagame and competitive intent, so it cannot be inferred from a decklist.",
+      "Commander Brackets are an optional pregame-conversation tool and remain in beta."
+    ]
+  },
+  "gameChangers": [
+    "Ad Nauseam",
+    "Ancient Tomb",
+    "Aura Shards",
+    "Biorhythm",
+    "Bolas's Citadel",
+    "Braids, Cabal Minion",
+    "Chrome Mox",
+    "Coalition Victory",
+    "Consecrated Sphinx",
+    "Crop Rotation",
+    "Cyclonic Rift",
+    "Demonic Tutor",
+    "Drannith Magistrate",
+    "Enlightened Tutor",
+    "Farewell",
+    "Field of the Dead",
+    "Fierce Guardianship",
+    "Force of Will",
+    "Gaea's Cradle",
+    "Gamble",
+    "Gifts Ungiven",
+    "Glacial Chasm",
+    "Grand Arbiter Augustin IV",
+    "Grim Monolith",
+    "Humility",
+    "Imperial Seal",
+    "Intuition",
+    "Jeska's Will",
+    "Lion's Eye Diamond",
+    "Mana Vault",
+    "Mishra's Workshop",
+    "Mox Diamond",
+    "Mystical Tutor",
+    "Narset, Parter of Veils",
+    "Natural Order",
+    "Necropotence",
+    "Notion Thief",
+    "Opposition Agent",
+    "Orcish Bowmasters",
+    "Panoptic Mirror",
+    "Rhystic Study",
+    "Seedborn Muse",
+    "Serra's Sanctum",
+    "Smothering Tithe",
+    "Survival of the Fittest",
+    "Teferi's Protection",
+    "Tergrid, God of Fright",
+    "Thassa's Oracle",
+    "The One Ring",
+    "The Tabernacle at Pendrell Vale",
+    "Underworld Breach",
+    "Vampiric Tutor",
+    "Worldly Tutor"
+  ],
+  "namedBannedCards": [
+    "Ancestral Recall",
+    "Balance",
+    "Black Lotus",
+    "Chaos Orb",
+    "Channel",
+    "Dockside Extortionist",
+    "Emrakul, the Aeons Torn",
+    "Erayo, Soratami Ascendant",
+    "Falling Star",
+    "Fastbond",
+    "Flash",
+    "Golos, Tireless Pilgrim",
+    "Griselbrand",
+    "Hullbreacher",
+    "Iona, Shield of Emeria",
+    "Jeweled Lotus",
+    "Karakas",
+    "Leovold, Emissary of Trest",
+    "Library of Alexandria",
+    "Limited Resources",
+    "Mana Crypt",
+    "Mox Emerald",
+    "Mox Jet",
+    "Mox Pearl",
+    "Mox Ruby",
+    "Mox Sapphire",
+    "Nadu, Winged Wisdom",
+    "Paradox Engine",
+    "Primeval Titan",
+    "Prophet of Kruphix",
+    "Recurring Nightmare",
+    "Rofellos, Llanowar Emissary",
+    "Shahrazad",
+    "Sundering Titan",
+    "Sylvan Primordial",
+    "Time Vault",
+    "Time Walk",
+    "Tinker",
+    "Tolarian Academy",
+    "Trade Secrets",
+    "Upheaval",
+    "Yawgmoth's Bargain"
+  ],
+  "conditionalBans": [
+    {
+      "name": "Lutri, the Spellchaser",
+      "condition": "companionOnly",
+      "note": "Lutri is legal in a deck and as a commander, but is banned as a companion."
+    }
+  ],
+  "categoricalBans": [
+    {
+      "category": "Conspiracy card type",
+      "sourceUrl": "https://magic.wizards.com/en/banned-restricted-list",
+      "machineCheck": {
+        "kind": "typeLineContains",
+        "value": "Conspiracy"
+      }
+    },
+    {
+      "category": "Cards that reference playing for ante",
+      "sourceUrl": "https://magic.wizards.com/en/banned-restricted-list",
+      "machineCheck": {
+        "kind": "oracleTextContains",
+        "value": "ante"
+      }
+    },
+    {
+      "category": "Cards banned for racist or culturally offensive content",
+      "sourceUrl": "https://magic.wizards.com/en/news/announcements/depictions-racism-magic-2020-06-10",
+      "machineCheck": {
+        "kind": "nameList",
+        "names": [
+          "Cleanse",
+          "Crusade",
+          "Imprison",
+          "Invoke Prejudice",
+          "Jihad",
+          "Pradesh Gypsies",
+          "Stone-Throwing Devils"
+        ]
+      }
+    }
+  ]
+}
