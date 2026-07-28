@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const EXECUTION_COVERAGE_SCHEMA_VERSION: &str = "commander-execution-coverage-manifest/v3";
-pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-0.3";
+pub const EXECUTION_COVERAGE_SCHEMA_VERSION: &str = "commander-execution-coverage-manifest/v4";
+pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-0.4";
 pub const COMPACT_BLOCKER_SAMPLE_LIMIT: usize = 20;
 
 const METRICS: [ExecutionMetric; 7] = [
@@ -186,7 +186,6 @@ pub struct FaceCoverageManifest {
     pub hand_modifier: Option<String>,
     pub life_modifier: Option<String>,
     pub attraction_lights: Vec<u8>,
-    pub edhrec_rank: Option<u32>,
     pub image_uri: Option<String>,
     pub relationship: FaceRelationship,
     pub oracle_span_indices: Vec<u32>,
@@ -345,7 +344,6 @@ pub struct CoverageFaceRecord {
     pub hand_modifier: Option<String>,
     pub life_modifier: Option<String>,
     pub attraction_lights: Vec<u8>,
-    pub edhrec_rank: Option<u32>,
     pub image_uri: Option<String>,
     pub unreviewed_fields: BTreeMap<String, serde_json::Value>,
 }
@@ -440,7 +438,6 @@ impl From<&crate::domain::CardDefinition> for CombinedCardRecord {
                     hand_modifier: face.hand_modifier.clone(),
                     life_modifier: face.life_modifier.clone(),
                     attraction_lights: face.attraction_lights.clone(),
-                    edhrec_rank: face.edhrec_rank,
                     image_uri: face.image_uri.clone(),
                     unreviewed_fields: face.unreviewed_fields.clone(),
                 })
@@ -865,7 +862,6 @@ fn compile_card(
                     hand_modifier: face.hand_modifier.clone(),
                     life_modifier: face.life_modifier.clone(),
                     attraction_lights: face.attraction_lights.clone(),
-                    edhrec_rank: face.edhrec_rank,
                     image_uri: face.image_uri.clone(),
                     relationship: relationship_for_layout(&layout, index)
                         .unwrap_or(FaceRelationship::UnsupportedLayoutFace),
@@ -968,7 +964,6 @@ fn compile_card(
                     } else {
                         Vec::new()
                     },
-                    edhrec_rank: None,
                     image_uri: None,
                     relationship: legacy_relationship(&layout, face_count, index),
                     oracle_span_indices: spans
@@ -1113,7 +1108,6 @@ fn compile_card(
             &faces[index].hand_modifier,
             &faces[index].life_modifier,
             &faces[index].attraction_lights,
-            faces[index].edhrec_rank,
         ))?;
         push_leaf(
             &mut leaves,
@@ -2164,7 +2158,6 @@ fn validate_card(card: &CardCoverageManifest) -> Result<(), CoverageManifestErro
                 || face.hand_modifier != source_face.hand_modifier
                 || face.life_modifier != source_face.life_modifier
                 || face.attraction_lights != source_face.attraction_lights
-                || face.edhrec_rank != source_face.edhrec_rank
                 || face.image_uri != source_face.image_uri
                 || face.relationship != expected_relationship
             {
@@ -2283,7 +2276,6 @@ fn validate_card(card: &CardCoverageManifest) -> Result<(), CoverageManifestErro
                     } else {
                         Vec::new()
                     }
-                || face.edhrec_rank.is_some()
                 || face.image_uri.is_some()
                 || face.relationship != legacy_relationship(&card.layout, card.faces.len(), index)
             {

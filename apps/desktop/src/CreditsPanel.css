@@ -54,18 +54,6 @@
   color: var(--violet-bright);
 }
 
-.credit-source-icon.topdeck {
-  color: var(--teal);
-  border-color: rgba(86, 212, 189, 0.2);
-  background: rgba(86, 212, 189, 0.05);
-}
-
-.credit-source-icon.edhrec {
-  color: var(--amber);
-  border-color: rgba(228, 173, 99, 0.2);
-  background: rgba(228, 173, 99, 0.05);
-}
-
 .credit-source-heading {
   display: flex;
   align-items: baseline;

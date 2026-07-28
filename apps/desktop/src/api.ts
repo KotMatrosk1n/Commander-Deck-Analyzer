@@ -13,18 +13,12 @@ import type {
   DataStatus,
   DataUpdateProgress,
   DeckParseResult,
-  EdhrecDataStatus,
-  EdhrecImportOutcome,
   ImportResult,
   KnowledgeUpdateCheck,
   PolicyImportOutcome,
   PolicyPackageStatus,
   SemanticImportOutcome,
   SemanticPackageStatus,
-  TopDeckEdhStatus,
-  TopDeckEdhUpdateOutcome,
-  TopDeckEdhUpdateProgress,
-  TopDeckEdhUpdateRequest,
 } from "./types";
 
 export const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -183,87 +177,6 @@ export async function updateComprehensiveRules(
   return invoke<ComprehensiveRulesUpdateOutcome>("update_comprehensive_rules", {
     onProgress: channel,
   });
-}
-
-export async function getTopDeckEdhStatus(): Promise<TopDeckEdhStatus> {
-  if (!isTauri()) {
-    return {
-      ready: false,
-      schemaVersion: "topdeck-edh-tournament-observations/v1",
-      ingestorVersion: "topdeck-edh-ingestor-1",
-      datasetName: "TopDeck EDH tournament observations",
-      installedAt: null,
-      endpoint: "https://topdeck.gg/api/v2/tournaments",
-      queryScope: null,
-      requestFingerprint: null,
-      sourceResponseSha256: null,
-      sourceResponseBytes: null,
-      cacheFingerprint: null,
-      snapshotIntegritySha256: null,
-      tournamentCount: 0,
-      standingCount: 0,
-      identifiedCommanderEntries: 0,
-      unidentifiedEntries: 0,
-      commanderArchetypeCount: 0,
-      attributionText: "Data provided by TopDeck.gg",
-      attributionUrl: "https://topdeck.gg",
-      authenticityBasis: "Browser preview: native TopDeck data is unavailable.",
-      privacySummary:
-        "Updates retain only pseudonymized tournament keys and commander-level aggregates. API keys are not persisted.",
-      message: "TopDeck EDH tournament observations can be installed in the desktop app.",
-    };
-  }
-  return invoke<TopDeckEdhStatus>("get_topdeck_edh_status");
-}
-
-export async function updateTopDeckEdhObservations(
-  request: TopDeckEdhUpdateRequest,
-  onProgress: (progress: TopDeckEdhUpdateProgress) => void,
-): Promise<TopDeckEdhUpdateOutcome> {
-  if (!isTauri()) {
-    throw new Error("TopDeck EDH tournament updates are available in the installed desktop app.");
-  }
-  const channel = new Channel<TopDeckEdhUpdateProgress>();
-  channel.onmessage = onProgress;
-  return invoke<TopDeckEdhUpdateOutcome>("update_topdeck_edh_observations", {
-    request,
-    onProgress: channel,
-  });
-}
-
-export async function getEdhrecDataStatus(): Promise<EdhrecDataStatus> {
-  if (!isTauri()) {
-    return {
-      ready: false,
-      schemaVersion: "1",
-      derivationVersion: "edhrec-count-derivation-1",
-      generatedAt: null,
-      installedAt: null,
-      snapshotSha256: null,
-      sourceBytes: null,
-      timeWindow: null,
-      scopeCount: 0,
-      cardFactCount: 0,
-      providerName: null,
-      authorizationBasis: null,
-      licenseOrAgreement: null,
-      authorizationExpiresAt: null,
-      redistributionAllowed: false,
-      attribution: null,
-      authenticityBasis:
-        "Browser preview: no authorized EDHREC aggregate snapshot is available.",
-      message:
-        "Import a provider-authorized aggregate JSON in the desktop app. Direct website access is unsupported.",
-    };
-  }
-  return invoke<EdhrecDataStatus>("get_edhrec_data_status");
-}
-
-export async function importEdhrecData(path: string): Promise<EdhrecImportOutcome> {
-  if (!isTauri()) {
-    throw new Error("EDHREC aggregate imports are available in the installed desktop app.");
-  }
-  return invoke<EdhrecImportOutcome>("import_edhrec_data", { path });
 }
 
 export async function getPolicyPackageStatus(): Promise<PolicyPackageStatus> {

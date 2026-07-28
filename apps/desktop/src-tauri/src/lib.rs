@@ -10,7 +10,6 @@ mod combo_store;
 mod comprehensive_rules;
 mod domain;
 pub mod early_turn_evaluator;
-mod edhrec_data;
 mod effects;
 mod empty_library_win;
 pub mod execution_coverage;
@@ -18,10 +17,7 @@ mod importers;
 mod interaction_scenarios;
 mod interference;
 mod mana;
-mod metagame;
 mod parser;
-pub mod phase_engine_pack;
-pub mod phase_worker_protocol;
 mod policy_store;
 pub mod rules;
 mod rules_capabilities;
@@ -31,7 +27,6 @@ mod semantics;
 mod simulation;
 mod strategic_profile;
 mod strict_engine;
-mod topdeck_data;
 pub(crate) mod turn_event_state;
 pub mod turn_planner;
 
@@ -59,29 +54,20 @@ use crate::domain::{
     AnalysisProgress, AnalysisReport, AnalyzeRequest, DataStatus, DataUpdateProgress,
     DeckParseResult, ImportResult,
 };
-use crate::edhrec_data::{EdhrecDataStatus, EdhrecDataStore, EdhrecImportOutcome};
 use crate::policy_store::{PolicyImportOutcome, PolicyPackageStatus, PolicyStore};
 use crate::semantic_store::{SemanticImportOutcome, SemanticPackageStatus, SemanticStore};
-use crate::topdeck_data::{
-    TopDeckEdhStatus, TopDeckEdhStore, TopDeckEdhUpdateOutcome, TopDeckEdhUpdateProgress,
-    TopDeckEdhUpdateReporter, TopDeckEdhUpdateRequest,
-};
 
 struct AppState {
     card_database_path: PathBuf,
     analysis_cache_path: PathBuf,
     combo_store: ComboStore,
     comprehensive_rules_store: ComprehensiveRulesStore,
-    topdeck_edh_store: TopDeckEdhStore,
-    edhrec_data_store: EdhrecDataStore,
     policy_store: PolicyStore,
     semantic_store: SemanticStore,
     active_runs: Mutex<HashMap<String, Arc<AtomicBool>>>,
     data_access_lock: tokio::sync::RwLock<()>,
     combo_access_lock: tokio::sync::RwLock<()>,
     comprehensive_rules_access_lock: tokio::sync::RwLock<()>,
-    topdeck_edh_access_lock: tokio::sync::RwLock<()>,
-    edhrec_data_access_lock: tokio::sync::RwLock<()>,
     policy_access_lock: tokio::sync::RwLock<()>,
     semantic_access_lock: tokio::sync::RwLock<()>,
 }
@@ -117,15 +103,9 @@ const EXTERNAL_CREDIT_URLS: &[&str] = &[
     "https://scryfall.com/",
     "https://scryfall.com/docs/api/bulk-data",
     "https://commanderspellbook.com/",
-    "https://topdeck.gg/",
-    "https://edhtop16.com/",
-    "https://edhtop16.com/about",
-    "https://edhrec.com/",
     "https://archidekt.com/",
     "https://deckstats.net/",
     "https://moxfield.com/",
-    "https://github.com/phase-rs/phase",
-    "https://mtgjson.com/",
 ];
 
 fn external_credit_url_allowed(url: &str) -> bool {
@@ -360,72 +340,6 @@ async fn update_comprehensive_rules(
 }
 
 #[tauri::command]
-async fn get_topdeck_edh_status(state: State<'_, AppState>) -> Result<TopDeckEdhStatus, String> {
-    // Status may quarantine a damaged active file and restore the previous
-    // generation, so it requires exclusive store access.
-    let _lease = state.topdeck_edh_access_lock.write().await;
-    state
-        .topdeck_edh_store
-        .status()
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn update_topdeck_edh_observations(
-    state: State<'_, AppState>,
-    request: TopDeckEdhUpdateRequest,
-    on_progress: Channel<TopDeckEdhUpdateProgress>,
-) -> Result<TopDeckEdhUpdateOutcome, String> {
-    let _card_data_guard = state.data_access_lock.read().await;
-    let _update_guard = state.topdeck_edh_access_lock.write().await;
-    let card_repository =
-        CardRepository::new(&state.card_database_path).map_err(|error| error.to_string())?;
-    let reporter: TopDeckEdhUpdateReporter = Arc::new(move |progress| {
-        let _ = on_progress.send(progress);
-    });
-    state
-        .topdeck_edh_store
-        .update_from_network(request, &card_repository, Some(reporter))
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn get_edhrec_data_status(state: State<'_, AppState>) -> Result<EdhrecDataStatus, String> {
-    // Status can quarantine a damaged active file and restore the previous
-    // generation, so concurrent status calls require exclusive store access.
-    let _lease = state.edhrec_data_access_lock.write().await;
-    state
-        .edhrec_data_store
-        .status()
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-async fn import_edhrec_data(
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<EdhrecImportOutcome, String> {
-    let path = PathBuf::from(path);
-    if !path.is_absolute() {
-        return Err("Choose an absolute EDHREC aggregate JSON path.".into());
-    }
-    if path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_none_or(|extension| !extension.eq_ignore_ascii_case("json"))
-    {
-        return Err("EDHREC aggregate imports must be JSON files.".into());
-    }
-    let _activation_guard = state.edhrec_data_access_lock.write().await;
-    let store = state.edhrec_data_store.clone();
-    tokio::task::spawn_blocking(move || store.import_authorized_file(&path))
-        .await
-        .map_err(|error| format!("EDHREC aggregate import worker stopped unexpectedly: {error}"))?
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 async fn get_policy_package_status(
     state: State<'_, AppState>,
 ) -> Result<PolicyPackageStatus, String> {
@@ -526,39 +440,6 @@ async fn analyze_deck(
             return Err("Analysis cancelled.".into());
         }
 
-        // These stores may quarantine a damaged live file or restore a
-        // previous generation while loading, so each read takes its short
-        // write lease. The owned snapshots outlive the leases and no provider
-        // lock is held during semantic compilation or simulation.
-        let mut metagame_load_warnings = Vec::new();
-        let topdeck = {
-            let _lease = state.topdeck_edh_access_lock.write().await;
-            match state.topdeck_edh_store.load_active() {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    metagame_load_warnings.push(format!(
-                        "The optional TopDeck.gg metagame snapshot could not be loaded; analysis continued without TopDeck.gg context: {error}"
-                    ));
-                    None
-                }
-            }
-        };
-        let edhrec = {
-            let _lease = state.edhrec_data_access_lock.write().await;
-            match state.edhrec_data_store.load_active() {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    metagame_load_warnings.push(format!(
-                        "The optional EDHREC aggregate snapshot could not be loaded; analysis continued without EDHREC context: {error}"
-                    ));
-                    None
-                }
-            }
-        };
-        if cancellation.load(Ordering::Relaxed) {
-            return Err("Analysis cancelled.".into());
-        }
-
         let repository =
             CardRepository::new(&state.card_database_path).map_err(|error| error.to_string())?;
         let policy_package = state
@@ -588,9 +469,6 @@ async fn analyze_deck(
                 policy: policy_package,
                 semantics: semantic_package,
                 comprehensive_rules,
-                topdeck,
-                edhrec,
-                metagame_load_warnings,
             },
             cache,
             request,
@@ -664,12 +542,6 @@ pub fn run() {
             let comprehensive_rules_store =
                 ComprehensiveRulesStore::new(data_directory.join("comprehensive-rules"))
                     .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
-            let topdeck_edh_store =
-                TopDeckEdhStore::new(data_directory.join("topdeck-edh-observations"))
-                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
-            let edhrec_data_store =
-                EdhrecDataStore::new(data_directory.join("edhrec-aggregate-data"))
-                    .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             let policy_store = PolicyStore::new(data_directory.join("policy-data"))
                 .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?;
             let semantic_store = SemanticStore::new(data_directory.join("semantic-data"))
@@ -682,16 +554,12 @@ pub fn run() {
                 analysis_cache_path,
                 combo_store,
                 comprehensive_rules_store,
-                topdeck_edh_store,
-                edhrec_data_store,
                 policy_store,
                 semantic_store,
                 active_runs: Mutex::new(HashMap::new()),
                 data_access_lock: tokio::sync::RwLock::new(()),
                 combo_access_lock: tokio::sync::RwLock::new(()),
                 comprehensive_rules_access_lock: tokio::sync::RwLock::new(()),
-                topdeck_edh_access_lock: tokio::sync::RwLock::new(()),
-                edhrec_data_access_lock: tokio::sync::RwLock::new(()),
                 policy_access_lock: tokio::sync::RwLock::new(()),
                 semantic_access_lock: tokio::sync::RwLock::new(()),
             });
@@ -710,10 +578,6 @@ pub fn run() {
             update_combo_database,
             get_comprehensive_rules_status,
             update_comprehensive_rules,
-            get_topdeck_edh_status,
-            update_topdeck_edh_observations,
-            get_edhrec_data_status,
-            import_edhrec_data,
             get_policy_package_status,
             import_policy_package,
             reset_policy_package,

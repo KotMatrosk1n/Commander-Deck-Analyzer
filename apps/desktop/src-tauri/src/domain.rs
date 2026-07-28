@@ -162,10 +162,6 @@ pub struct AnalysisReport {
     pub evidence: Vec<EvidenceItem>,
     #[serde(default)]
     pub policy: crate::rules::PolicyEvaluation,
-    /// Optional provider-backed descriptive context. This remains crate-private
-    /// so scoring consumers cannot accidentally promote it into an input.
-    #[serde(default)]
-    pub(crate) metagame: Option<crate::metagame::MetagameContextReport>,
     pub assumptions: AnalysisAssumptions,
     pub versions: DataVersions,
     pub cache: AnalysisCacheInfo,
@@ -873,12 +869,6 @@ pub struct DataVersions {
     pub combo_catalog: Option<String>,
     #[serde(default)]
     pub combo_snapshot_sha256: Option<String>,
-    #[serde(default)]
-    pub metagame_context_model: Option<String>,
-    #[serde(default)]
-    pub topdeck_snapshot_integrity_sha256: Option<String>,
-    #[serde(default)]
-    pub edhrec_snapshot_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -967,10 +957,6 @@ pub struct CardFaceDefinition {
     pub life_modifier: Option<String>,
     #[serde(default)]
     pub attraction_lights: Vec<u8>,
-    /// Face-level EDHREC rank is descriptive analysis metadata, not card
-    /// function, but is retained rather than silently collapsed into root rank.
-    #[serde(default)]
-    pub edhrec_rank: Option<u32>,
     pub image_uri: Option<String>,
     /// Fields not present in the reviewed upstream schema are retained
     /// losslessly. Coverage compilation blocks functional metrics until each
@@ -1046,10 +1032,6 @@ pub struct CardDefinition {
     #[serde(default)]
     pub related_components: Vec<RelatedCardComponentDefinition>,
     pub image_uri: Option<String>,
-    /// Overall EDHREC popularity ordinal supplied in Scryfall's documented
-    /// card data. This is a weak global popularity signal, not
-    /// commander-conditioned synergy or evidence of card power.
-    pub edhrec_rank: Option<u32>,
     /// Current Scryfall/Wizards Game Changer designation. This is policy and
     /// bracket context, not executable Oracle rules text.
     #[serde(default)]

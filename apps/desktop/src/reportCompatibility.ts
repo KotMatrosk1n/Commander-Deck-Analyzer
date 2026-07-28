@@ -20,9 +20,9 @@ export const CURRENT_ABILITY_PROGRAM_VERSION =
 export const CURRENT_TURN_PLANNER_VERSION = "bounded-beam-0.6";
 export const CURRENT_STRICT_ENGINE_VERSION = "strict-kernel-0.1";
 export const CURRENT_EXECUTION_COVERAGE_COMPILER_VERSION =
-  "execution-coverage-0.3";
+  "execution-coverage-0.4";
 export const CURRENT_BRACKET_MODEL_VERSION = "evidence-score-0.8-uncalibrated";
-export const CURRENT_CACHE_KEY_VERSION = "analysis-cache-41";
+export const CURRENT_CACHE_KEY_VERSION = "analysis-cache-42";
 const ALLOWED_TRIAL_COUNTS = [1000, 5000, 10000] as const;
 const MINIMUM_TURN_HORIZON = 2;
 const MAXIMUM_TURN_HORIZON = 12;
