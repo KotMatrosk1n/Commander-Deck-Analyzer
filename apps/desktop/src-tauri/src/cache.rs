@@ -16,9 +16,15 @@ use crate::effects::EFFECT_DESCRIPTOR_VERSION;
 use crate::execution_coverage::{
     EXECUTION_COVERAGE_COMPILER_VERSION, EXECUTION_COVERAGE_SCHEMA_VERSION,
 };
+use crate::interaction_scenarios::{
+    INTERACTION_CHECKPOINT_VERSION, INTERACTION_DIRECTIVE_VERSION,
+    INTERACTION_SCENARIO_INPUT_VERSION, INTERACTION_SCENARIO_REPORT_VERSION,
+};
+use crate::mana::MANA_MODEL_VERSION;
 use crate::metagame::METAGAME_CONTEXT_MODEL_VERSION;
 use crate::parser::normalize_card_name;
 use crate::policy_store::PolicyPackageSnapshot;
+use crate::rules_capabilities::RULE_CAPABILITY_MODEL_VERSION;
 use crate::scoring::{BRACKET_MODEL_VERSION, SEMANTIC_MODEL_VERSION};
 use crate::semantic_store::SemanticPackageSnapshot;
 use crate::semantics::{ANNOTATION_MODEL_VERSION, COMBO_CATALOG_VERSION};
@@ -32,7 +38,8 @@ use crate::strict_engine::STRICT_ENGINE_VERSION;
 use crate::turn_planner::TURN_PLANNER_VERSION;
 
 const CACHE_SCHEMA_VERSION: &str = "1";
-pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-40";
+pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-41";
+const ANALYSIS_IMPLEMENTATION_SHA256: &str = env!("CDA_ANALYSIS_IMPLEMENTATION_SHA256");
 const MAX_CACHE_ENTRIES: usize = 64;
 const ALLOWED_PRODUCTION_SIMULATION_COUNTS: [u32; 3] = [1_000, 5_000, 10_000];
 const MINIMUM_PRODUCTION_TURN: u8 = 2;
@@ -47,6 +54,8 @@ pub enum AnalysisCacheError {
     Json(#[from] serde_json::Error),
     #[error("Analysis cache file error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Analysis cache identity is incomplete: {0}")]
+    IncompleteIdentity(&'static str),
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +73,7 @@ pub struct CachedAnalysis {
 #[serde(rename_all = "camelCase")]
 struct CacheKeyMaterial<'a> {
     key_version: &'static str,
+    analysis_implementation_sha256: &'a str,
     canonical_deck: &'a str,
     commanders: Vec<String>,
     options: &'a AnalysisOptions,
@@ -80,9 +90,18 @@ struct CacheKeyMaterial<'a> {
     effect_descriptor: &'static str,
     combo_catalog: &'static str,
     strategic_profile: &'static str,
+    mana_model: &'static str,
     simulation_engine: &'static str,
+    timing_endpoint: &'static str,
     effective_hand_strength: &'static str,
     opening_candidate_cohort: &'static str,
+    early_turn_evaluator: &'static str,
+    interaction_scenario_input: &'static str,
+    interaction_scenario_report: &'static str,
+    interaction_directive: &'static str,
+    interaction_checkpoint: &'static str,
+    interaction_seed_derivation: &'static str,
+    interaction_scenario_episode_cap: u32,
     ability_program: &'static str,
     turn_planner: &'static str,
     execution_contract: ExecutionContractFingerprint<'a>,
@@ -214,23 +233,27 @@ impl AnalysisCache {
         options: &AnalysisOptions,
         data: AnalysisCacheData<'_>,
     ) -> Result<String, AnalysisCacheError> {
-        self.key_with_execution_contract(
+        self.key_with_analysis_contract(
             canonical_deck,
             commander_names,
             options,
             data,
+            ANALYSIS_IMPLEMENTATION_SHA256,
             ExecutionContractFingerprint::current(),
         )
     }
 
-    fn key_with_execution_contract(
+    fn key_with_analysis_contract(
         &self,
         canonical_deck: &str,
         commander_names: &[String],
         options: &AnalysisOptions,
         data: AnalysisCacheData<'_>,
+        analysis_implementation_sha256: &str,
         execution_contract: ExecutionContractFingerprint<'_>,
     ) -> Result<String, AnalysisCacheError> {
+        validate_cache_identity(analysis_implementation_sha256, &data)?;
+
         let mut commanders = commander_names
             .iter()
             .map(|name| normalize_card_name(name))
@@ -240,6 +263,7 @@ impl AnalysisCache {
 
         let material = CacheKeyMaterial {
             key_version: CACHE_KEY_VERSION,
+            analysis_implementation_sha256,
             canonical_deck,
             commanders,
             options,
@@ -295,7 +319,7 @@ impl AnalysisCache {
                 parser_version: data
                     .comprehensive_rules
                     .map(|rules| rules.parser_version.as_str()),
-                capability_model: crate::rules_capabilities::RULE_CAPABILITY_MODEL_VERSION,
+                capability_model: RULE_CAPABILITY_MODEL_VERSION,
             },
             metagame: MetagameFingerprint {
                 model_version: METAGAME_CONTEXT_MODEL_VERSION,
@@ -315,9 +339,18 @@ impl AnalysisCache {
             effect_descriptor: EFFECT_DESCRIPTOR_VERSION,
             combo_catalog: COMBO_CATALOG_VERSION,
             strategic_profile: STRATEGIC_PROFILE_MODEL_VERSION,
+            mana_model: MANA_MODEL_VERSION,
             simulation_engine: SIMULATION_ENGINE_VERSION,
+            timing_endpoint: TIMING_ENDPOINT_VERSION,
             effective_hand_strength: EFFECTIVE_HAND_STRENGTH_VERSION,
             opening_candidate_cohort: OPENING_CANDIDATE_COHORT_VERSION,
+            early_turn_evaluator: EARLY_TURN_EVALUATOR_VERSION,
+            interaction_scenario_input: INTERACTION_SCENARIO_INPUT_VERSION,
+            interaction_scenario_report: INTERACTION_SCENARIO_REPORT_VERSION,
+            interaction_directive: INTERACTION_DIRECTIVE_VERSION,
+            interaction_checkpoint: INTERACTION_CHECKPOINT_VERSION,
+            interaction_seed_derivation: INTERACTION_SCENARIO_SEED_DERIVATION_VERSION,
+            interaction_scenario_episode_cap: MAX_INTERACTION_SCENARIO_EPISODES,
             ability_program: EXECUTABLE_ABILITY_PROGRAM_VERSION,
             turn_planner: TURN_PLANNER_VERSION,
             execution_contract,
@@ -445,6 +478,9 @@ fn report_matches_execution_contract(report: &AnalysisReport) -> bool {
         && report.versions.execution_coverage_compiler.as_deref()
             == Some(EXECUTION_COVERAGE_COMPILER_VERSION)
         && report.versions.bracket_model == BRACKET_MODEL_VERSION
+        && report.cache.key_version == CACHE_KEY_VERSION
+        && report_matches_versioned_data_contract(report)
+        && report_matches_deck_identity_contract(report)
         && report_matches_workload_contract(report)
         && matches!(
             report.assumptions.mulligan_policy,
@@ -470,6 +506,86 @@ fn report_matches_execution_contract(report: &AnalysisReport) -> bool {
         && report.assumptions.seed_exact == report.assumptions.seed.to_string()
 }
 
+fn report_matches_versioned_data_contract(report: &AnalysisReport) -> bool {
+    let versions = &report.versions;
+    let expected_semantic_model =
+        format!("{SEMANTIC_MODEL_VERSION}+{ANNOTATION_MODEL_VERSION}+{EFFECT_DESCRIPTOR_VERSION}");
+    let expected_combo_prefix = format!("Built-in {COMBO_CATALOG_VERSION}");
+    let comprehensive_rules_match = match (
+        versions.comprehensive_rules_effective_date.as_deref(),
+        versions.comprehensive_rules_snapshot_sha256.as_deref(),
+        versions.comprehensive_rules_parser_version.as_deref(),
+        versions.rule_capability_model.as_deref(),
+    ) {
+        (None, None, None, None) => true,
+        (Some(effective_date), Some(snapshot), Some(parser), Some(capability_model)) => {
+            !effective_date.trim().is_empty()
+                && is_lowercase_sha256(snapshot)
+                && !parser.trim().is_empty()
+                && capability_model == RULE_CAPABILITY_MODEL_VERSION
+        }
+        _ => false,
+    };
+
+    !versions.card_data.trim().is_empty()
+        && versions
+            .card_snapshot_sha256
+            .as_deref()
+            .is_none_or(is_lowercase_sha256)
+        && !versions.rules_package.trim().is_empty()
+        && versions
+            .rules_snapshot_sha256
+            .as_deref()
+            .is_some_and(is_lowercase_sha256)
+        && versions
+            .rules_package_origin
+            .as_deref()
+            .is_some_and(|origin| !origin.trim().is_empty())
+        && versions.semantic_model == expected_semantic_model
+        && versions
+            .semantic_package
+            .as_deref()
+            .is_some_and(|package| !package.trim().is_empty())
+        && versions
+            .semantic_snapshot_sha256
+            .as_deref()
+            .is_some_and(is_lowercase_sha256)
+        && versions
+            .semantic_package_origin
+            .as_deref()
+            .is_some_and(|origin| !origin.trim().is_empty())
+        && versions
+            .semantic_authenticity_basis
+            .as_deref()
+            .is_some_and(|basis| !basis.trim().is_empty())
+        && comprehensive_rules_match
+        && versions.strategic_profile_model.as_deref() == Some(STRATEGIC_PROFILE_MODEL_VERSION)
+        && versions
+            .combo_catalog
+            .as_deref()
+            .is_some_and(|catalog| catalog.starts_with(&expected_combo_prefix))
+        && versions
+            .combo_snapshot_sha256
+            .as_deref()
+            .is_none_or(is_lowercase_sha256)
+        && versions.metagame_context_model.as_deref() == Some(METAGAME_CONTEXT_MODEL_VERSION)
+        && versions
+            .topdeck_snapshot_integrity_sha256
+            .as_deref()
+            .is_none_or(is_lowercase_sha256)
+        && versions
+            .edhrec_snapshot_sha256
+            .as_deref()
+            .is_none_or(is_lowercase_sha256)
+}
+
+fn report_matches_deck_identity_contract(report: &AnalysisReport) -> bool {
+    let canonical_deck = report.deck.canonical_deck.as_bytes();
+    let expected = format!("{:x}", Sha256::digest(canonical_deck));
+    is_lowercase_sha256(&report.deck.canonical_deck_sha256)
+        && report.deck.canonical_deck_sha256 == expected
+}
+
 fn report_matches_workload_contract(report: &AnalysisReport) -> bool {
     let assumptions = &report.assumptions;
     assumptions.opening_hand_simulations == assumptions.game_simulations
@@ -484,6 +600,57 @@ fn is_lowercase_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_cache_identity(
+    analysis_implementation_sha256: &str,
+    data: &AnalysisCacheData<'_>,
+) -> Result<(), AnalysisCacheError> {
+    require_sha256(
+        analysis_implementation_sha256,
+        "analysis implementation fingerprint",
+    )?;
+    optional_sha256(
+        data.card_data.snapshot_sha256.as_deref(),
+        "card data snapshot",
+    )?;
+
+    if let Some(combo) = data.combo_data {
+        if combo.ready && combo.snapshot_sha256.is_none() {
+            return Err(AnalysisCacheError::IncompleteIdentity(
+                "ready combo data has no snapshot fingerprint",
+            ));
+        }
+        optional_sha256(combo.snapshot_sha256.as_deref(), "combo data snapshot")?;
+    }
+
+    require_sha256(
+        &data.policy_data.provenance.snapshot_sha256,
+        "policy package snapshot",
+    )?;
+    require_sha256(
+        &data.semantic_data.provenance.snapshot_sha256,
+        "semantic package snapshot",
+    )?;
+
+    if let Some(rules) = data.comprehensive_rules {
+        require_sha256(&rules.snapshot_sha256, "Comprehensive Rules snapshot")?;
+    }
+    optional_sha256(data.topdeck_snapshot_integrity_sha256, "TopDeck snapshot")?;
+    optional_sha256(data.edhrec_snapshot_sha256, "EDHREC snapshot")?;
+    Ok(())
+}
+
+fn require_sha256(value: &str, label: &'static str) -> Result<(), AnalysisCacheError> {
+    if is_lowercase_sha256(value) {
+        Ok(())
+    } else {
+        Err(AnalysisCacheError::IncompleteIdentity(label))
+    }
+}
+
+fn optional_sha256(value: Option<&str>, label: &'static str) -> Result<(), AnalysisCacheError> {
+    value.map_or(Ok(()), |value| require_sha256(value, label))
 }
 
 const RATE_TOLERANCE: f32 = 0.000_001;
@@ -1159,9 +1326,12 @@ fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     if current_version.as_deref() != Some(CACHE_SCHEMA_VERSION) {
         connection.execute_batch(
             "DROP TABLE IF EXISTS analysis_reports;
-             DELETE FROM cache_metadata;
-             INSERT INTO cache_metadata (key, value)
-             VALUES ('schema_version', '1');",
+             DELETE FROM cache_metadata;",
+        )?;
+        connection.execute(
+            "INSERT INTO cache_metadata (key, value)
+             VALUES ('schema_version', ?1)",
+            [CACHE_SCHEMA_VERSION],
         )?;
     }
     connection.execute_batch(

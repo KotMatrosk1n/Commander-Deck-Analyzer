@@ -221,11 +221,52 @@ pub trait TurnPlanningDomain {
     }
 }
 
+struct ActionPathStep<Action> {
+    parent: Option<usize>,
+    action: Action,
+}
+
+// Each successful expansion owns one action here. Search nodes retain only a
+// tail index, so sibling branches do not allocate and clone complete action
+// histories. The separate flattened action key path remains unchanged because
+// it is used directly by the deterministic ordering hot path.
+struct ActionPathArena<Action> {
+    steps: Vec<ActionPathStep<Action>>,
+}
+
+impl<Action> ActionPathArena<Action> {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            steps: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn append(&mut self, parent: Option<usize>, action: Action) -> usize {
+        let index = self.steps.len();
+        self.steps.push(ActionPathStep { parent, action });
+        index
+    }
+
+    fn materialize(&self, mut tail: Option<usize>) -> Vec<Action>
+    where
+        Action: Clone,
+    {
+        let mut actions = Vec::new();
+        while let Some(index) = tail {
+            let step = &self.steps[index];
+            actions.push(step.action.clone());
+            tail = step.parent;
+        }
+        actions.reverse();
+        actions
+    }
+}
+
 #[derive(Clone)]
-struct SearchNode<State, Action, StateKey, ActionKey, Endpoint> {
+struct SearchNode<State, StateKey, ActionKey, Endpoint> {
     state: State,
     state_key: StateKey,
-    actions: Vec<Action>,
+    action_path_tail: Option<usize>,
     action_keys: Vec<ActionKey>,
     endpoint: Option<Endpoint>,
     value: PlannerValue,
@@ -235,7 +276,6 @@ struct SearchNode<State, Action, StateKey, ActionKey, Endpoint> {
 
 type DomainSearchNode<D> = SearchNode<
     <D as TurnPlanningDomain>::ObservableState,
-    <D as TurnPlanningDomain>::Action,
     <D as TurnPlanningDomain>::StateKey,
     <D as TurnPlanningDomain>::ActionKey,
     <D as TurnPlanningDomain>::Endpoint,
@@ -259,7 +299,9 @@ where
     validate_config(config)?;
 
     let mut diagnostics = PlannerDiagnostics::default();
-    let root = make_node(domain, initial_state, Vec::new(), Vec::new(), false);
+    let mut action_paths =
+        ActionPathArena::with_capacity(config.beam_width.min(config.max_node_expansions));
+    let root = make_node(domain, initial_state, None, Vec::new(), false);
     let mut best = root.clone();
     let mut frontier = vec![root];
 
@@ -294,7 +336,13 @@ where
                     else {
                         continue;
                     };
-                    node = make_node(domain, next_state, node.actions, node.action_keys, true);
+                    node = make_node(
+                        domain,
+                        next_state,
+                        node.action_path_tail,
+                        node.action_keys,
+                        true,
+                    );
                     consider_best(&node, &mut best);
                     if node.endpoint.is_some() || domain.current_turn_complete(&node.state) {
                         continue;
@@ -344,14 +392,13 @@ where
                     return Err(PlannerError::Domain(error));
                 }
                 diagnostics.expanded += 1;
-                let mut actions = node.actions.clone();
-                actions.push(action);
                 let mut action_keys = node.action_keys.clone();
                 action_keys.push(action_key);
+                let action_path_tail = Some(action_paths.append(node.action_path_tail, action));
                 let child = make_node(
                     domain,
                     next_state,
-                    actions,
+                    action_path_tail,
                     action_keys,
                     node.used_conservative_next_turn,
                 );
@@ -410,9 +457,10 @@ where
         }
     }
 
+    let actions = action_paths.materialize(best.action_path_tail);
     Ok(PlannerResult {
         best: PlannedLine {
-            actions: best.actions,
+            actions,
             final_state: best.state,
             endpoint: best.endpoint,
             value: best.value,
@@ -445,7 +493,7 @@ fn validate_config<DomainError>(config: PlannerConfig) -> Result<(), PlannerErro
 fn make_node<D>(
     domain: &D,
     state: D::ObservableState,
-    actions: Vec<D::Action>,
+    action_path_tail: Option<usize>,
     action_keys: Vec<D::ActionKey>,
     used_conservative_next_turn: bool,
 ) -> DomainSearchNode<D>
@@ -459,18 +507,17 @@ where
         value: evaluation.value,
         dominance: evaluation.dominance,
         state,
-        actions,
+        action_path_tail,
         action_keys,
         used_conservative_next_turn,
     }
 }
 
-fn consider_best<State, Action, StateKey, ActionKey, Endpoint>(
-    candidate: &SearchNode<State, Action, StateKey, ActionKey, Endpoint>,
-    best: &mut SearchNode<State, Action, StateKey, ActionKey, Endpoint>,
+fn consider_best<State, StateKey, ActionKey, Endpoint>(
+    candidate: &SearchNode<State, StateKey, ActionKey, Endpoint>,
+    best: &mut SearchNode<State, StateKey, ActionKey, Endpoint>,
 ) where
     State: Clone,
-    Action: Clone,
     StateKey: Clone + Ord,
     ActionKey: Clone + Ord,
     Endpoint: Clone,
@@ -480,8 +527,8 @@ fn consider_best<State, Action, StateKey, ActionKey, Endpoint>(
     }
 }
 
-fn sort_nodes<State, Action, StateKey, ActionKey, Endpoint>(
-    nodes: &mut [SearchNode<State, Action, StateKey, ActionKey, Endpoint>],
+fn sort_nodes<State, StateKey, ActionKey, Endpoint>(
+    nodes: &mut [SearchNode<State, StateKey, ActionKey, Endpoint>],
 ) where
     StateKey: Ord,
     ActionKey: Ord,
@@ -489,9 +536,9 @@ fn sort_nodes<State, Action, StateKey, ActionKey, Endpoint>(
     nodes.sort_by(compare_nodes);
 }
 
-fn compare_nodes<State, Action, StateKey, ActionKey, Endpoint>(
-    left: &SearchNode<State, Action, StateKey, ActionKey, Endpoint>,
-    right: &SearchNode<State, Action, StateKey, ActionKey, Endpoint>,
+fn compare_nodes<State, StateKey, ActionKey, Endpoint>(
+    left: &SearchNode<State, StateKey, ActionKey, Endpoint>,
+    right: &SearchNode<State, StateKey, ActionKey, Endpoint>,
 ) -> Ordering
 where
     StateKey: Ord,
@@ -505,9 +552,9 @@ where
         .then_with(|| left.state_key.cmp(&right.state_key))
 }
 
-fn node_is_better<State, Action, StateKey, ActionKey, Endpoint>(
-    candidate: &SearchNode<State, Action, StateKey, ActionKey, Endpoint>,
-    incumbent: &SearchNode<State, Action, StateKey, ActionKey, Endpoint>,
+fn node_is_better<State, StateKey, ActionKey, Endpoint>(
+    candidate: &SearchNode<State, StateKey, ActionKey, Endpoint>,
+    incumbent: &SearchNode<State, StateKey, ActionKey, Endpoint>,
 ) -> bool
 where
     StateKey: Ord,
@@ -516,9 +563,9 @@ where
     compare_nodes(candidate, incumbent) == Ordering::Less
 }
 
-fn node_dominates<State, Action, StateKey, ActionKey, Endpoint>(
-    candidate: &SearchNode<State, Action, StateKey, ActionKey, Endpoint>,
-    incumbent: &SearchNode<State, Action, StateKey, ActionKey, Endpoint>,
+fn node_dominates<State, StateKey, ActionKey, Endpoint>(
+    candidate: &SearchNode<State, StateKey, ActionKey, Endpoint>,
+    incumbent: &SearchNode<State, StateKey, ActionKey, Endpoint>,
 ) -> bool
 where
     StateKey: Ord,
