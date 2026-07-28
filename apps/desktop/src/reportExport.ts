@@ -598,5 +598,9 @@ function scenarioNotApplicableReason(
 }
 
 function singleLine(value: string): string {
-  return value.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|")
+    .trim();
 }

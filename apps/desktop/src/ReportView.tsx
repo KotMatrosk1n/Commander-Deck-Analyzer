@@ -548,7 +548,7 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
             {omittedConversionRoutes} additional recognized route{omittedConversionRoutes === 1 ? "" : "s"} require{omittedConversionRoutes === 1 ? "s" : ""} a table-lethal conversion and {omittedConversionRoutes === 1 ? "is" : "are"} excluded from the eligible table-win count above.
           </p>
         ) : null}
-        <p className="metagame-definition">
+        <p className="model-definition">
           These are exact combination-weighted card-access diagnostics, not win-attempt or win probabilities. The independent candidate-hand envelope is not the production mulligan keep rate: it does not model stop-on-keep decisions or London bottoming. Tutor payment, colored mana, ordered sequencing, priority, protection, and opponent responses remain blocked until a legal trajectory supplies a witness.
         </p>
       </section>
@@ -640,7 +640,7 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
             </div>
           </>
         ) : null}
-        <p className="metagame-definition">
+        <p className="model-definition">
           “Generic conversion milestone” is deliberately not a win attempt. It records broad engine/combat development that the older model mixed into timing, while explicit routes retain the reviewed line and blocker that produced each result.
         </p>
       </section>
@@ -711,7 +711,7 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
               />
             ))}
           </div>
-          <p className="metagame-definition">
+          <p className="model-definition">
             {interactionScenarios[0].measurement.claimBoundary}
           </p>
         </section>

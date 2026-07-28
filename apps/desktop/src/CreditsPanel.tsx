@@ -4,7 +4,6 @@ import {
   Database,
   ExternalLink,
   FileCheck2,
-  ScrollText,
   ShieldCheck,
   Sparkles,
   X,
@@ -203,106 +202,6 @@ export function CreditsPanel({ onClose }: CreditsPanelProps) {
             </div>
           </section>
 
-          <section className="credit-source-card">
-            <div className="credit-source-icon official" aria-hidden="true">
-              <ShieldCheck size={19} />
-            </div>
-            <div>
-              <div className="credit-source-heading">
-                <h3>phase-rs</h3>
-                <span>Planned optional rules-engine worker</span>
-              </div>
-              <p>
-                The app contains a versioned host boundary for a future, separately installed
-                phase-rs engine pack. No phase-rs code, worker executable, or card data is bundled
-                or active today. A future pack cannot count as strict coverage until its exact
-                identity verifies and that deck&apos;s full preflight reports zero unsupported,
-                unresolved, or ambiguous card-function gaps. The audited phase-rs source uses
-                MIT-licensed card metadata from MTGJSON; a future pack must retain exact MTGJSON
-                source, hash, license, and attribution provenance.
-              </p>
-              <div className="credit-links">
-                <ExternalCreditLink href="https://github.com/phase-rs/phase">
-                  View phase-rs source
-                </ExternalCreditLink>
-                <ExternalCreditLink href="https://mtgjson.com/">
-                  Visit MTGJSON
-                </ExternalCreditLink>
-              </div>
-            </div>
-          </section>
-
-          <section className="credit-source-card">
-            <div className="credit-source-icon topdeck" aria-hidden="true">
-              <FileCheck2 size={19} />
-            </div>
-            <div>
-              <div className="credit-source-heading">
-                <h3>TopDeck.gg</h3>
-                <span>Optional metagame data</span>
-              </div>
-              <p>
-                A user-triggered update can query the documented tournaments-v2 API with a
-                temporary API key. The app stores only privacy-reduced EDH tournament aggregates;
-                they are not bundled, treated as universal casual-pod behavior, or automatically
-                labeled cEDH.
-              </p>
-              <div className="credit-links">
-                <ExternalCreditLink href="https://topdeck.gg/">
-                  Data provided by TopDeck.gg
-                </ExternalCreditLink>
-              </div>
-            </div>
-          </section>
-
-          <section className="credit-source-card">
-            <div className="credit-source-icon topdeck" aria-hidden="true">
-              <Database size={19} />
-            </div>
-            <div>
-              <div className="credit-source-heading">
-                <h3>EDHTop16</h3>
-                <span>cEDH benchmark sampling reference</span>
-              </div>
-              <p>
-                Public EDHTop16 pages may be cited during development to select representative
-                cEDH tournament archetypes and outcome samples. Those records are not observed
-                turn-by-turn labels. No EDHTop16 data is bundled, and the app does not call an
-                undocumented EDHTop16 endpoint.
-              </p>
-              <div className="credit-links">
-                <ExternalCreditLink href="https://edhtop16.com/">
-                  Visit EDHTop16
-                </ExternalCreditLink>
-                <ExternalCreditLink href="https://edhtop16.com/about">
-                  About EDHTop16 data
-                </ExternalCreditLink>
-              </div>
-            </div>
-          </section>
-
-          <section className="credit-source-card">
-            <div className="credit-source-icon edhrec" aria-hidden="true">
-              <ScrollText size={19} />
-            </div>
-            <div>
-              <div className="credit-source-heading">
-                <h3>EDHREC-derived popularity</h3>
-                <span>Restricted provenance</span>
-              </div>
-              <p>
-                The app does not scrape EDHREC or call undocumented endpoints. Detailed
-                commander-conditioned counts may enter only through a provider-authorized
-                aggregate import with recorded provenance. Scryfall&apos;s optional
-                <code> edhrec_rank</code> remains a separate weak, overall popularity ordinal.
-                Popularity is not proof that two cards function together.
-              </p>
-              <div className="credit-links">
-                <ExternalCreditLink href="https://edhrec.com/">Visit EDHREC</ExternalCreditLink>
-              </div>
-            </div>
-          </section>
-
           <section className="credits-notice-card" aria-labelledby="open-source-heading">
             <ShieldCheck size={19} aria-hidden="true" />
             <div>
@@ -320,8 +219,7 @@ export function CreditsPanel({ onClose }: CreditsPanelProps) {
               Commander Deck Analyzer is unofficial Fan Content permitted under the Fan Content
               Policy. Not approved or endorsed by Wizards. Portions of the materials used are
               property of Wizards of the Coast. © Wizards of the Coast LLC. This app is not
-              affiliated with Scryfall, Commander Spellbook, phase-rs, TopDeck.gg, EDHTop16,
-              Moxfield, or EDHREC.
+              affiliated with Scryfall, Commander Spellbook, or Moxfield.
             </p>
           </section>
         </div>

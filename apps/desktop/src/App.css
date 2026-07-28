@@ -1654,14 +1654,14 @@ textarea::placeholder {
   background: rgba(104, 213, 166, 0.045);
 }
 
-.metagame-definition {
+.model-definition {
   margin: 3px 0 0;
   color: var(--muted);
   font-size: 8.75px;
   line-height: 1.55;
 }
 
-.metagame-definition {
+.model-definition {
   margin: 10px 1px 0;
   padding: 8px 10px;
   border-left: 2px solid rgba(157, 140, 255, 0.48);

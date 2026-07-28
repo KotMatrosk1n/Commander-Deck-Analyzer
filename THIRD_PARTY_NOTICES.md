@@ -52,35 +52,3 @@ the application source or installer.
 
 Commander Spellbook:
 https://commanderspellbook.com/
-
-## Optional aggregate data
-
-The source includes an optional TopDeck.gg aggregate import boundary. It uses
-the documented tournaments API only after a user supplies a key and starts an
-update. The key is not persisted. Player details and raw decklists are not
-stored.
-
-Data provided by TopDeck.gg:
-https://topdeck.gg/
-
-EDHTop16 is credited as a research reference. No EDHTop16 payload is included
-or fetched through an undocumented endpoint.
-
-EDHTop16:
-https://edhtop16.com/
-
-EDHREC data is not scraped or bundled. The optional aggregate importer accepts
-only a local dataset whose metadata records permission or a published license
-for the intended use.
-
-EDHREC:
-https://edhrec.com/
-
-## Optional engine boundary
-
-The source includes a versioned host boundary for a future separately installed
-phase-rs engine pack. No phase-rs source, worker executable, or card data is
-included or active.
-
-phase-rs:
-https://github.com/phase-rs/phase

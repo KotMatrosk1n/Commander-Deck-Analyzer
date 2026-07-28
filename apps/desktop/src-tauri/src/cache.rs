@@ -21,7 +21,6 @@ use crate::interaction_scenarios::{
     INTERACTION_SCENARIO_INPUT_VERSION, INTERACTION_SCENARIO_REPORT_VERSION,
 };
 use crate::mana::MANA_MODEL_VERSION;
-use crate::metagame::METAGAME_CONTEXT_MODEL_VERSION;
 use crate::parser::normalize_card_name;
 use crate::policy_store::PolicyPackageSnapshot;
 use crate::rules_capabilities::RULE_CAPABILITY_MODEL_VERSION;
@@ -38,7 +37,7 @@ use crate::strict_engine::STRICT_ENGINE_VERSION;
 use crate::turn_planner::TURN_PLANNER_VERSION;
 
 const CACHE_SCHEMA_VERSION: &str = "1";
-pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-41";
+pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-42";
 const ANALYSIS_IMPLEMENTATION_SHA256: &str = env!("CDA_ANALYSIS_IMPLEMENTATION_SHA256");
 const MAX_CACHE_ENTRIES: usize = 64;
 const ALLOWED_PRODUCTION_SIMULATION_COUNTS: [u32; 3] = [1_000, 5_000, 10_000];
@@ -82,7 +81,6 @@ struct CacheKeyMaterial<'a> {
     policy_data: PolicyDataFingerprint<'a>,
     semantic_data: SemanticDataFingerprint<'a>,
     comprehensive_rules: ComprehensiveRulesFingerprint<'a>,
-    metagame: MetagameFingerprint<'a>,
     ability_ir: &'static str,
     synergy_graph: &'static str,
     role_model: &'static str,
@@ -181,36 +179,12 @@ struct ComprehensiveRulesFingerprint<'a> {
     capability_model: &'static str,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MetagameFingerprint<'a> {
-    model_version: &'static str,
-    topdeck: TopDeckMetagameFingerprint<'a>,
-    edhrec: EdhrecMetagameFingerprint<'a>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TopDeckMetagameFingerprint<'a> {
-    state: &'static str,
-    snapshot_integrity_sha256: Option<&'a str>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EdhrecMetagameFingerprint<'a> {
-    state: &'static str,
-    snapshot_sha256: Option<&'a str>,
-}
-
 pub(crate) struct AnalysisCacheData<'a> {
     pub card_data: &'a DataStatus,
     pub combo_data: Option<&'a ComboStoreStatus>,
     pub policy_data: &'a PolicyPackageSnapshot,
     pub semantic_data: &'a SemanticPackageSnapshot,
     pub comprehensive_rules: Option<&'a ComprehensiveRulesSnapshot>,
-    pub topdeck_snapshot_integrity_sha256: Option<&'a str>,
-    pub edhrec_snapshot_sha256: Option<&'a str>,
 }
 
 impl AnalysisCache {
@@ -320,17 +294,6 @@ impl AnalysisCache {
                     .comprehensive_rules
                     .map(|rules| rules.parser_version.as_str()),
                 capability_model: RULE_CAPABILITY_MODEL_VERSION,
-            },
-            metagame: MetagameFingerprint {
-                model_version: METAGAME_CONTEXT_MODEL_VERSION,
-                topdeck: TopDeckMetagameFingerprint {
-                    state: installation_state(data.topdeck_snapshot_integrity_sha256),
-                    snapshot_integrity_sha256: data.topdeck_snapshot_integrity_sha256,
-                },
-                edhrec: EdhrecMetagameFingerprint {
-                    state: installation_state(data.edhrec_snapshot_sha256),
-                    snapshot_sha256: data.edhrec_snapshot_sha256,
-                },
             },
             ability_ir: ABILITY_IR_VERSION,
             synergy_graph: SYNERGY_GRAPH_VERSION,
@@ -568,15 +531,6 @@ fn report_matches_versioned_data_contract(report: &AnalysisReport) -> bool {
             .combo_snapshot_sha256
             .as_deref()
             .is_none_or(is_lowercase_sha256)
-        && versions.metagame_context_model.as_deref() == Some(METAGAME_CONTEXT_MODEL_VERSION)
-        && versions
-            .topdeck_snapshot_integrity_sha256
-            .as_deref()
-            .is_none_or(is_lowercase_sha256)
-        && versions
-            .edhrec_snapshot_sha256
-            .as_deref()
-            .is_none_or(is_lowercase_sha256)
 }
 
 fn report_matches_deck_identity_contract(report: &AnalysisReport) -> bool {
@@ -636,8 +590,6 @@ fn validate_cache_identity(
     if let Some(rules) = data.comprehensive_rules {
         require_sha256(&rules.snapshot_sha256, "Comprehensive Rules snapshot")?;
     }
-    optional_sha256(data.topdeck_snapshot_integrity_sha256, "TopDeck snapshot")?;
-    optional_sha256(data.edhrec_snapshot_sha256, "EDHREC snapshot")?;
     Ok(())
 }
 
@@ -1299,14 +1251,6 @@ fn report_matches_generic_milestone_contract(report: &AnalysisReport) -> bool {
                 simulations,
             )
         })
-}
-
-fn installation_state(snapshot_sha256: Option<&str>) -> &'static str {
-    if snapshot_sha256.is_some() {
-        "installed"
-    } else {
-        "missing"
-    }
 }
 
 fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {

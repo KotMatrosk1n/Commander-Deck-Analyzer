@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -12,20 +12,14 @@ use crate::combo_store::{
 };
 use crate::comprehensive_rules::ComprehensiveRulesSnapshot;
 use crate::domain::{
-    AnalysisOptions, AnalysisProgress, AnalysisReport, AnalysisStage, AnalyzeRequest,
-    CardDefinition, DeckEntry, DeckIntent, InteractionProfile, KnownLine, KnownLineOutcome,
-    LineRequirement, MulliganPolicy, PilotPolicy,
+    AnalysisOptions, AnalysisProgress, AnalysisReport, AnalysisStage, AnalyzeRequest, DeckIntent,
+    InteractionProfile, KnownLine, KnownLineOutcome, LineRequirement, MulliganPolicy, PilotPolicy,
 };
-use crate::edhrec_data::EdhrecAggregateSnapshot;
 use crate::execution_coverage::{
     CombinedCardRecord, CoverageSnapshotProvenance, ExecutionMetric,
     build_execution_coverage_manifest,
 };
 use crate::mana::build_mana_model_with_commanders;
-use crate::metagame::{
-    METAGAME_CONTEXT_MODEL_VERSION, MetagameCommanderInput, MetagameContextError,
-    MetagameDeckCardInput, MetagameDeckInput, build_metagame_context,
-};
 use crate::parser::{normalize_card_name, parse_decklist};
 use crate::policy_store::PolicyPackageSnapshot;
 use crate::scoring::{ScoreInputs, score_analysis};
@@ -34,7 +28,6 @@ use crate::semantics::{COMBO_CATALOG_VERSION, compile_deck_with_rules_and_semant
 use crate::simulation::{
     SIMULATION_ENGINE_VERSION, simulate_opening_hands_with_mana, simulate_win_speed_with_mana,
 };
-use crate::topdeck_data::TopDeckEdhSnapshot;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AnalysisError {
@@ -59,9 +52,6 @@ pub struct AnalysisSnapshots {
     pub policy: PolicyPackageSnapshot,
     pub semantics: SemanticPackageSnapshot,
     pub comprehensive_rules: Option<ComprehensiveRulesSnapshot>,
-    pub topdeck: Option<TopDeckEdhSnapshot>,
-    pub edhrec: Option<EdhrecAggregateSnapshot>,
-    pub metagame_load_warnings: Vec<String>,
 }
 
 struct InternalAnalysisOptions {
@@ -159,9 +149,6 @@ async fn analyze_internal(
         policy: policy_snapshot,
         semantics: semantic_snapshot,
         comprehensive_rules,
-        topdeck,
-        edhrec,
-        metagame_load_warnings,
     } = snapshots;
     let started = Instant::now();
     ensure_not_cancelled(&cancellation)?;
@@ -212,8 +199,7 @@ async fn analyze_internal(
 
     let status_before_resolution = repository.status()?;
     let combo_status = combo_store.status().ok();
-    if metagame_load_warnings.is_empty()
-        && let Some(cache) = &cache
+    if let Some(cache) = &cache
         && let Ok(key) = cache.key(
             &parsed.canonical_text,
             &commander_names,
@@ -224,12 +210,6 @@ async fn analyze_internal(
                 policy_data: &policy_snapshot,
                 semantic_data: &semantic_snapshot,
                 comprehensive_rules: comprehensive_rules.as_ref(),
-                topdeck_snapshot_integrity_sha256: topdeck
-                    .as_ref()
-                    .map(|snapshot| snapshot.snapshot_integrity_sha256.as_str()),
-                edhrec_snapshot_sha256: edhrec
-                    .as_ref()
-                    .map(|snapshot| snapshot.snapshot_sha256.as_str()),
             },
         )
         && let Ok(Some(cached)) = cache.get(&key)
@@ -243,7 +223,7 @@ async fn analyze_internal(
             1,
             1,
             0.96,
-            "Deck, options, card, combo, policy, metagame snapshots, and model versions exactly match a local report",
+            "Deck, options, card, combo, policy, rules, and model versions exactly match a local report",
         );
         let mut cached_report = cached.report;
         cached_report.run_id = request.run_id.clone();
@@ -635,15 +615,6 @@ async fn analyze_internal(
         compact_execution_coverage: &compact_execution_coverage,
         elapsed_ms: started.elapsed().as_millis(),
     });
-    attach_metagame_context(
-        &mut report_result,
-        &parsed.entries,
-        &commander_names,
-        &definitions,
-        topdeck.as_ref(),
-        edhrec.as_ref(),
-        &metagame_load_warnings,
-    );
     report_result.win_speed.coverage_manifest_sha256 =
         Some(execution_coverage.fingerprint_sha256.clone());
     if execution_coverage
@@ -795,8 +766,7 @@ async fn analyze_internal(
     report_result.cache.hit = false;
     report_result.cache.created_at = chrono::Utc::now().to_rfc3339();
     report_result.cache.key_version = CACHE_KEY_VERSION.into();
-    if metagame_load_warnings.is_empty()
-        && let Some(cache) = &cache
+    if let Some(cache) = &cache
         && let Ok(cache_key) = cache.key(
             &parsed.canonical_text,
             &commander_names,
@@ -807,12 +777,6 @@ async fn analyze_internal(
                 policy_data: &policy_snapshot,
                 semantic_data: &semantic_snapshot,
                 comprehensive_rules: comprehensive_rules.as_ref(),
-                topdeck_snapshot_integrity_sha256: topdeck
-                    .as_ref()
-                    .map(|snapshot| snapshot.snapshot_integrity_sha256.as_str()),
-                edhrec_snapshot_sha256: edhrec
-                    .as_ref()
-                    .map(|snapshot| snapshot.snapshot_sha256.as_str()),
             },
         )
     {
@@ -852,121 +816,6 @@ fn insert_unique_coverage_record(
     }
     records.insert(identity, record);
     Ok(())
-}
-
-fn attach_metagame_context(
-    report: &mut AnalysisReport,
-    entries: &[DeckEntry],
-    commander_names: &[String],
-    definitions: &HashMap<String, CardDefinition>,
-    topdeck: Option<&TopDeckEdhSnapshot>,
-    edhrec: Option<&EdhrecAggregateSnapshot>,
-    load_warnings: &[String],
-) {
-    report.versions.metagame_context_model = Some(METAGAME_CONTEXT_MODEL_VERSION.into());
-    report.versions.topdeck_snapshot_integrity_sha256 =
-        topdeck.map(|snapshot| snapshot.snapshot_integrity_sha256.clone());
-    report.versions.edhrec_snapshot_sha256 =
-        edhrec.map(|snapshot| snapshot.snapshot_sha256.clone());
-
-    let cards_without_oracle_ids = entries
-        .iter()
-        .filter_map(|entry| definition_for_name(&entry.name, definitions))
-        .filter(|definition| definition.oracle_id.is_none())
-        .map(|definition| definition.name.clone())
-        .collect::<BTreeSet<_>>();
-    if !cards_without_oracle_ids.is_empty() {
-        report.coverage.notes.push(format!(
-            "{} resolved unique card identit{} lack{} Oracle IDs and therefore could not be matched against EDHREC aggregates; they remain unknown rather than negative evidence.",
-            cards_without_oracle_ids.len(),
-            if cards_without_oracle_ids.len() == 1 {
-                "y"
-            } else {
-                "ies"
-            },
-            if cards_without_oracle_ids.len() == 1 {
-                "s"
-            } else {
-                ""
-            }
-        ));
-    }
-
-    match build_metagame_deck_input(entries, commander_names, definitions)
-        .and_then(|deck| build_metagame_context(&deck, topdeck, edhrec))
-    {
-        Ok(context) => report.metagame = Some(context),
-        Err(error) => report.coverage.notes.push(format!(
-            "Optional metagame context was unavailable; bracket scoring and simulation completed without it: {error}"
-        )),
-    }
-    report.coverage.notes.extend(load_warnings.iter().cloned());
-}
-
-fn build_metagame_deck_input(
-    entries: &[DeckEntry],
-    commander_names: &[String],
-    definitions: &HashMap<String, CardDefinition>,
-) -> Result<MetagameDeckInput, MetagameContextError> {
-    let mut commanders = Vec::with_capacity(commander_names.len());
-    let mut oracle_cards = BTreeMap::<String, String>::new();
-    for selected_name in commander_names {
-        let definition = definition_for_name(selected_name, definitions).ok_or_else(|| {
-            MetagameContextError::InvalidInput(format!(
-                "selected commander `{selected_name}` does not have a resolved canonical card definition"
-            ))
-        })?;
-        let oracle_id = definition.oracle_id.as_ref().ok_or_else(|| {
-            MetagameContextError::InvalidInput(format!(
-                "selected commander `{}` does not have an Oracle identity",
-                definition.name
-            ))
-        })?;
-        let oracle_id = oracle_id.to_ascii_lowercase();
-        commanders.push(MetagameCommanderInput {
-            name: definition.name.clone(),
-            oracle_id: oracle_id.clone(),
-        });
-        oracle_cards
-            .entry(oracle_id)
-            .or_insert_with(|| definition.name.clone());
-    }
-
-    for entry in entries {
-        let Some(definition) = definition_for_name(&entry.name, definitions) else {
-            continue;
-        };
-        let Some(oracle_id) = definition.oracle_id.as_ref() else {
-            continue;
-        };
-        oracle_cards
-            .entry(oracle_id.to_ascii_lowercase())
-            .or_insert_with(|| definition.name.clone());
-    }
-
-    Ok(MetagameDeckInput {
-        commanders,
-        cards: oracle_cards
-            .into_iter()
-            .map(|(oracle_id, display_name)| MetagameDeckCardInput {
-                oracle_id,
-                display_name,
-            })
-            .collect(),
-    })
-}
-
-fn definition_for_name<'a>(
-    name: &str,
-    definitions: &'a HashMap<String, CardDefinition>,
-) -> Option<&'a CardDefinition> {
-    let normalized = normalize_card_name(name);
-    definitions.get(&normalized).or_else(|| {
-        definitions.values().find(|definition| {
-            definition.normalized_name == normalized
-                || normalize_card_name(&definition.name) == normalized
-        })
-    })
 }
 
 fn spellbook_match_to_known_line(candidate: LocalComboMatch) -> Option<KnownLine> {

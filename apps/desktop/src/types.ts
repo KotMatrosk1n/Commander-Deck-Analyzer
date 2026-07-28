@@ -72,128 +72,6 @@ export type SimulationFidelity =
   | "blockedUnsupported";
 export type LegalityStatus = "legal" | "illegal" | "unknown";
 
-export interface ProviderAttribution {
-  text: string;
-  url: string;
-  requiredInDerivedDisplays: boolean;
-}
-
-export interface ProviderExportPolicy {
-  localDerivedDisplayAllowed: boolean;
-  shareableDerivedExportAllowed: boolean;
-  rawSourceExportAllowed: boolean;
-  attributionRequired: boolean;
-  reason: string;
-}
-
-export interface MetagameContextReport {
-  modelVersion: string;
-  usePolicy: {
-    disposition: "reportOnly";
-    affectsBracketRating: false;
-    affectsSimulation: false;
-    affectsFunctionalSynergy: false;
-  };
-  topdeck: {
-    availability:
-      | "notInstalled"
-      | "exactCommanderNotObserved"
-      | "exactCommanderObserved";
-    format: "edh";
-    competitiveClassification: "notInferred";
-    matchedCommanders: string[];
-    source?: {
-      schemaVersion: string;
-      ingestorVersion: string;
-      datasetName: string;
-      installedAt: string;
-      endpoint: string;
-      queryScope: TopDeckEdhQueryScope;
-      requestFingerprint: string;
-      sourceResponseSha256: string;
-      cacheFingerprint: string;
-      snapshotIntegritySha256: string;
-    } | null;
-    observation: {
-      sourceTournamentCount: number;
-      matchedTournamentCount: number;
-      matchedLeagueCount: number;
-      matchedEntries: number;
-      wins: number;
-      draws: number;
-      losses: number;
-      reportedResultCount: number;
-      reportedRecordRate?: number | null;
-      sourceIdentifiedEntries: number;
-      sourceUnidentifiedEntries: number;
-      identifiedEntryShare?: number | null;
-      earliestMatchedStart?: number | null;
-      latestMatchedStart?: number | null;
-      rateDefinition: string;
-    };
-    attribution: ProviderAttribution;
-    exportPolicy: ProviderExportPolicy;
-    unknownIsNegativeEvidence: boolean;
-    limitations: string[];
-  };
-  edhrec: {
-    availability:
-      | "notInstalled"
-      | "exactUnthemedCommanderScopeNotObserved"
-      | "exactUnthemedCommanderScopeObserved";
-    scopeKind?: "unthemedCommander" | null;
-    matchedCommanderOracleIds: string[];
-    source?: {
-      schemaVersion: string;
-      derivationVersion: string;
-      generatedAt: string;
-      installedAt: string;
-      snapshotSha256: string;
-      timeWindow: EdhrecTimeWindow;
-      providerName: string;
-      authorizationBasis: EdhrecAuthorizationBasis;
-      licenseOrAgreement: string;
-      authorizationExpiresAt?: string | null;
-      termsUrl?: string | null;
-      authorizationReferencePresent: boolean;
-      sourceMixCount: number;
-      deduplicationNotes: string;
-    } | null;
-    scopeDeckCount?: number | null;
-    commanderRank?: number | null;
-    deckLibraryOracleCardCount: number;
-    matchedCardCount: number;
-    unknownCardCount: number;
-    facts: {
-      cardOracleId: string;
-      displayName: string;
-      inclusionDeckCount: number;
-      eligibleDeckCount: number;
-      inclusionRate: number;
-      colorIdentityInclusionDeckCount: number;
-      colorIdentityEligibleDeckCount: number;
-      colorIdentityBaselineRate: number;
-      differentialPopularity: number;
-      differentialPopularityPercentagePoints: number;
-    }[];
-    unknownCards: {
-      cardOracleId: string;
-      displayName: string;
-      reason:
-        | "snapshotUnavailable"
-        | "unthemedScopeUnavailable"
-        | "cardFactUnavailable";
-      interpretation: string;
-    }[];
-    ignoredMatchingThemeScopeCount: number;
-    attribution?: ProviderAttribution | null;
-    exportPolicy: ProviderExportPolicy;
-    unknownIsNegativeEvidence: boolean;
-    limitations: string[];
-  };
-  interpretationNotes: string[];
-}
-
 export interface AnalysisReport {
   runId: string;
   deck: {
@@ -528,8 +406,6 @@ export interface AnalysisReport {
       }[];
     } | null;
   };
-  /** Optional report-only context. It is never consumed by scoring or simulation. */
-  metagame?: MetagameContextReport | null;
   evidence: {
     direction: "raises" | "lowers" | "neutral";
     title: string;
@@ -618,9 +494,6 @@ export interface AnalysisReport {
     turnPlanner?: string;
     strictEngine?: string;
     executionCoverageCompiler?: string;
-    metagameContextModel?: string;
-    topdeckSnapshotIntegritySha256?: string;
-    edhrecSnapshotSha256?: string;
     bracketModel: string;
     comboCatalog?: string;
     comboSnapshotSha256?: string;
@@ -1021,93 +894,6 @@ export interface ComprehensiveRulesUpdateProgress {
 export type ComprehensiveRulesUpdateOutcome =
   | { outcome: "installed"; status: ComprehensiveRulesStatus }
   | { outcome: "notModified"; status: ComprehensiveRulesStatus };
-
-export interface TopDeckEdhQueryScope {
-  start: number | null;
-  end: number | null;
-  last: number | null;
-  participantMin: number | null;
-  participantMax: number | null;
-  includeLeagues: boolean;
-}
-
-export interface TopDeckEdhUpdateRequest {
-  apiKey: string;
-  scope: TopDeckEdhQueryScope;
-}
-
-export interface TopDeckEdhStatus {
-  ready: boolean;
-  schemaVersion: string;
-  ingestorVersion: string;
-  datasetName: string;
-  installedAt: string | null;
-  endpoint: string;
-  queryScope: TopDeckEdhQueryScope | null;
-  requestFingerprint: string | null;
-  sourceResponseSha256: string | null;
-  sourceResponseBytes: number | null;
-  cacheFingerprint: string | null;
-  snapshotIntegritySha256: string | null;
-  tournamentCount: number;
-  standingCount: number;
-  identifiedCommanderEntries: number;
-  unidentifiedEntries: number;
-  commanderArchetypeCount: number;
-  attributionText: string;
-  attributionUrl: string;
-  authenticityBasis: string;
-  privacySummary: string;
-  message: string;
-}
-
-export interface TopDeckEdhUpdateProgress {
-  phase: string;
-  completedUnits: number;
-  totalUnits: number | null;
-  progress: number;
-  detail: string;
-}
-
-export type TopDeckEdhUpdateOutcome =
-  | { outcome: "installed"; status: TopDeckEdhStatus }
-  | { outcome: "unchanged"; status: TopDeckEdhStatus };
-
-export type EdhrecAuthorizationBasis =
-  | "writtenProviderAgreement"
-  | "providerPublishedDataLicense"
-  | "providerSuppliedAuthorizedExport";
-
-export interface EdhrecTimeWindow {
-  startDate: string;
-  endDate: string;
-  label: string | null;
-}
-
-export interface EdhrecDataStatus {
-  ready: boolean;
-  schemaVersion: string;
-  derivationVersion: string;
-  generatedAt: string | null;
-  installedAt: string | null;
-  snapshotSha256: string | null;
-  sourceBytes: number | null;
-  timeWindow: EdhrecTimeWindow | null;
-  scopeCount: number;
-  cardFactCount: number;
-  providerName: string | null;
-  authorizationBasis: EdhrecAuthorizationBasis | null;
-  licenseOrAgreement: string | null;
-  authorizationExpiresAt: string | null;
-  redistributionAllowed: boolean;
-  attribution: string | null;
-  authenticityBasis: string;
-  message: string;
-}
-
-export type EdhrecImportOutcome =
-  | { outcome: "installed"; status: EdhrecDataStatus }
-  | { outcome: "unchanged"; status: EdhrecDataStatus };
 
 export type PolicyPackageOrigin = "bundled" | "localImport" | "bundledFallback";
 

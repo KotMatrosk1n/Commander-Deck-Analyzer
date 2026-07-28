@@ -276,7 +276,7 @@ pub fn score_analysis(inputs: ScoreInputs<'_>) -> AnalysisReport {
                 .into(),
             "Bracket weights are an uncalibrated model distribution, not observed real-world probabilities; high confidence remains disabled until an independently reviewed corpus passes the calibration gate."
                 .into(),
-            "The model uses only deck-observable evidence; player-declared intent and self-selected metagame labels are not accepted as rating inputs.".into(),
+            "The model uses only deck-observable evidence; player-declared intent and self-selected table labels are not accepted as rating inputs.".into(),
             "The deterministic policy package enforces legality, Game Changer floors, and sufficiently confident mass-land-denial floors. Combo timing, extra-turn chaining, and published turn expectations remain explicitly labeled guidance or manual-review context."
                 .into(),
             format!(
@@ -335,7 +335,6 @@ pub fn score_analysis(inputs: ScoreInputs<'_>) -> AnalysisReport {
         coverage,
         evidence,
         policy: inputs.policy.clone(),
-        metagame: None,
         assumptions: AnalysisAssumptions {
             opening_hand_simulations: inputs.options.opening_hand_simulations,
             game_simulations: inputs.options.game_simulations,
@@ -384,9 +383,6 @@ pub fn score_analysis(inputs: ScoreInputs<'_>) -> AnalysisReport {
             bracket_model: BRACKET_MODEL_VERSION.into(),
             combo_catalog: None,
             combo_snapshot_sha256: None,
-            metagame_context_model: None,
-            topdeck_snapshot_integrity_sha256: None,
-            edhrec_snapshot_sha256: None,
         },
         cache: AnalysisCacheInfo::default(),
         elapsed_ms: inputs.elapsed_ms,

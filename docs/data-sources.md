@@ -32,11 +32,3 @@ in this repository or the installer.
 A user can request the official Wizards text document. The app stores and
 indexes the file locally for reference. Downloading the document does not mean
 the analyzer executes every rule.
-
-## Aggregate observations
-
-Optional aggregate import boundaries are designed to retain source, version,
-time, and authorization information. Raw player records and raw decklists are
-not stored by those workflows.
-
-See [Third-party notices](../THIRD_PARTY_NOTICES.md) for attribution and links.

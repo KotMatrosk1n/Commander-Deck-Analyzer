@@ -24,12 +24,12 @@ const SCRYFALL_COLLECTION_URL: &str = "https://api.scryfall.com/cards/collection
 const SCRYFALL_BULK_URL: &str = "https://api.scryfall.com/bulk-data/oracle-cards";
 const USER_AGENT_VALUE: &str = concat!("CommanderDeckAnalyzer/", env!("CARGO_PKG_VERSION"));
 const ACCEPT_VALUE: &str = "application/json;q=0.9,*/*;q=0.8";
-const CARD_DATA_SCHEMA_VERSION: &str = "5";
-const SCRYFALL_CARD_INGESTOR_VERSION: &str = "scryfall-oracle-cards-2";
+const CARD_DATA_SCHEMA_VERSION: &str = "6";
+const SCRYFALL_CARD_INGESTOR_VERSION: &str = "scryfall-oracle-cards-3";
 /// Reviewed against Scryfall's public `api-types` CardFields/CardFace contract
 /// at this upstream revision. Fields outside this versioned classification are
 /// retained and blocked by execution coverage instead of being discarded.
-pub(crate) const SCRYFALL_FIELD_CLASSIFICATION_VERSION: &str = "scryfall-card-fields/2026-07-23/api-types-c16cdfba9e09a0d3aef9ef0db6c36153a7529615+live-union/v1";
+pub(crate) const SCRYFALL_FIELD_CLASSIFICATION_VERSION: &str = "scryfall-card-fields/2026-07-28/api-types-c16cdfba9e09a0d3aef9ef0db6c36153a7529615+live-union/v2";
 const MINIMUM_FULL_SNAPSHOT_CARDS: u64 = 25_000;
 const MAXIMUM_BULK_METADATA_BYTES: usize = 1024 * 1024;
 const MAXIMUM_BULK_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
@@ -135,7 +135,7 @@ impl CardRepository {
             "SELECT name, normalized_name, oracle_id, mana_value, mana_cost, type_line,
                     oracle_text, layout, colors, color_indicator, color_identity, keywords,
                     produced_mana, power, toughness, loyalty, defense, faces_json,
-                    related_components_json, image_uri, legal_commander, edhrec_rank, updated_at,
+                    related_components_json, image_uri, legal_commander, updated_at,
                     root_mana_value, hand_modifier, life_modifier, attraction_lights,
                     commander_legality, unreviewed_fields_json, source_schema_version,
                     game_changer
@@ -147,7 +147,7 @@ impl CardRepository {
                     cards.colors, cards.color_indicator, cards.color_identity, cards.keywords,
                     cards.produced_mana, cards.power, cards.toughness, cards.loyalty,
                     cards.defense, cards.faces_json, cards.related_components_json,
-                    cards.image_uri, cards.legal_commander, cards.edhrec_rank, cards.updated_at,
+                    cards.image_uri, cards.legal_commander, cards.updated_at,
                     cards.root_mana_value, cards.hand_modifier, cards.life_modifier,
                     cards.attraction_lights, cards.commander_legality,
                     cards.unreviewed_fields_json, cards.source_schema_version,
@@ -606,7 +606,6 @@ fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
             related_components_json TEXT NOT NULL,
             image_uri TEXT,
             legal_commander INTEGER NOT NULL,
-            edhrec_rank INTEGER,
             updated_at TEXT NOT NULL,
             root_mana_value REAL,
             hand_modifier TEXT,
@@ -619,9 +618,6 @@ fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
          );
          CREATE INDEX IF NOT EXISTS cards_oracle_id ON cards(oracle_id);",
     )?;
-    if !column_exists(connection, "cards", "edhrec_rank")? {
-        connection.execute("ALTER TABLE cards ADD COLUMN edhrec_rank INTEGER", [])?;
-    }
     for (column, migration) in [
         (
             "layout",
@@ -781,12 +777,11 @@ fn seed_basic_lands(connection: &Connection) -> Result<(), rusqlite::Error> {
             faces: Vec::new(),
             related_components: Vec::new(),
             image_uri: None,
-            edhrec_rank: None,
             game_changer: None,
             commander_legality: None,
             legal_commander: true,
             unreviewed_fields: BTreeMap::new(),
-            // Legacy compatibility records predate a complete upstream schema-5
+            // Legacy compatibility records predate a complete upstream schema-6
             // capture and therefore remain strict-gate blockers.
             source_schema_version: String::new(),
             updated_at: now.clone(),
@@ -801,13 +796,13 @@ const UPSERT_CARD_SQL: &str = "INSERT INTO cards (
         normalized_name, name, oracle_id, mana_value, mana_cost, type_line, oracle_text,
         layout, colors, color_indicator, color_identity, keywords, produced_mana, power,
         toughness, loyalty, defense, faces_json, related_components_json, image_uri,
-        legal_commander, edhrec_rank, updated_at, root_mana_value, hand_modifier,
+        legal_commander, updated_at, root_mana_value, hand_modifier,
         life_modifier, attraction_lights, commander_legality, unreviewed_fields_json,
         source_schema_version, game_changer
      ) VALUES (
         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
         ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-        ?29, ?30, ?31
+        ?29, ?30
      )
      ON CONFLICT(normalized_name) DO UPDATE SET
         name = excluded.name,
@@ -830,7 +825,6 @@ const UPSERT_CARD_SQL: &str = "INSERT INTO cards (
         related_components_json = excluded.related_components_json,
         image_uri = excluded.image_uri,
         legal_commander = excluded.legal_commander,
-        edhrec_rank = excluded.edhrec_rank,
         updated_at = excluded.updated_at,
         root_mana_value = excluded.root_mana_value,
         hand_modifier = excluded.hand_modifier,
@@ -876,7 +870,6 @@ fn insert_card(
         related_components,
         card.image_uri,
         card.legal_commander as i64,
-        card.edhrec_rank,
         card.updated_at,
         card.root_mana_value,
         card.hand_modifier,
@@ -898,14 +891,14 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<CardDefinition, rusqlite::Erro
     let produced_mana: String = row.get(12)?;
     let faces: String = row.get(17)?;
     let related_components: String = row.get(18)?;
-    let attraction_lights: String = row.get(26)?;
-    let unreviewed_fields: String = row.get(28)?;
+    let attraction_lights: String = row.get(25)?;
+    let unreviewed_fields: String = row.get(27)?;
     Ok(CardDefinition {
         name: row.get(0)?,
         normalized_name: row.get(1)?,
         oracle_id: row.get(2)?,
         layout: row.get(7)?,
-        root_mana_value: row.get(23)?,
+        root_mana_value: row.get(22)?,
         mana_value: row.get(3)?,
         mana_cost: row.get(4)?,
         type_line: row.get(5)?,
@@ -919,19 +912,18 @@ fn row_to_card(row: &rusqlite::Row<'_>) -> Result<CardDefinition, rusqlite::Erro
         toughness: row.get(14)?,
         loyalty: row.get(15)?,
         defense: row.get(16)?,
-        hand_modifier: row.get(24)?,
-        life_modifier: row.get(25)?,
-        attraction_lights: deserialize_json_column(26, &attraction_lights)?,
+        hand_modifier: row.get(23)?,
+        life_modifier: row.get(24)?,
+        attraction_lights: deserialize_json_column(25, &attraction_lights)?,
         faces: deserialize_json_column(17, &faces)?,
         related_components: deserialize_json_column(18, &related_components)?,
         image_uri: row.get(19)?,
         legal_commander: row.get::<_, i64>(20)? != 0,
-        edhrec_rank: row.get(21)?,
-        game_changer: row.get::<_, Option<i64>>(30)?.map(|value| value != 0),
-        commander_legality: row.get(27)?,
-        unreviewed_fields: deserialize_json_column(28, &unreviewed_fields)?,
-        source_schema_version: row.get(29)?,
-        updated_at: row.get(22)?,
+        game_changer: row.get::<_, Option<i64>>(29)?.map(|value| value != 0),
+        commander_legality: row.get(26)?,
+        unreviewed_fields: deserialize_json_column(27, &unreviewed_fields)?,
+        source_schema_version: row.get(28)?,
+        updated_at: row.get(21)?,
     })
 }
 
@@ -1096,7 +1088,6 @@ struct ScryfallCard {
     all_parts: Vec<ScryfallRelatedCard>,
     #[serde(default)]
     legalities: HashMap<String, String>,
-    edhrec_rank: Option<u32>,
     game_changer: Option<bool>,
     #[serde(flatten)]
     extra_fields: BTreeMap<String, Value>,
@@ -1129,7 +1120,6 @@ struct ScryfallCardFace {
     life_modifier: Option<String>,
     #[serde(default)]
     attraction_lights: Vec<u8>,
-    edhrec_rank: Option<u32>,
     image_uris: Option<ImageUris>,
     #[serde(flatten)]
     extra_fields: BTreeMap<String, Value>,
@@ -1235,8 +1225,19 @@ fn is_reviewed_non_gameplay_scryfall_field(field: &str) -> bool {
 fn unreviewed_scryfall_fields(fields: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
     fields
         .into_iter()
-        .filter(|(field, _)| !is_reviewed_non_gameplay_scryfall_field(field))
+        .filter(|(field, value)| {
+            !is_reviewed_non_gameplay_scryfall_field(field)
+                && !is_bounded_numeric_rank_metadata(field, value)
+        })
         .collect()
+}
+
+fn is_bounded_numeric_rank_metadata(field: &str, value: &Value) -> bool {
+    field.ends_with("_rank")
+        && (value.is_null()
+            || value
+                .as_u64()
+                .is_some_and(|rank| u32::try_from(rank).is_ok()))
 }
 
 impl From<ScryfallCard> for CardDefinition {
@@ -1293,7 +1294,6 @@ impl From<ScryfallCard> for CardDefinition {
                 hand_modifier: face.hand_modifier.clone(),
                 life_modifier: face.life_modifier.clone(),
                 attraction_lights: face.attraction_lights.clone(),
-                edhrec_rank: face.edhrec_rank,
                 image_uri: face
                     .image_uris
                     .as_ref()
@@ -1345,7 +1345,6 @@ impl From<ScryfallCard> for CardDefinition {
             faces,
             related_components,
             image_uri,
-            edhrec_rank: raw.edhrec_rank,
             game_changer: raw.game_changer,
             commander_legality,
             legal_commander,
