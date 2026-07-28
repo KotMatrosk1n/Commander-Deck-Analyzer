@@ -68,9 +68,9 @@ use crate::empty_library_win::{
     execute_reviewed_library_exile_transaction,
 };
 use crate::interaction_scenarios::{
-    CensoredTurn, EpisodeOutcomeInput, InapplicabilityReason, InteractionScenario,
-    RecoveryObservation, ScenarioApplicability, ScenarioEpisodeInput, ScenarioEventCounters,
-    ScenarioExecutionSource, ScenarioReport, ScenarioReportError, ScenarioReportInput,
+    CensoredTurn, CompactScenarioReport, EpisodeOutcomeInput, InapplicabilityReason,
+    InteractionScenario, RecoveryObservation, ScenarioApplicability, ScenarioEpisodeInput,
+    ScenarioEventCounters, ScenarioExecutionSource, ScenarioReportError, ScenarioReportInput,
     build_scenario_report, compact_scenario_report,
 };
 use crate::interference::{
@@ -99,7 +99,8 @@ const CAST_PLANNER_BEAM_WIDTH: usize = 8;
 const CAST_PLANNER_MAX_EXPANSIONS: usize = 96;
 const CAST_PLANNER_MAX_ACTIONS: usize = 8;
 const CAST_PLANNER_MAX_COMMITTED_ACTIONS: usize = 64;
-const MAX_EPISODE_WORKERS: usize = 8;
+const MAX_EPISODE_WORKERS: usize = 20;
+const OPENING_EPISODE_BATCH_SIZE: u32 = 1_024;
 const COMMANDER_STARTING_LIFE: f32 = 40.0;
 const EARLY_ATTEMPT_DIAGNOSTIC_HORIZON: u8 = 6;
 const COMBAT_DAMAGE_ROUTE_INDEX: usize = usize::MAX;
@@ -180,13 +181,25 @@ struct OpeningBoardState {
     legendary_creature_or_planeswalker_colors: ManaColorMask,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct LondonHandSample {
     hand: Vec<usize>,
     draw_order: Vec<usize>,
     initial_keepable: bool,
     accepted_by_policy: bool,
     paid_mulligans: u8,
+}
+
+#[derive(Debug)]
+struct OpeningEpisodeResult {
+    simulation_index: u32,
+    candidate_orders: Vec<Vec<usize>>,
+    initial_keepable: bool,
+    accepted_by_policy: bool,
+    paid_mulligans: u8,
+    cards_kept: usize,
+    kept_evaluation: HandEvaluation,
+    turn_three_evaluation: HandEvaluation,
 }
 
 struct OpeningCandidateCohort {
@@ -11859,6 +11872,47 @@ fn stage_reviewed_empty_library_win_candidate(
 struct IsolatedScenarioTrace {
     events: ScenarioEventCounters,
     recovery_turn: Option<u8>,
+    opportunity_mask: ScenarioOpportunityMask,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ScenarioOpportunityMask(u16);
+
+impl ScenarioOpportunityMask {
+    fn bit(scenario: InteractionScenario) -> u16 {
+        match scenario {
+            InteractionScenario::TargetedPermanentRemoval => 1 << 0,
+            InteractionScenario::CommanderRemovalRecast => 1 << 1,
+            InteractionScenario::FirstRelevantSpellCountered => 1 << 2,
+            InteractionScenario::CreatureWipe => 1 << 3,
+            InteractionScenario::GraveyardShutdown => 1 << 4,
+            InteractionScenario::GenericTaxStax => 1 << 5,
+            InteractionScenario::RuleOfLawCap => 1 << 6,
+            InteractionScenario::FirstWinAttemptStopped => 1 << 7,
+        }
+    }
+
+    fn record(&mut self, scenario: InteractionScenario) {
+        self.0 |= Self::bit(scenario);
+    }
+
+    fn contains(self, scenario: InteractionScenario) -> bool {
+        self.0 & Self::bit(scenario) != 0
+    }
+
+    fn proves_absent(self, scenario: InteractionScenario) -> bool {
+        matches!(
+            scenario,
+            InteractionScenario::TargetedPermanentRemoval
+                | InteractionScenario::CommanderRemovalRecast
+                | InteractionScenario::FirstRelevantSpellCountered
+                | InteractionScenario::CreatureWipe
+                | InteractionScenario::GraveyardShutdown
+                | InteractionScenario::GenericTaxStax
+                | InteractionScenario::RuleOfLawCap
+                | InteractionScenario::FirstWinAttemptStopped
+        ) && !self.contains(scenario)
+    }
 }
 
 #[derive(Debug)]
@@ -11868,9 +11922,46 @@ struct EpisodeSimulationResult {
 }
 
 #[derive(Debug)]
-struct InterferedEpisodeBatch {
+struct PreparedEpisode {
+    opening: LondonHandSample,
+    rng_after_opening: ChaCha8Rng,
+    opponent_timeline: OpponentEventTimeline,
+    table_activity_timeline: TableActivityTimeline,
+}
+
+#[derive(Debug)]
+struct PreparedBaselineEpisode {
+    preparation: PreparedEpisode,
     outcome: EpisodeOutcome,
-    scenario_episodes: Vec<ScenarioEpisodeInput>,
+    opportunity_mask: ScenarioOpportunityMask,
+}
+
+#[derive(Debug)]
+struct SimulationRuntimeModel {
+    line_activation_costs: Vec<CompiledLineActivationCost>,
+}
+
+impl SimulationRuntimeModel {
+    fn compile(deck: &CompiledDeck) -> Self {
+        Self {
+            line_activation_costs: deck
+                .known_lines
+                .iter()
+                .map(compile_line_activation_cost)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ConditionWorkResult {
+    Interfered {
+        outcome: EpisodeOutcome,
+    },
+    Scenario {
+        collector_index: usize,
+        episode: ScenarioEpisodeInput,
+    },
 }
 
 #[derive(Debug)]
@@ -11904,7 +11995,16 @@ impl IsolatedScenarioRuntime {
         self.applied_turn.is_some()
     }
 
+    fn observe_opportunity(&mut self, scenario: InteractionScenario) {
+        self.trace.opportunity_mask.record(scenario);
+    }
+
     fn activate(&mut self, turn: u8, affected_events: u32) -> bool {
+        debug_assert!(
+            self.scenario
+                .is_some_and(|scenario| self.trace.opportunity_mask.contains(scenario)),
+            "an isolated scenario must record its checkpoint before activation"
+        );
         if self.applied() {
             return false;
         }
@@ -11943,7 +12043,11 @@ fn rule_of_law_blocks_next_spell(
     turn: u8,
     spells_cast_this_turn: u8,
 ) -> bool {
-    if !isolated.is(InteractionScenario::RuleOfLawCap) || spells_cast_this_turn < 1 {
+    if spells_cast_this_turn < 1 {
+        return false;
+    }
+    isolated.observe_opportunity(InteractionScenario::RuleOfLawCap);
+    if !isolated.is(InteractionScenario::RuleOfLawCap) {
         return false;
     }
     if !isolated.applied() {
@@ -11978,6 +12082,27 @@ fn simulate_opening_hands_inner(
     options: &AnalysisOptions,
     seed: u64,
     cancellation: &AtomicBool,
+    report_progress: impl FnMut(u32, u32),
+) -> Result<OpeningHandReport, SimulationError> {
+    let simulations = options.opening_hand_simulations.clamp(100, 100_000);
+    simulate_opening_hands_inner_with_worker_count(
+        deck,
+        mana,
+        options,
+        seed,
+        cancellation,
+        episode_worker_count(simulations),
+        report_progress,
+    )
+}
+
+fn simulate_opening_hands_inner_with_worker_count(
+    deck: &CompiledDeck,
+    mana: Option<&ManaModel>,
+    options: &AnalysisOptions,
+    seed: u64,
+    cancellation: &AtomicBool,
+    worker_count: usize,
     mut report_progress: impl FnMut(u32, u32),
 ) -> Result<OpeningHandReport, SimulationError> {
     if deck.library.len() < 7 {
@@ -11998,59 +12123,54 @@ fn simulate_opening_hands_inner(
     let mut turn_three_color_coverage = 0.0f64;
     let mut candidate_cohort = OpeningCandidateCohort::new(seed, simulations, deck.library.len());
     let reporting_interval = (simulations / 20).max(25);
-    for simulation_index in 0..simulations {
+    let mut batch_start = 0u32;
+    while batch_start < simulations {
         if cancellation.load(Ordering::Relaxed) {
             return Err(SimulationError::Cancelled);
         }
+        let batch_count = (simulations - batch_start).min(OPENING_EPISODE_BATCH_SIZE);
+        let batch_results = ordered_parallel_episode_map(
+            batch_count,
+            worker_count,
+            cancellation,
+            |batch_completed| {
+                let completed = batch_start + batch_completed;
+                if completed.is_multiple_of(reporting_interval) || completed == simulations {
+                    report_progress(completed, simulations);
+                }
+            },
+            |batch_index| {
+                let simulation_index = batch_start + batch_index;
+                Ok(simulate_opening_episode(
+                    deck,
+                    mana_access.as_ref(),
+                    options,
+                    seed,
+                    simulation_index,
+                ))
+            },
+        )?;
 
-        let episode_seed = derive_episode_seed(seed, 0x4841_4e44, simulation_index);
-        let mut rng = ChaCha8Rng::seed_from_u64(episode_seed);
-        let sample = sample_london_hand(
-            deck,
-            mana_access.as_ref(),
-            options,
-            &mut rng,
-            simulation_index,
-            Some(&mut candidate_cohort),
-        );
-        let kept_evaluation = evaluate_cards(deck, mana_access.as_ref(), &sample.hand);
-
-        if sample.initial_keepable {
-            keepable_seven += 1;
+        for result in batch_results {
+            for (attempt, order) in result.candidate_orders.iter().enumerate() {
+                candidate_cohort.record(deck, result.simulation_index, attempt as u8, order);
+            }
+            keepable_seven += u32::from(result.initial_keepable);
+            keepable_after += u32::from(result.accepted_by_policy);
+            total_mulligans += u64::from(result.paid_mulligans);
+            total_cards_kept += result.cards_kept as u64;
+            opening_color_coverage += f64::from(result.kept_evaluation.color_coverage);
+            two_land += u32::from(result.kept_evaluation.lands >= 2);
+            ramp_access += u32::from(result.kept_evaluation.ramp > 0);
+            engine_access += u32::from(
+                result.kept_evaluation.command_zone_plan_access
+                    || result.kept_evaluation.engines > 0
+                    || result.kept_evaluation.tutors > 0,
+            );
+            turn_three_color_coverage += f64::from(result.turn_three_evaluation.color_coverage);
+            three_land_by_turn_three += u32::from(result.turn_three_evaluation.lands >= 3);
         }
-        if sample.accepted_by_policy {
-            keepable_after += 1;
-        }
-        total_mulligans += sample.paid_mulligans as u64;
-        total_cards_kept += sample.hand.len() as u64;
-        opening_color_coverage += kept_evaluation.color_coverage as f64;
-        if kept_evaluation.lands >= 2 {
-            two_land += 1;
-        }
-        if kept_evaluation.ramp > 0 {
-            ramp_access += 1;
-        }
-        if kept_evaluation.command_zone_plan_access
-            || kept_evaluation.engines > 0
-            || kept_evaluation.tutors > 0
-        {
-            engine_access += 1;
-        }
-
-        let mut drawn_through_turn_three = sample.hand.clone();
-        drawn_through_turn_three.extend(sample.draw_order.iter().take(3).copied());
-        let turn_three_evaluation =
-            evaluate_cards(deck, mana_access.as_ref(), &drawn_through_turn_three);
-        turn_three_color_coverage += turn_three_evaluation.color_coverage as f64;
-        if turn_three_evaluation.lands >= 3 {
-            three_land_by_turn_three += 1;
-        }
-
-        if (simulation_index + 1).is_multiple_of(reporting_interval)
-            || simulation_index + 1 == simulations
-        {
-            report_progress(simulation_index + 1, simulations);
-        }
+        batch_start += batch_count;
     }
 
     let denominator = simulations as f32;
@@ -12086,8 +12206,9 @@ fn simulate_opening_hands_inner(
 }
 
 fn bounded_episode_worker_count(available_parallelism: usize, episode_count: u32) -> usize {
+    let reserved_capacity = if available_parallelism <= 8 { 1 } else { 2 };
     available_parallelism
-        .saturating_sub(1)
+        .saturating_sub(reserved_capacity)
         .clamp(1, MAX_EPISODE_WORKERS)
         .min(episode_count.max(1) as usize)
 }
@@ -12229,6 +12350,7 @@ fn simulate_win_speed_inner_with_worker_count(
         return Err(SimulationError::LibraryTooSmall);
     }
     let simulations = options.game_simulations.clamp(100, 50_000);
+    let runtime_model = SimulationRuntimeModel::compile(deck);
     let mut baseline = ScenarioAggregate::default();
     let mut interfered = ScenarioAggregate::default();
     let mut interfered_outcomes = Vec::with_capacity(simulations as usize);
@@ -12243,7 +12365,7 @@ fn simulate_win_speed_inner_with_worker_count(
         .collect::<Vec<_>>();
     let reporting_interval = (simulations / 20).max(25);
 
-    let baseline_outcomes = ordered_parallel_episode_map(
+    let baseline_episodes = ordered_parallel_episode_map(
         simulations,
         worker_count,
         cancellation,
@@ -12255,90 +12377,143 @@ fn simulate_win_speed_inner_with_worker_count(
         |simulation_index| {
             let episode_seed =
                 derive_episode_seed(seed, WIN_SPEED_EPISODE_SEED_DOMAIN, simulation_index);
-            Ok(simulate_episode_inner(
+            let preparation = prepare_episode(deck, mana_access, options, episode_seed);
+            let baseline_result = simulate_prepared_episode_condition(
                 deck,
                 mana_access,
                 options,
-                episode_seed,
                 InteractionProfile::None,
-            ))
+                None,
+                &preparation,
+                &runtime_model,
+            );
+            Ok(PreparedBaselineEpisode {
+                preparation,
+                outcome: baseline_result.outcome,
+                opportunity_mask: baseline_result.scenario_trace.opportunity_mask,
+            })
         },
     )?;
+    let baseline_outcomes = baseline_episodes
+        .iter()
+        .map(|episode| episode.outcome)
+        .collect::<Vec<_>>();
     for outcome in &baseline_outcomes {
         collect_outcome(&mut baseline, *outcome);
     }
 
-    let scenario_definitions = scenario_collectors
+    let applicable_scenarios = scenario_collectors
         .iter()
-        .map(|collector| (collector.scenario, collector.applicability.clone()))
+        .enumerate()
+        .filter_map(|(collector_index, collector)| {
+            matches!(collector.applicability, ScenarioApplicability::Applicable)
+                .then_some((collector_index, collector.scenario))
+        })
         .collect::<Vec<_>>();
-    let interfered_batches = ordered_parallel_episode_map(
-        simulations,
+    let scenario_work_items =
+        scenario_simulations.saturating_mul(applicable_scenarios.len() as u32);
+    let condition_work_items = simulations.saturating_add(scenario_work_items);
+    let mut last_condition_progress = 0u32;
+    let condition_results = ordered_parallel_episode_map(
+        condition_work_items,
         worker_count,
         cancellation,
         |completed| {
-            if (completed <= scenario_simulations && completed.is_multiple_of(25))
-                || completed.is_multiple_of(reporting_interval)
-                || completed == simulations
+            let virtual_completed = ((u64::from(completed) * u64::from(simulations))
+                / u64::from(condition_work_items)) as u32;
+            if virtual_completed == simulations
+                || virtual_completed.saturating_sub(last_condition_progress) >= reporting_interval
             {
-                report_progress(true, completed, simulations);
+                last_condition_progress = virtual_completed;
+                report_progress(true, virtual_completed, simulations);
             }
         },
-        |simulation_index| {
-            let episode_seed =
-                derive_episode_seed(seed, WIN_SPEED_EPISODE_SEED_DOMAIN, simulation_index);
-            let outcome = simulate_episode_inner(
-                deck,
-                mana_access,
-                options,
-                episode_seed,
-                options.interaction_profile,
-            );
-            let scenario_episodes = if simulation_index < scenario_simulations {
-                let baseline_outcome = baseline_outcomes[simulation_index as usize];
-                let mut episodes = Vec::with_capacity(scenario_definitions.len());
-                for (scenario, applicability) in &scenario_definitions {
-                    if cancellation.load(Ordering::Relaxed) {
-                        return Err(SimulationError::Cancelled);
+        |work_index| {
+            if work_index >= simulations {
+                let scenario_work_index = work_index - simulations;
+                let scenario_slot = scenario_work_index % applicable_scenarios.len() as u32;
+                let simulation_index = scenario_work_index / applicable_scenarios.len() as u32;
+                let (collector_index, scenario) = applicable_scenarios[scenario_slot as usize];
+                let baseline_episode = &baseline_episodes[simulation_index as usize];
+                let episode_seed =
+                    derive_episode_seed(seed, WIN_SPEED_EPISODE_SEED_DOMAIN, simulation_index);
+                let stressed = if baseline_episode.opportunity_mask.proves_absent(scenario) {
+                    EpisodeSimulationResult {
+                        outcome: baseline_episode.outcome,
+                        scenario_trace: IsolatedScenarioTrace::default(),
                     }
-                    let stressed = if matches!(applicability, ScenarioApplicability::Applicable) {
-                        simulate_isolated_scenario_episode_inner(
-                            deck,
-                            mana_access,
-                            options,
-                            episode_seed,
-                            *scenario,
-                        )
-                    } else {
-                        EpisodeSimulationResult {
-                            outcome: baseline_outcome,
-                            scenario_trace: IsolatedScenarioTrace::default(),
-                        }
-                    };
-                    episodes.push(scenario_episode_input(
+                } else {
+                    simulate_prepared_episode_condition(
+                        deck,
+                        mana_access,
+                        options,
+                        InteractionProfile::None,
+                        Some(scenario),
+                        &baseline_episode.preparation,
+                        &runtime_model,
+                    )
+                };
+                return Ok(ConditionWorkResult::Scenario {
+                    collector_index,
+                    episode: scenario_episode_input(
                         simulation_index,
                         episode_seed,
                         options.maximum_turn,
-                        applicability.clone(),
-                        baseline_outcome,
+                        ScenarioApplicability::Applicable,
+                        baseline_episode.outcome,
                         stressed,
-                    ));
-                }
-                episodes
-            } else {
-                Vec::new()
-            };
-            Ok(InterferedEpisodeBatch {
-                outcome,
-                scenario_episodes,
-            })
+                    ),
+                });
+            }
+
+            let simulation_index = work_index;
+            let baseline_episode = &baseline_episodes[simulation_index as usize];
+            let outcome = simulate_prepared_episode_condition(
+                deck,
+                mana_access,
+                options,
+                options.interaction_profile,
+                None,
+                &baseline_episode.preparation,
+                &runtime_model,
+            )
+            .outcome;
+            Ok(ConditionWorkResult::Interfered { outcome })
         },
     )?;
-    for batch in interfered_batches {
-        collect_outcome(&mut interfered, batch.outcome);
-        interfered_outcomes.push(batch.outcome);
-        for (collector, episode) in scenario_collectors.iter_mut().zip(batch.scenario_episodes) {
-            collector.episodes.push(episode);
+    for result in condition_results {
+        match result {
+            ConditionWorkResult::Interfered { outcome } => {
+                collect_outcome(&mut interfered, outcome);
+                interfered_outcomes.push(outcome);
+            }
+            ConditionWorkResult::Scenario {
+                collector_index,
+                episode,
+            } => {
+                scenario_collectors[collector_index].episodes.push(episode);
+            }
+        }
+    }
+    for collector in &mut scenario_collectors {
+        if matches!(collector.applicability, ScenarioApplicability::Applicable) {
+            continue;
+        }
+        for simulation_index in 0..scenario_simulations {
+            let episode_seed =
+                derive_episode_seed(seed, WIN_SPEED_EPISODE_SEED_DOMAIN, simulation_index);
+            let baseline_outcome = baseline_episodes[simulation_index as usize].outcome;
+            collector.episodes.push(scenario_episode_input(
+                simulation_index,
+                episode_seed,
+                options.maximum_turn,
+                collector.applicability.clone(),
+                baseline_outcome,
+                EpisodeSimulationResult {
+                    outcome: baseline_outcome,
+                    scenario_trace: IsolatedScenarioTrace::default(),
+                },
+            ));
         }
     }
 
@@ -12407,13 +12582,7 @@ fn simulate_win_speed_inner_with_worker_count(
     let attempt_denominator = interfered.first_attempt_opportunities.max(1) as f32;
     let recovery_by_max_turn_rate = (interfered.stopped_attempts > 0)
         .then_some(interfered.recovered_attempts as f32 / interfered.stopped_attempts as f32);
-    let full_scenario_reports = finalize_scenario_suite(scenario_collectors)?;
-    let interaction_scenarios = full_scenario_reports
-        .iter()
-        .map(|report| {
-            compact_scenario_report(report, seed, INTERACTION_SCENARIO_SEED_DERIVATION_VERSION)
-        })
-        .collect();
+    let interaction_scenarios = finalize_scenario_suite(scenario_collectors, seed)?;
     let attempt_provenance = build_attempt_provenance_report(
         deck,
         &baseline,
@@ -12530,17 +12699,36 @@ fn scenario_outcome_input(outcome: EpisodeOutcome, maximum_turn: u8) -> EpisodeO
 
 fn finalize_scenario_suite(
     collectors: Vec<ScenarioSuiteCollector>,
-) -> Result<Vec<ScenarioReport>, ScenarioReportError> {
-    collectors
-        .into_iter()
-        .map(|collector| {
-            build_scenario_report(ScenarioReportInput::new(
-                collector.scenario,
-                ScenarioExecutionSource::ResponsePressure,
-                collector.episodes,
-            ))
-        })
-        .collect()
+    seed: u64,
+) -> Result<Vec<CompactScenarioReport>, ScenarioReportError> {
+    std::thread::scope(|scope| {
+        let handles = collectors
+            .into_iter()
+            .map(|collector| {
+                scope.spawn(move || {
+                    let report = build_scenario_report(ScenarioReportInput::new(
+                        collector.scenario,
+                        ScenarioExecutionSource::ResponsePressure,
+                        collector.episodes,
+                    ))?;
+                    Ok::<_, ScenarioReportError>(compact_scenario_report(
+                        &report,
+                        seed,
+                        INTERACTION_SCENARIO_SEED_DERIVATION_VERSION,
+                    ))
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut compact_reports = Vec::with_capacity(handles.len());
+        for handle in handles {
+            compact_reports.push(
+                handle
+                    .join()
+                    .expect("scenario report worker completed without panicking")?,
+            );
+        }
+        Ok(compact_reports)
+    })
 }
 
 pub fn estimate_commander_on_curve(
@@ -14671,6 +14859,88 @@ fn should_keep_cedh(hand: HandEvaluation, policy: MulliganPolicy, paid_mulligans
     }
 }
 
+fn generate_opening_candidate_orders(deck: &CompiledDeck, rng: &mut ChaCha8Rng) -> Vec<Vec<usize>> {
+    (0..=8)
+        .map(|_| {
+            let mut order = deck.library.clone();
+            order.shuffle(rng);
+            order
+        })
+        .collect()
+}
+
+fn simulate_opening_episode(
+    deck: &CompiledDeck,
+    mana: Option<&ManaAccessProfile>,
+    options: &AnalysisOptions,
+    seed: u64,
+    simulation_index: u32,
+) -> OpeningEpisodeResult {
+    let episode_seed = derive_episode_seed(seed, 0x4841_4e44, simulation_index);
+    let mut rng = ChaCha8Rng::seed_from_u64(episode_seed);
+    let candidate_orders = generate_opening_candidate_orders(deck, &mut rng);
+    let sample = sample_london_hand_from_candidate_orders(deck, mana, options, &candidate_orders);
+    let kept_evaluation = evaluate_cards(deck, mana, &sample.hand);
+    let mut drawn_through_turn_three = sample.hand.clone();
+    drawn_through_turn_three.extend(sample.draw_order.iter().take(3).copied());
+    let turn_three_evaluation = evaluate_cards(deck, mana, &drawn_through_turn_three);
+
+    OpeningEpisodeResult {
+        simulation_index,
+        candidate_orders,
+        initial_keepable: sample.initial_keepable,
+        accepted_by_policy: sample.accepted_by_policy,
+        paid_mulligans: sample.paid_mulligans,
+        cards_kept: sample.hand.len(),
+        kept_evaluation,
+        turn_three_evaluation,
+    }
+}
+
+fn sample_london_hand_from_candidate_orders(
+    deck: &CompiledDeck,
+    mana: Option<&ManaAccessProfile>,
+    options: &AnalysisOptions,
+    candidate_orders: &[Vec<usize>],
+) -> LondonHandSample {
+    debug_assert_eq!(candidate_orders.len(), 9);
+    let mut initial_keepable = false;
+    for (attempt, order) in (0..=8u8).zip(candidate_orders) {
+        let seven = order[..7].to_vec();
+        let evaluation = evaluate_cards(deck, mana, &seven);
+        let paid_mulligans = attempt.saturating_sub(1);
+        let accepted_by_policy = should_keep(
+            evaluation,
+            options.mulligan_policy,
+            paid_mulligans,
+            options.declared_intent,
+        );
+        if attempt == 0 {
+            initial_keepable = accepted_by_policy;
+        }
+        if accepted_by_policy || attempt == 8 {
+            let (hand, bottomed) = choose_london_bottoms(
+                deck,
+                mana,
+                seven,
+                paid_mulligans,
+                options.mulligan_policy,
+                options.declared_intent,
+            );
+            let mut draw_order = order.iter().skip(7).copied().collect::<Vec<_>>();
+            draw_order.extend(bottomed);
+            return LondonHandSample {
+                hand,
+                draw_order,
+                initial_keepable,
+                accepted_by_policy,
+                paid_mulligans,
+            };
+        }
+    }
+    unreachable!("the final zero-card London mulligan is always retained")
+}
+
 fn sample_london_hand(
     deck: &CompiledDeck,
     mana: Option<&ManaAccessProfile>,
@@ -14679,14 +14949,12 @@ fn sample_london_hand(
     simulation_index: u32,
     candidate_cohort: Option<&mut OpeningCandidateCohort>,
 ) -> LondonHandSample {
-    let mut candidate_orders = Vec::new();
     if let Some(cohort) = candidate_cohort {
-        for attempt in 0..=8u8 {
-            let mut order = deck.library.clone();
-            order.shuffle(rng);
-            cohort.record(deck, simulation_index, attempt, &order);
-            candidate_orders.push(order);
+        let candidate_orders = generate_opening_candidate_orders(deck, rng);
+        for (attempt, order) in candidate_orders.iter().enumerate() {
+            cohort.record(deck, simulation_index, attempt as u8, order);
         }
+        return sample_london_hand_from_candidate_orders(deck, mana, options, &candidate_orders);
     }
     let mut initial_keepable = false;
     // Attempt 0 is the initial seven; attempt 1 is Commander's free
@@ -14694,13 +14962,8 @@ fn sample_london_hand(
     // mulligans. The policy usually keeps much earlier, but the rules path
     // must remain valid all the way to a zero-card hand.
     for attempt in 0..=8u8 {
-        let order = if candidate_orders.is_empty() {
-            let mut order = deck.library.clone();
-            order.shuffle(rng);
-            order
-        } else {
-            std::mem::take(&mut candidate_orders[usize::from(attempt)])
-        };
+        let mut order = deck.library.clone();
+        order.shuffle(rng);
         let seven = order[..7].to_vec();
         let evaluation = evaluate_cards(deck, mana, &seven);
         let paid_mulligans = attempt.saturating_sub(1);
@@ -15356,52 +15619,39 @@ fn resolve_typed_overrun_creature_tutor(
     true
 }
 
-fn simulate_episode_inner(
+fn prepare_episode(
     deck: &CompiledDeck,
     mana_access: Option<&ManaAccessProfile>,
     options: &AnalysisOptions,
     seed: u64,
-    profile: InteractionProfile,
-) -> EpisodeOutcome {
-    simulate_episode_condition_inner(deck, mana_access, options, seed, profile, None, None).outcome
+) -> PreparedEpisode {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let opening = sample_london_hand(deck, mana_access, options, &mut rng, 0, None);
+    PreparedEpisode {
+        opening,
+        rng_after_opening: rng,
+        opponent_timeline: OpponentEventTimeline::for_episode(seed, options.maximum_turn),
+        table_activity_timeline: TableActivityTimeline::for_episode(seed, options.maximum_turn),
+    }
 }
 
-fn simulate_isolated_scenario_episode_inner(
+fn simulate_prepared_episode_condition(
     deck: &CompiledDeck,
     mana_access: Option<&ManaAccessProfile>,
     options: &AnalysisOptions,
-    seed: u64,
-    scenario: InteractionScenario,
-) -> EpisodeSimulationResult {
-    simulate_episode_condition_inner(
-        deck,
-        mana_access,
-        options,
-        seed,
-        InteractionProfile::None,
-        Some(scenario),
-        None,
-    )
-}
-
-fn simulate_episode_condition_inner(
-    deck: &CompiledDeck,
-    mana_access: Option<&ManaAccessProfile>,
-    options: &AnalysisOptions,
-    seed: u64,
     profile: InteractionProfile,
     isolated_scenario: Option<InteractionScenario>,
-    forced_opening: Option<LondonHandSample>,
+    preparation: &PreparedEpisode,
+    runtime_model: &SimulationRuntimeModel,
 ) -> EpisodeSimulationResult {
-    let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let opening = forced_opening
-        .unwrap_or_else(|| sample_london_hand(deck, mana_access, options, &mut rng, 0, None));
+    let mut rng = preparation.rng_after_opening.clone();
+    let opening = preparation.opening.clone();
     let mut order = opening.draw_order;
     let mut hand = opening.hand;
     let mut position = 0usize;
     let parameters = interaction_parameters(profile);
-    let opponent_timeline = OpponentEventTimeline::for_episode(seed, options.maximum_turn);
-    let table_activity_timeline = TableActivityTimeline::for_episode(seed, options.maximum_turn);
+    let opponent_timeline = &preparation.opponent_timeline;
+    let table_activity_timeline = &preparation.table_activity_timeline;
 
     let mut mana_sources = Vec::<BattlefieldManaSource>::new();
     let mut engine_count = 0u8;
@@ -15427,11 +15677,6 @@ fn simulate_episode_condition_inner(
     let mut may_attempt_after = 0u8;
     let mut first_credible_threat_turn = None;
     let mut isolated = IsolatedScenarioRuntime::new(isolated_scenario);
-    let line_activation_costs = deck
-        .known_lines
-        .iter()
-        .map(compile_line_activation_cost)
-        .collect::<Vec<_>>();
 
     for turn in 1..=options.maximum_turn {
         let opponent_rolls = opponent_timeline
@@ -15778,9 +16023,13 @@ fn simulate_episode_condition_inner(
                         player_died: true,
                     });
                 }
+                let relevant_commander_spell = scenario_relevant_spell(commander);
+                if relevant_commander_spell {
+                    isolated.observe_opportunity(InteractionScenario::FirstRelevantSpellCountered);
+                }
                 if isolated.is(InteractionScenario::FirstRelevantSpellCountered)
                     && !isolated.applied()
-                    && scenario_relevant_spell(commander)
+                    && relevant_commander_spell
                 {
                     isolated.activate(turn, 1);
                 } else {
@@ -15790,8 +16039,12 @@ fn simulate_episode_condition_inner(
                     let counter_recovery = isolated
                         .is(InteractionScenario::FirstRelevantSpellCountered)
                         && isolated.applied();
-                    let graveyard_suppressed = isolated.is(InteractionScenario::GraveyardShutdown)
-                        && scenario_executable_graveyard_action(commander);
+                    let graveyard_action = scenario_executable_graveyard_action(commander);
+                    if graveyard_action {
+                        isolated.observe_opportunity(InteractionScenario::GraveyardShutdown);
+                    }
+                    let graveyard_suppressed =
+                        isolated.is(InteractionScenario::GraveyardShutdown) && graveyard_action;
                     if graveyard_suppressed && !isolated.applied() {
                         isolated.activate(turn, 1);
                     }
@@ -15848,6 +16101,9 @@ fn simulate_episode_condition_inner(
                             .is_some_and(|applied_turn| turn > applied_turn)
                     {
                         isolated.recover(turn);
+                    }
+                    if !commander_recast_recovery {
+                        isolated.observe_opportunity(InteractionScenario::CommanderRemovalRecast);
                     }
                     if isolated.is(InteractionScenario::CommanderRemovalRecast)
                         && !commander_recast_recovery
@@ -16174,7 +16430,7 @@ fn simulate_episode_condition_inner(
                 creature_count,
                 mana_access,
                 &mut mana_pool,
-                &line_activation_costs,
+                &runtime_model.line_activation_costs,
                 &mut planned_cast_queue,
             ) {
                 if !mana_pool.settle_pending_source_damage(&mut player_life) {
@@ -16650,6 +16906,7 @@ fn simulate_episode_condition_inner(
                 planned_cast_queue.clear();
                 continue;
             }
+            isolated.observe_opportunity(InteractionScenario::GenericTaxStax);
             let generic_tax = if isolated.is(InteractionScenario::GenericTaxStax) {
                 isolated.activate(turn, 1);
                 1
@@ -16811,9 +17068,13 @@ fn simulate_episode_condition_inner(
                 synchronize_mana_sources_with_battlefield(&mut mana_sources, &line_zones);
                 synchronize_turn_pool_with_battlefield(&mut mana_pool, &line_zones);
             }
+            let relevant_spell = scenario_relevant_spell(card);
+            if relevant_spell {
+                isolated.observe_opportunity(InteractionScenario::FirstRelevantSpellCountered);
+            }
             if isolated.is(InteractionScenario::FirstRelevantSpellCountered)
                 && !isolated.applied()
-                && scenario_relevant_spell(card)
+                && relevant_spell
             {
                 isolated.activate(turn, 1);
                 if atomic_commit.is_some() {
@@ -16842,8 +17103,12 @@ fn simulate_episode_condition_inner(
                 && isolated
                     .applied_turn
                     .is_some_and(|applied_turn| turn > applied_turn);
-            let graveyard_suppressed = isolated.is(InteractionScenario::GraveyardShutdown)
-                && scenario_executable_graveyard_action(card);
+            let graveyard_action = scenario_executable_graveyard_action(card);
+            if graveyard_action {
+                isolated.observe_opportunity(InteractionScenario::GraveyardShutdown);
+            }
+            let graveyard_suppressed =
+                isolated.is(InteractionScenario::GraveyardShutdown) && graveyard_action;
             if graveyard_suppressed && !isolated.applied() {
                 isolated.activate(turn, 1);
             }
@@ -17170,10 +17435,14 @@ fn simulate_episode_condition_inner(
             if isolated.is(InteractionScenario::GenericTaxStax) {
                 isolated.recover(turn);
             }
-            if isolated.is(InteractionScenario::TargetedPermanentRemoval)
-                && !targeted_recovery
+            let targeted_permanent_checkpoint = !targeted_recovery
                 && entry_resolution.entered_battlefield
-                && scenario_targetable_permanent(card)
+                && scenario_targetable_permanent(card);
+            if targeted_permanent_checkpoint {
+                isolated.observe_opportunity(InteractionScenario::TargetedPermanentRemoval);
+            }
+            if isolated.is(InteractionScenario::TargetedPermanentRemoval)
+                && targeted_permanent_checkpoint
                 && isolated.activate(turn, 1)
             {
                 if !consumed_mana_source {
@@ -17439,7 +17708,7 @@ fn simulate_episode_condition_inner(
                     creature_count,
                     &mana_sources,
                     turn,
-                    &line_activation_costs,
+                    &runtime_model.line_activation_costs,
                     &mut mana_pool,
                 )
             });
@@ -17544,7 +17813,7 @@ fn simulate_episode_condition_inner(
                     creature_count,
                     &mana_sources,
                     turn,
-                    &line_activation_costs,
+                    &runtime_model.line_activation_costs,
                     &pre_line_selection_pool,
                     u8::from(
                         isolated.is(InteractionScenario::GenericTaxStax) && isolated.applied(),
@@ -17563,6 +17832,7 @@ fn simulate_episode_condition_inner(
                 first_win_attempt_turn = Some(turn);
                 timing_provenance.first_explicit_route_index = explicit_attempt_route_index;
                 first_attempt_opportunity = true;
+                isolated.observe_opportunity(InteractionScenario::FirstWinAttemptStopped);
 
                 let isolated_first_attempt_stop = isolated
                     .is(InteractionScenario::FirstWinAttemptStopped)
@@ -19017,6 +19287,9 @@ fn execute_graveyard_storm_under_isolated_scenario(
             false,
             false,
         )?;
+        isolated.observe_opportunity(InteractionScenario::GenericTaxStax);
+        isolated.observe_opportunity(InteractionScenario::RuleOfLawCap);
+        isolated.observe_opportunity(InteractionScenario::GraveyardShutdown);
         if !isolated.applied() {
             isolated.activate(turn, 1);
         } else {
@@ -19027,7 +19300,7 @@ fn execute_graveyard_storm_under_isolated_scenario(
         }
     }
 
-    execute_ready_graveyard_storm_line(
+    let result = execute_ready_graveyard_storm_line(
         deck,
         hand,
         library_order,
@@ -19041,7 +19314,13 @@ fn execute_graveyard_storm_under_isolated_scenario(
         u8::from(generic_tax && isolated.applied()),
         rule_of_law,
         graveyard_shutdown,
-    )
+    );
+    if result.is_some() {
+        isolated.observe_opportunity(InteractionScenario::GenericTaxStax);
+        isolated.observe_opportunity(InteractionScenario::RuleOfLawCap);
+        isolated.observe_opportunity(InteractionScenario::GraveyardShutdown);
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -22211,6 +22490,14 @@ fn execute_opponent_end_step_top_tutor(
     ) else {
         return false;
     };
+    isolated.observe_opportunity(InteractionScenario::GenericTaxStax);
+    if deck
+        .cards
+        .get(projection.tutor_index)
+        .is_some_and(scenario_relevant_spell)
+    {
+        isolated.observe_opportunity(InteractionScenario::FirstRelevantSpellCountered);
+    }
     if pending_generic_tax {
         isolated.activate(turn, 1);
         additional_generic_per_cast = 1;
@@ -22711,6 +22998,7 @@ fn commander_payment_at_generic_tax_checkpoint(
         reserved_mana,
         preserve_eot_before_candidate,
     )?;
+    isolated.observe_opportunity(InteractionScenario::GenericTaxStax);
     if pending_generic_tax {
         // Only a neutral, reservation-safe intended cast creates the real tax
         // checkpoint. Once reached, an unaffordable or newly reservation-
@@ -23723,7 +24011,11 @@ fn apply_isolated_creature_wipe_if_ready(
     protection_count: &mut u8,
     recursion_count: &mut u8,
 ) {
-    if !isolated.is(InteractionScenario::CreatureWipe) || *creature_count < 2 {
+    if *creature_count < 2 {
+        return;
+    }
+    isolated.observe_opportunity(InteractionScenario::CreatureWipe);
+    if !isolated.is(InteractionScenario::CreatureWipe) {
         return;
     }
     if isolated.applied() {

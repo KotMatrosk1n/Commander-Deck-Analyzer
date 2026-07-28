@@ -21,6 +21,7 @@ name = "commanderdeckanalyzer"
 path = "src/main.rs"
 
 [build-dependencies]
+sha2 = "0.10"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
@@ -44,3 +45,7 @@ url = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
