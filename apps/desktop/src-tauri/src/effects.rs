@@ -4,14 +4,37 @@
 //! or policy evaluator can consume. Unmodeled clauses remain attached to the
 //! card and lower confidence instead of being silently treated as irrelevant.
 
+use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::ability_program::ExecutableAbilityProgramV1;
+use crate::alternative_cast_runtime::{
+    AlternativeCastCardInput, CompiledAlternativeCast, compile_alternative_cast_runtime,
+};
+use crate::characteristic_oracle_runtime::{
+    CharacteristicOracleInput, CharacteristicOwnershipRequest,
+    CombatKeyword as OracleCombatKeyword, CompiledCharacteristicOracle, CompiledCharacteristicView,
+    CompiledDynamicCharacteristic as OracleDynamicCharacteristic,
+    DevotionColor as OracleDevotionColor, SourceCardType as OracleSourceCardType,
+    compile_characteristic_oracle_ownership,
+};
+use crate::continuous_trigger_runtime::{
+    CompiledContinuousTrigger, ContinuousTriggerCardInput, ContinuousTriggerFaceInput,
+    compile_continuous_trigger_runtime,
+};
 use crate::domain::CardDefinition;
 use crate::mana::{ManaColorMask, parse_mana_cost};
+use crate::mana_network_runtime::{ExactManaNetworkProgram, classify_exact_mana_network_program};
+use crate::object_lifecycle_runtime::{
+    CompiledObjectLifecycle, ObjectLifecycleCardInput, compile_object_lifecycle_runtime,
+};
+use crate::utility_modal_runtime::{
+    CompiledUtilityModal, UtilityModalCardInput, compile_utility_modal_runtime,
+};
 
-pub(crate) const EFFECT_DESCRIPTOR_VERSION: &str = "oracle-effects-0.11";
+pub(crate) const EFFECT_DESCRIPTOR_VERSION: &str = "oracle-effects-0.13";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EffectMagnitude {
@@ -134,8 +157,11 @@ pub struct CardTypeProfile {
     pub is_basic_land: bool,
     pub is_creature: bool,
     pub is_artifact: bool,
+    pub is_battle: bool,
     pub is_enchantment: bool,
     pub is_instant: bool,
+    pub is_kindred: bool,
+    pub is_planeswalker: bool,
     pub is_sorcery: bool,
 }
 
@@ -158,6 +184,160 @@ pub struct HandZoneCharacteristics {
     pub type_line: String,
     pub card_types: CardTypeProfile,
     pub colors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DevotionColor {
+    White,
+    Blue,
+    Black,
+    Red,
+    Green,
+}
+
+impl DevotionColor {
+    pub(crate) const fn pip_index(self) -> usize {
+        match self {
+            Self::White => 0,
+            Self::Blue => 1,
+            Self::Black => 2,
+            Self::Red => 3,
+            Self::Green => 4,
+        }
+    }
+
+    pub(crate) const fn as_name(self) -> &'static str {
+        match self {
+            Self::White => "white",
+            Self::Blue => "blue",
+            Self::Black => "black",
+            Self::Red => "red",
+            Self::Green => "green",
+        }
+    }
+
+    const fn pip_symbol(self) -> &'static str {
+        match self {
+            Self::White => "{w}",
+            Self::Blue => "{u}",
+            Self::Black => "{b}",
+            Self::Red => "{r}",
+            Self::Green => "{g}",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DynamicCreatureCharacteristic {
+    ToughnessEqualsDevotion(DevotionColor),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum PrintedKeyword {
+    Deathtouch,
+    DoubleStrike,
+    FirstStrike,
+    Flying,
+    Haste,
+    Hexproof,
+    Indestructible,
+    Lifelink,
+    Menace,
+    Reach,
+    Shroud,
+    Trample,
+    Vigilance,
+    Defender,
+    Partner,
+    FriendsForever,
+    Bargain,
+    Imprint,
+    Metalcraft,
+    Threshold,
+    Storm,
+    Flashback,
+    Flash,
+    Ward,
+    Protection,
+    Equip,
+    CumulativeUpkeep,
+    Affinity,
+    Kicker,
+    Prowess,
+    Boast,
+    Escape,
+    Convoke,
+    Delve,
+    Devoid,
+    Changeling,
+}
+
+impl PrintedKeyword {
+    pub(crate) fn from_name(keyword: &str) -> Option<Self> {
+        match keyword.trim().to_ascii_lowercase().as_str() {
+            "deathtouch" => Some(Self::Deathtouch),
+            "double strike" => Some(Self::DoubleStrike),
+            "first strike" => Some(Self::FirstStrike),
+            "flying" => Some(Self::Flying),
+            "haste" => Some(Self::Haste),
+            "hexproof" => Some(Self::Hexproof),
+            "indestructible" => Some(Self::Indestructible),
+            "lifelink" => Some(Self::Lifelink),
+            "menace" => Some(Self::Menace),
+            "reach" => Some(Self::Reach),
+            "shroud" => Some(Self::Shroud),
+            "trample" => Some(Self::Trample),
+            "vigilance" => Some(Self::Vigilance),
+            "defender" => Some(Self::Defender),
+            "partner" => Some(Self::Partner),
+            "friends forever" => Some(Self::FriendsForever),
+            "bargain" => Some(Self::Bargain),
+            "imprint" => Some(Self::Imprint),
+            "metalcraft" => Some(Self::Metalcraft),
+            "threshold" => Some(Self::Threshold),
+            "storm" => Some(Self::Storm),
+            "flashback" => Some(Self::Flashback),
+            "flash" => Some(Self::Flash),
+            "ward" => Some(Self::Ward),
+            "protection" => Some(Self::Protection),
+            "equip" => Some(Self::Equip),
+            "cumulative upkeep" => Some(Self::CumulativeUpkeep),
+            "affinity" => Some(Self::Affinity),
+            "kicker" => Some(Self::Kicker),
+            "prowess" => Some(Self::Prowess),
+            "boast" => Some(Self::Boast),
+            "escape" => Some(Self::Escape),
+            "convoke" => Some(Self::Convoke),
+            "delve" => Some(Self::Delve),
+            "devoid" => Some(Self::Devoid),
+            "changeling" => Some(Self::Changeling),
+            _ => None,
+        }
+    }
+
+    const fn mask(self) -> u64 {
+        1u64 << self as u8
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PrintedKeywordProfile {
+    bits: u64,
+}
+
+impl PrintedKeywordProfile {
+    pub(crate) fn contains(self, keyword: PrintedKeyword) -> bool {
+        self.bits & keyword.mask() != 0
+    }
+}
+
+pub(crate) fn compile_printed_keyword_profile(keywords: &[String]) -> PrintedKeywordProfile {
+    let bits = keywords
+        .iter()
+        .filter_map(|keyword| PrintedKeyword::from_name(keyword))
+        .fold(0u64, |bits, keyword| bits | keyword.mask());
+    PrintedKeywordProfile { bits }
 }
 
 impl TutorTarget {
@@ -208,6 +388,15 @@ pub enum ManaProductionKind {
 pub struct EffectDescriptor {
     pub card_types: CardTypeProfile,
     pub hand_zone: HandZoneCharacteristics,
+    pub(crate) printed_keywords: PrintedKeywordProfile,
+    pub(crate) printed_devotion_pips: [u16; 5],
+    pub(crate) dynamic_creature_characteristic: Option<DynamicCreatureCharacteristic>,
+    pub(crate) alternative_cast: Option<CompiledAlternativeCast>,
+    pub(crate) characteristic_oracle: Vec<CompiledCharacteristicOracle>,
+    pub(crate) continuous_triggers: Vec<CompiledContinuousTrigger>,
+    pub(crate) mana_network: Option<ExactManaNetworkProgram>,
+    pub(crate) object_lifecycle: Option<CompiledObjectLifecycle>,
+    pub(crate) utility_modal: Option<CompiledUtilityModal>,
     pub draw_cards: EffectMagnitude,
     pub impulse_access: EffectMagnitude,
     pub tutor_scope: TutorScope,
@@ -233,14 +422,87 @@ pub struct EffectDescriptor {
     pub confidence: f32,
 }
 
+impl EffectDescriptor {
+    pub fn has_printed_keyword(&self, keyword: &str) -> bool {
+        PrintedKeyword::from_name(keyword)
+            .is_some_and(|keyword| self.printed_keywords.contains(keyword))
+    }
+
+    pub(crate) fn retain_exact_mana_network_program(
+        &mut self,
+        type_line: &str,
+        ability_program: &ExecutableAbilityProgramV1,
+    ) {
+        self.mana_network = classify_exact_mana_network_program(type_line, ability_program);
+    }
+}
+
 pub fn compile_effect_descriptor(card: &CardDefinition) -> EffectDescriptor {
     let oracle = normalize_oracle(&card.oracle_text);
     let card_types = compile_card_types(&card.type_line);
     let hand_zone = compile_hand_zone_characteristics(card);
+    let printed_keywords = compile_printed_keyword_profile(&card.keywords);
+    let printed_devotion_pips = exact_primary_face_devotion_pips(card);
+    let dynamic_creature_characteristic = compile_dynamic_creature_characteristic(
+        &card.name,
+        &card.type_line,
+        &card.oracle_text,
+        card.toughness.as_deref(),
+    );
+    let characteristic_oracle = compile_characteristic_oracle_programs(
+        card,
+        card_types,
+        printed_keywords,
+        dynamic_creature_characteristic,
+    );
+    let alternative_cast = card.mana_cost.as_deref().and_then(|mana_cost| {
+        compile_alternative_cast_runtime(AlternativeCastCardInput {
+            layout: &card.layout,
+            mana_cost,
+            type_line: &card.type_line,
+            oracle_text: &card.oracle_text,
+        })
+    });
+    let continuous_faces = card
+        .faces
+        .iter()
+        .map(|face| ContinuousTriggerFaceInput {
+            type_line: &face.type_line,
+            oracle_text: &face.oracle_text,
+        })
+        .collect::<Vec<_>>();
+    let continuous_triggers = compile_continuous_trigger_runtime(ContinuousTriggerCardInput {
+        layout: &card.layout,
+        type_line: &card.type_line,
+        oracle_text: (!card.oracle_text.trim().is_empty()).then_some(card.oracle_text.as_str()),
+        faces: &continuous_faces,
+    })
+    .unwrap_or_default();
+    let object_lifecycle = (card.layout == "normal" && card.faces.is_empty())
+        .then(|| {
+            compile_object_lifecycle_runtime(ObjectLifecycleCardInput {
+                type_line: &card.type_line,
+                oracle_text: &card.oracle_text,
+            })
+        })
+        .flatten();
+    let utility_modal = compile_utility_modal_runtime(UtilityModalCardInput {
+        layout: &card.layout,
+        type_line: &card.type_line,
+        oracle_text: &card.oracle_text,
+    });
     if oracle.is_empty() {
         return EffectDescriptor {
             card_types,
             hand_zone,
+            printed_keywords,
+            printed_devotion_pips,
+            dynamic_creature_characteristic,
+            alternative_cast,
+            characteristic_oracle,
+            continuous_triggers,
+            object_lifecycle,
+            utility_modal,
             confidence: if card.type_line.to_ascii_lowercase().contains("land") {
                 0.96
             } else {
@@ -253,6 +515,14 @@ pub fn compile_effect_descriptor(card: &CardDefinition) -> EffectDescriptor {
     let mut descriptor = EffectDescriptor {
         card_types,
         hand_zone,
+        printed_keywords,
+        printed_devotion_pips,
+        dynamic_creature_characteristic,
+        alternative_cast,
+        characteristic_oracle,
+        continuous_triggers,
+        object_lifecycle,
+        utility_modal,
         repeatable: oracle.contains("whenever ")
             || oracle.contains("at the beginning of ")
             || oracle.contains("{t}:")
@@ -425,6 +695,208 @@ pub fn compile_effect_descriptor(card: &CardDefinition) -> EffectDescriptor {
     descriptor
 }
 
+fn compile_characteristic_oracle_programs(
+    card: &CardDefinition,
+    card_types: CardTypeProfile,
+    printed_keywords: PrintedKeywordProfile,
+    dynamic_characteristic: Option<DynamicCreatureCharacteristic>,
+) -> Vec<CompiledCharacteristicOracle> {
+    if card.layout != "normal" || !card.faces.is_empty() {
+        return Vec::new();
+    }
+    let mut source_card_types = Vec::new();
+    for (present, card_type) in [
+        (card_types.is_artifact, OracleSourceCardType::Artifact),
+        (card_types.is_battle, OracleSourceCardType::Battle),
+        (card_types.is_creature, OracleSourceCardType::Creature),
+        (card_types.is_enchantment, OracleSourceCardType::Enchantment),
+        (card_types.is_instant, OracleSourceCardType::Instant),
+        (card_types.is_kindred, OracleSourceCardType::Kindred),
+        (card_types.is_land, OracleSourceCardType::Land),
+        (
+            card_types.is_planeswalker,
+            OracleSourceCardType::Planeswalker,
+        ),
+        (card_types.is_sorcery, OracleSourceCardType::Sorcery),
+    ] {
+        if present {
+            source_card_types.push(card_type);
+        }
+    }
+    let keyword_pairs = [
+        (PrintedKeyword::Deathtouch, OracleCombatKeyword::Deathtouch),
+        (
+            PrintedKeyword::DoubleStrike,
+            OracleCombatKeyword::DoubleStrike,
+        ),
+        (
+            PrintedKeyword::FirstStrike,
+            OracleCombatKeyword::FirstStrike,
+        ),
+        (PrintedKeyword::Flying, OracleCombatKeyword::Flying),
+        (PrintedKeyword::Haste, OracleCombatKeyword::Haste),
+        (PrintedKeyword::Hexproof, OracleCombatKeyword::Hexproof),
+        (
+            PrintedKeyword::Indestructible,
+            OracleCombatKeyword::Indestructible,
+        ),
+        (PrintedKeyword::Lifelink, OracleCombatKeyword::Lifelink),
+        (PrintedKeyword::Menace, OracleCombatKeyword::Menace),
+        (PrintedKeyword::Reach, OracleCombatKeyword::Reach),
+        (PrintedKeyword::Shroud, OracleCombatKeyword::Shroud),
+        (PrintedKeyword::Trample, OracleCombatKeyword::Trample),
+        (PrintedKeyword::Vigilance, OracleCombatKeyword::Vigilance),
+        (PrintedKeyword::Defender, OracleCombatKeyword::Defender),
+    ];
+    let printed_combat_keywords = keyword_pairs
+        .iter()
+        .filter_map(|(printed, oracle)| printed_keywords.contains(*printed).then_some(*oracle))
+        .collect::<Vec<_>>();
+    let dynamic_characteristic = dynamic_characteristic.map(|characteristic| {
+        let DynamicCreatureCharacteristic::ToughnessEqualsDevotion(color) = characteristic;
+        OracleDynamicCharacteristic::ToughnessEqualsDevotion(match color {
+            DevotionColor::White => OracleDevotionColor::White,
+            DevotionColor::Blue => OracleDevotionColor::Blue,
+            DevotionColor::Black => OracleDevotionColor::Black,
+            DevotionColor::Red => OracleDevotionColor::Red,
+            DevotionColor::Green => OracleDevotionColor::Green,
+        })
+    });
+    let compiled = CompiledCharacteristicView {
+        source_card_types,
+        printed_combat_keywords: printed_combat_keywords.clone(),
+        dynamic_characteristic,
+    };
+    let mut programs = printed_combat_keywords
+        .into_iter()
+        .flat_map(|keyword| {
+            compile_characteristic_oracle_ownership(CharacteristicOracleInput {
+                face_index: 0,
+                type_line: &card.type_line,
+                oracle_text: &card.oracle_text,
+                printed_toughness: card.toughness.as_deref(),
+                request: CharacteristicOwnershipRequest::PrintedCombatKeyword(keyword),
+                compiled: &compiled,
+            })
+            .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    if let Some(OracleDynamicCharacteristic::ToughnessEqualsDevotion(color)) =
+        compiled.dynamic_characteristic
+    {
+        programs.extend(
+            compile_characteristic_oracle_ownership(CharacteristicOracleInput {
+                face_index: 0,
+                type_line: &card.type_line,
+                oracle_text: &card.oracle_text,
+                printed_toughness: card.toughness.as_deref(),
+                request: CharacteristicOwnershipRequest::ToughnessEqualsDevotion(color),
+                compiled: &compiled,
+            })
+            .unwrap_or_default(),
+        );
+    }
+    programs.sort_by_key(|program| (program.ownership.face_index, program.ownership.clause_index));
+    let mut seen = BTreeSet::new();
+    programs.retain(|program| {
+        seen.insert((program.ownership.face_index, program.ownership.clause_index))
+    });
+    programs
+}
+
+fn exact_primary_face_devotion_pips(card: &CardDefinition) -> [u16; 5] {
+    let layout = card.layout.trim().to_ascii_lowercase();
+    let mana_cost = if matches!(
+        layout.as_str(),
+        "transform"
+            | "modal_dfc"
+            | "double_faced_token"
+            | "reversible_card"
+            | "flip"
+            | "adventure"
+            | "prepare"
+    ) {
+        card.faces
+            .first()
+            .and_then(|face| face.mana_cost.as_deref())
+    } else {
+        card.mana_cost.as_deref()
+    };
+    let parsed = parse_mana_cost(mana_cost);
+    let [face] = parsed.faces.as_slice() else {
+        return [0; 5];
+    };
+    if parsed.confidence < 0.999
+        || face.confidence < 0.999
+        || face
+            .pips
+            .iter()
+            .any(|pip| pip.is_unknown || pip.is_variable)
+    {
+        return [0; 5];
+    }
+    let mut pips = [0u16; 5];
+    pips.copy_from_slice(&face.pip_appearances[..5]);
+    pips
+}
+
+pub(crate) fn compile_dynamic_creature_characteristic(
+    card_name: &str,
+    type_line: &str,
+    oracle_text: &str,
+    toughness: Option<&str>,
+) -> Option<DynamicCreatureCharacteristic> {
+    if !compile_card_types(type_line).is_creature || toughness.map(str::trim) != Some("*") {
+        return None;
+    }
+
+    let normalized_name = normalize_oracle(card_name);
+    let short_name = normalized_name
+        .split_once(',')
+        .map_or(normalized_name.as_str(), |(short, _)| short)
+        .trim();
+    let full_possessive = format!("{normalized_name}'s toughness is equal to your devotion to ");
+    let short_possessive = format!("{short_name}'s toughness is equal to your devotion to ");
+    let prefixes = [
+        full_possessive.as_str(),
+        short_possessive.as_str(),
+        "this creature's toughness is equal to your devotion to ",
+        "this permanent's toughness is equal to your devotion to ",
+    ];
+
+    let mut matches = oracle_text
+        .lines()
+        .map(normalize_oracle)
+        .filter_map(|clause| {
+            let remainder = prefixes
+                .iter()
+                .find_map(|prefix| clause.strip_prefix(prefix))?;
+            let color = [
+                DevotionColor::White,
+                DevotionColor::Blue,
+                DevotionColor::Black,
+                DevotionColor::Red,
+                DevotionColor::Green,
+            ]
+            .into_iter()
+            .find(|color| {
+                remainder == format!("{}.", color.as_name())
+                    || remainder
+                        == format!(
+                            "{}. (each {} in the mana costs of permanents you control counts toward your devotion to {}.)",
+                            color.as_name(),
+                            color.pip_symbol(),
+                            color.as_name()
+                        )
+            })?;
+            Some(DynamicCreatureCharacteristic::ToughnessEqualsDevotion(
+                color,
+            ))
+        });
+    let characteristic = matches.next()?;
+    matches.next().is_none().then_some(characteristic)
+}
+
 #[derive(Debug, Default)]
 struct TutorCompilation {
     scope: TutorScope,
@@ -433,9 +905,9 @@ struct TutorCompilation {
     unsupported_clauses: Vec<String>,
 }
 
-fn compile_card_types(type_line: &str) -> CardTypeProfile {
+pub(crate) fn compile_card_types(type_line: &str) -> CardTypeProfile {
     let normalized = type_line
-        .replace(['\u{2014}', '-'], " ")
+        .replace(['-', '-'], " ")
         .split_whitespace()
         .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>();
@@ -445,8 +917,11 @@ fn compile_card_types(type_line: &str) -> CardTypeProfile {
         is_basic_land: has("basic") && has("land"),
         is_creature: has("creature"),
         is_artifact: has("artifact"),
+        is_battle: has("battle"),
         is_enchantment: has("enchantment"),
         is_instant: has("instant"),
+        is_kindred: has("kindred"),
+        is_planeswalker: has("planeswalker"),
         is_sorcery: has("sorcery"),
     }
 }
@@ -1215,7 +1690,6 @@ fn unsupported_clauses(oracle: &str) -> Vec<String> {
 
 fn normalize_oracle(text: &str) -> String {
     text.replace('’', "'")
-        .replace(['\u{2013}', '\u{2014}'], "-")
         .replace(['\r', '\n'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()

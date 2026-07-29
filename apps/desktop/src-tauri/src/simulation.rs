@@ -17,28 +17,33 @@ use sha2::{Digest, Sha256};
 
 use crate::ability_program::{
     AbilityCompilation, AbilityCost, AbilityEffect, AbilityPrecondition, AbilityTiming,
-    ActivationWindow, AffectedPlayers, AlternativeSpellCostComponent, AtomicAdditionalCostTiming,
-    AtomicBargainCost, AtomicCardNameReference, AtomicCastCostWaiver,
-    AtomicCastPermissionCondition, AtomicCost, AtomicEffect, AtomicEffectDuration,
-    AtomicGraveyardScope, AtomicInitiation, AtomicLibrarySearch, AtomicManaValueSubject,
-    AtomicMovementCondition, AtomicSearchChooser, AtomicShuffleTiming, AtomicStateCondition,
-    AtomicTrackedObject, AttachmentKind as ProgramAttachmentKind, BargainSacrificeKind,
-    BargainSearchCastOrHandEffect, CardType as ProgramCardType, CastPermissionKind,
-    CommanderEligibility, ControllerRelation, ControllerStateCondition, CopyTargetChoice,
-    CounterKind, CounterTarget, CoupledLifeLoss, CreatureTokenKeyword, DelayedEvent,
-    DelayedObjectReference, DiscardCost, DiscardedObjectReference, EntryLinkedCardFilter,
-    EntryLinkedManaOutput, FixedManaProfile, GrantedAbilityKind, GrantedCreatureKeyword,
-    GrantedSelfCost, LibraryPosition, LibraryRemainderPlacement,
-    LibrarySelectionEffect as ProgramLibrarySelectionEffect, LinkedEntryObject,
-    ManaCost as ProgramManaCost, ManaKind as ProgramManaKind, ManaPaymentAmount, ManaRetention,
-    NecropotenceDiscardEvent, ObjectFilter as ProgramObjectFilter, OpponentChoiceSearchSplitEffect,
-    OptionalManaPayment, PermanentEntryProcedure, PlayerSelector, RandomSelection,
-    RepetitionPolicy, ReplacedSpellCost, ResourceKind, SelfTransferTutorActivationWindow,
-    SelfTransferTutorCost, SelfTransferTutorResolutionStep, SpecificCardType, SpellCopyCount,
-    SpellCostReductionCondition, SpellCostReductionScope, StaticCreatureModifierTarget,
-    StaticModifierValue, StepProcedure, TargetSelector, TokenKind, TriggerAbilitySource,
-    TriggerEventKind, TriggerMultiplierEvent, TurnStep, TutorEffect as ProgramTutorEffect,
-    TutorFilter, UnsupportedReasonCode, Zone as ProgramZone,
+    ActivationWindow, AffectedPlayers, AlternativeSpellCostComponent, AtomicInitiation,
+    AttachmentKind as ProgramAttachmentKind, BoundFaceAbilityProgram, BoundFaceCastCharacteristics,
+    CardType as ProgramCardType, CastPermissionKind, ControllerRelation, ControllerStateCondition,
+    CopyTargetChoice, CounterKind, CounterTarget, CoupledLifeLoss, CreatureTokenKeyword,
+    DelayedEvent, DelayedObjectReference, DiscardCost, DiscardedObjectReference,
+    EXECUTABLE_ABILITY_PROGRAM_VERSION, EntryLinkedCardFilter, FixedManaProfile,
+    GrantedCreatureKeyword, LibraryPosition, LibraryRemainderPlacement,
+    LibrarySelectionEffect as ProgramLibrarySelectionEffect, ManaCost as ProgramManaCost,
+    ManaKind as ProgramManaKind, ManaPaymentAmount, ManaRetention, NecropotenceDiscardEvent,
+    ObjectFilter as ProgramObjectFilter, OptionalManaPayment, PlayerSelector, RepetitionPolicy,
+    ReplacedSpellCost, ResourceKind, SelfTransferTutorActivationWindow, SelfTransferTutorCost,
+    SelfTransferTutorResolutionStep, SpecificCardType, SpellCopyCount, SpellCostReductionCondition,
+    SpellCostReductionScope, StaticCreatureModifierTarget, StaticModifierValue, StepProcedure,
+    TargetSelector, TokenKind, TriggerAbilitySource, TriggerEventKind, TriggerMultiplierEvent,
+    TurnStep, TutorEffect as ProgramTutorEffect, TutorFilter, UnsupportedReasonCode,
+    Zone as ProgramZone,
+};
+use crate::alternative_cast_runtime::{
+    AdditionalCastCost as ReviewedAdditionalCastCost,
+    AlternativeCastRuntimeProgram as ReviewedAlternativeCastProgram,
+    CastCondition as ReviewedCastCondition, CastOption as ReviewedCastOption,
+    CastOptionKind as ReviewedCastOptionKind, ManaCost as ReviewedAlternativeManaCost,
+    ManaSymbol as ReviewedAlternativeManaSymbol, ObjectZone as ReviewedAlternativeObjectZone,
+};
+use crate::characteristic_oracle_runtime::{
+    CharacteristicOracleProgram, CombatKeyword as CharacteristicCombatKeyword,
+    DevotionColor as ReviewedDevotionColor,
 };
 use crate::combat_effects::{
     AttachmentConstraint as CombatAttachmentConstraint, AttachmentKind as CombatAttachmentKind,
@@ -61,11 +66,15 @@ use crate::domain::{
     TurnRate, WinSpeedReport,
 };
 use crate::effects::{
-    EffectMagnitude, ManaProductionKind, TutorDestination, TutorInstruction, TutorSourceZone,
+    CardTypeProfile, DynamicCreatureCharacteristic, EffectMagnitude, ManaProductionKind,
+    TutorDestination, TutorInstruction, TutorSourceZone, compile_card_types,
 };
 use crate::empty_library_win::{
     ReviewedLibraryExileReceipt, compile_reviewed_empty_library_win_program,
     execute_reviewed_library_exile_transaction,
+};
+use crate::interaction_runtime::{
+    InteractionRuntimeProgram, SpellTargetCandidate, compile_interaction_runtime_from_program,
 };
 use crate::interaction_scenarios::{
     CensoredTurn, CompactScenarioReport, EpisodeOutcomeInput, InapplicabilityReason,
@@ -74,20 +83,56 @@ use crate::interaction_scenarios::{
     build_scenario_report, compact_scenario_report,
 };
 use crate::interference::{
-    OpponentEventTimeline, OpponentSpellActivity, OpponentTurnActivity, TableActivityTimeline,
-    TablePaymentDecision, TableTurnActivity, interaction_parameters,
+    OpponentDrawActivity, OpponentEventTimeline, OpponentSpellActivity, OpponentTurnActivity,
+    TableActivityTimeline, TablePaymentDecision, TableTurnActivity, interaction_parameters,
+};
+use crate::land_runtime::{
+    BasicLandSubtype, ExactLandEntry, ExactLandRuntimeProgram, LandManaColor, ReviewedFetchland,
+    classify_exact_land_program,
 };
 use crate::mana::{
     EntersTapped, ManaColorMask, ManaCostFace, ManaCostProfile, ManaModel, ManaSourceProfile,
     analysis_report, parse_mana_cost,
+};
+use crate::mana_network_runtime::ExactManaNetworkProgram;
+use crate::object_lifecycle_runtime::{
+    AuraChoiceStep as ReviewedAuraChoiceStep, CardSubtype as ReviewedLifecycleSubtype,
+    CardType as ReviewedLifecycleCardType, CounterKind as ReviewedLifecycleCounterKind,
+    CreatureTokenReplacementProgram as ReviewedCreatureTokenReplacementProgram,
+    GraveyardCardPredicate as ReviewedGraveyardCardPredicate, Keyword as ReviewedLifecycleKeyword,
+    ObjectLifecycleProgram as ReviewedObjectLifecycleProgram,
+};
+use crate::opponent_library::{
+    FiniteMillRecurrenceReceipt, MAXIMUM_TABLE_SATURATION_PACKETS, OpponentDrawResolution,
+    OpponentLibraryTable, prove_finite_breach_mill_recurrence,
+};
+use crate::restriction_protection_runtime::{
+    RestrictionProtectionProgram, compile_restriction_protection_from_program,
+};
+use crate::runtime_receipts::{
+    ModeledLineCardKind, TypedAtomicTransaction, TypedConditionalManaSource,
+    classify_atomic_runtime_transaction, classify_conditional_mana_source,
+    classify_graveyard_reclamation, classify_sacrifice_self_any_color_mana,
+    classify_spell_resolution_mana, exact_any_card_tutor, modeled_line_card_kind,
 };
 use crate::semantics::{CompiledCard, CompiledDeck, role};
 use crate::turn_event_state::{ControllerCondition as RuntimeControllerCondition, TurnEventState};
 use crate::turn_planner::{
     PlannerConfig, PlannerValue, PlanningHorizon, TurnPlanningDomain, plan_turn,
 };
+use crate::tutor_runtime::{
+    LifeLossTiming as ExactTutorLifeLossTiming, SearchQuantity as ExactTutorSearchQuantity,
+    SearchedCardPredicate as ExactTutorCardPredicate,
+    TutorDestinationZone as ExactTutorDestinationZone, TutorRuntimeProgram,
+    TutorSourceZone as ExactTutorSourceZone, TutorTransactionStep as ExactTutorStep,
+    compile_tutor_runtime_from_program,
+};
+use crate::utility_modal_runtime::{
+    EntryScryProgram as ReviewedEntryScryProgram, SpellScryDrawStep as ReviewedSpellScryDrawStep,
+    UtilityModalRuntimeProgram as ReviewedUtilityModalProgram,
+};
 
-pub(crate) const SIMULATION_ENGINE_VERSION: &str = "abstract-play-0.42";
+pub(crate) const SIMULATION_ENGINE_VERSION: &str = "abstract-play-0.48";
 pub(crate) const TIMING_ENDPOINT_VERSION: &str = "commander-timing-endpoints/v3";
 pub(crate) const EFFECTIVE_HAND_STRENGTH_VERSION: &str = "mtg-effective-hand-strength/v4";
 pub(crate) const MAX_INTERACTION_SCENARIO_EPISODES: u32 = 1_000;
@@ -99,9 +144,19 @@ const CAST_PLANNER_BEAM_WIDTH: usize = 8;
 const CAST_PLANNER_MAX_EXPANSIONS: usize = 96;
 const CAST_PLANNER_MAX_ACTIONS: usize = 8;
 const CAST_PLANNER_MAX_COMMITTED_ACTIONS: usize = 64;
+const MAX_RECLAMATION_TARGET_CANDIDATES: usize = 4;
+const MAX_RECLAMATION_ACTIONS: usize = 20;
+const MAX_INTUITION_IDENTITIES_PER_ROUTE: usize = 6;
+const MAX_INTUITION_MULTISETS_PER_ROUTE: usize = 56;
+const MAX_INTUITION_CHEAP_PILES: usize = 24;
+const MAX_INTUITION_CHEAP_OUTCOMES: usize = 72;
+const MAX_INTUITION_CERTIFICATE_FINALISTS: usize = 4;
+const MAX_INTUITION_CERTIFICATE_NODES: usize = 24;
+const MAX_INTUITION_RETURNED_ACTIONS: usize = 12;
 const MAX_EPISODE_WORKERS: usize = 20;
 const OPENING_EPISODE_BATCH_SIZE: u32 = 1_024;
 const COMMANDER_STARTING_LIFE: f32 = 40.0;
+const MODELED_COMMANDER_OPPONENT_COUNT: u8 = 3;
 const EARLY_ATTEMPT_DIAGNOSTIC_HORIZON: u8 = 6;
 const COMBAT_DAMAGE_ROUTE_INDEX: usize = usize::MAX;
 const AGGRESSIVE_DELAYED_ACCESS_MINIMUM_LIFE: f32 = 5.0;
@@ -240,6 +295,7 @@ impl OpeningCandidateCohort {
 #[derive(Debug, Default)]
 struct ManaAccessProfile {
     required_colors: Vec<ManaColorMask>,
+    commander_identity: ManaColorMask,
     source_weights_by_card: Vec<Vec<f32>>,
     sources_by_card: Vec<Option<ManaSourceProfile>>,
     costs_by_card: Vec<Option<ManaCostProfile>>,
@@ -296,6 +352,7 @@ impl ManaAccessProfile {
             .collect();
         Self {
             required_colors,
+            commander_identity: mana.commander_requirements.color_identity,
             source_weights_by_card,
             sources_by_card,
             costs_by_card,
@@ -381,6 +438,10 @@ fn battlefield_source_is_trajectory_available(source: &BattlefieldManaSource, tu
 enum BattlefieldManaBehavior {
     #[default]
     Fixed,
+    CommanderIdentity(ManaColorMask),
+    ControlledLandCapabilities,
+    NativeLand(ManaColorMask),
+    CoupledFixed([ManaColorMask; 2]),
     AnyColorAmongControlledLegendaryCreaturesAndPlaneswalkers,
     AnyColorWithMetalcraft,
     LinkedCardColors(ManaColorMask),
@@ -408,6 +469,19 @@ struct PoolManaSource {
     damage_free_colors_on_first_spend: ManaColorMask,
     same_type_coupled: bool,
     sacrifice_on_first_spend: Option<SacrificeOnFirstSpend>,
+}
+
+impl PoolManaSource {
+    fn available_mana(self) -> u8 {
+        if self.sacrifice_on_first_spend.is_some()
+            && self.physically_tapped
+            && !self.first_spend_recorded
+        {
+            0
+        } else {
+            self.remaining
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -449,6 +523,38 @@ struct ActiveAbilityContext {
     dwarf_treasure_per_tap: u8,
 }
 
+fn exact_mana_network(card: &CompiledCard) -> Option<&ExactManaNetworkProgram> {
+    card.effects
+        .mana_network
+        .as_ref()
+        .filter(|program| program.has_exact_contract())
+}
+
+fn active_mana_network_land_grants(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+) -> (bool, ManaColorMask) {
+    let mut any_color = false;
+    let mut added_colors = ManaColorMask::NONE;
+    for presence in &zones.battlefield {
+        let Some(program) = deck
+            .cards
+            .get(presence.card_index)
+            .and_then(exact_mana_network)
+        else {
+            continue;
+        };
+        match program {
+            ExactManaNetworkProgram::ControlledLandAnyColorGrant(_) => any_color = true,
+            ExactManaNetworkProgram::GlobalBasicLandSubtypeGrant(program) => {
+                added_colors |= exact_land_mana_mask(&[program.granted_mana_color]);
+            }
+            _ => {}
+        }
+    }
+    (any_color, added_colors)
+}
+
 impl TurnManaPool {
     fn from_battlefield_with_ability_context(
         battlefield: &[BattlefieldManaSource],
@@ -457,6 +563,10 @@ impl TurnManaPool {
         context: ActiveAbilityContext,
         zones: &KnownLineZoneState,
     ) -> Self {
+        let reviewed_land_grant_is_active = {
+            let (any_color, granted_colors) = active_mana_network_land_grants(deck, zones);
+            any_color || !granted_colors.is_empty()
+        };
         let mut battlefield_sequences = HashMap::<usize, VecDeque<u16>>::new();
         for presence in &zones.battlefield {
             battlefield_sequences
@@ -466,7 +576,12 @@ impl TurnManaPool {
         }
         let sources = battlefield
             .iter()
-            .filter(|source| battlefield_source_is_trajectory_available(source, turn))
+            .filter(|source| {
+                battlefield_source_is_trajectory_available(source, turn)
+                    || (reviewed_land_grant_is_active
+                        && source.is_land
+                        && turn >= source.available_from_turn)
+            })
             .map(|source| {
                 let origin_sequence = source.card_index.and_then(|card_index| {
                     battlefield_sequences
@@ -483,7 +598,11 @@ impl TurnManaPool {
                     )
                 });
                 PoolManaSource {
-                    colors: source.colors,
+                    colors: if source.reliability >= 0.999 {
+                        source.colors
+                    } else {
+                        ManaColorMask::NONE
+                    },
                     remaining: 0,
                     is_treasure: false,
                     treasure_on_first_spend: if is_dwarf {
@@ -495,8 +614,16 @@ impl TurnManaPool {
                     origin_card_index: source.card_index,
                     origin_sequence,
                     physically_tapped: false,
-                    behavior: source.behavior,
-                    base_capacity: source.capacity,
+                    behavior: if source.reliability >= 0.999 {
+                        source.behavior
+                    } else {
+                        BattlefieldManaBehavior::NativeLand(ManaColorMask::NONE)
+                    },
+                    base_capacity: if source.reliability >= 0.999 {
+                        source.capacity
+                    } else {
+                        1
+                    },
                     is_land: source.is_land,
                     activation_used: false,
                     source_damage_on_first_spend: source.source_damage_on_first_spend,
@@ -524,6 +651,26 @@ impl TurnManaPool {
         let artifact_count = battlefield_artifact_count(deck, zones)
             .saturating_add(self.remaining_treasures() as usize);
         let legendary_colors = controlled_legendary_creature_or_planeswalker_colors(deck, zones);
+        let (lands_have_any_color, globally_granted_land_colors) =
+            active_mana_network_land_grants(deck, zones);
+        let native_land_colors = self
+            .sources
+            .iter()
+            .filter(|source| source.is_land && !source.is_treasure)
+            .fold(ManaColorMask::NONE, |colors, source| {
+                let base = match source.behavior {
+                    BattlefieldManaBehavior::NativeLand(base) => base,
+                    BattlefieldManaBehavior::CoupledFixed(pair) => pair[0] | pair[1],
+                    BattlefieldManaBehavior::ControlledLandCapabilities => ManaColorMask::NONE,
+                    _ => source.colors,
+                };
+                colors
+                    | if lands_have_any_color {
+                        ManaColorMask::ANY_COLOR
+                    } else {
+                        base | globally_granted_land_colors
+                    }
+            });
         for source in &mut self.sources {
             if source.origin_card_index.is_none()
                 || source.is_treasure
@@ -534,6 +681,23 @@ impl TurnManaPool {
             }
             let colors = match source.behavior {
                 BattlefieldManaBehavior::Fixed => source.colors,
+                BattlefieldManaBehavior::CommanderIdentity(identity) => identity,
+                BattlefieldManaBehavior::ControlledLandCapabilities => native_land_colors,
+                BattlefieldManaBehavior::NativeLand(base) => {
+                    if lands_have_any_color {
+                        ManaColorMask::ANY_COLOR
+                    } else {
+                        base | globally_granted_land_colors
+                    }
+                }
+                BattlefieldManaBehavior::CoupledFixed(pair) => {
+                    let coupled = pair[0] | pair[1];
+                    if lands_have_any_color {
+                        coupled | ManaColorMask::ANY_COLOR
+                    } else {
+                        coupled | globally_granted_land_colors
+                    }
+                }
                 BattlefieldManaBehavior::AnyColorAmongControlledLegendaryCreaturesAndPlaneswalkers => {
                     legendary_colors
                 }
@@ -549,6 +713,8 @@ impl TurnManaPool {
             source.colors = colors;
             source.remaining = if colors.is_empty() {
                 0
+            } else if matches!(source.behavior, BattlefieldManaBehavior::CoupledFixed(_)) {
+                2
             } else {
                 source.base_capacity.saturating_add(if source.is_land {
                     0
@@ -564,9 +730,9 @@ impl TurnManaPool {
     }
 
     fn total(&self) -> u8 {
-        self.sources
-            .iter()
-            .fold(0u8, |total, source| total.saturating_add(source.remaining))
+        self.sources.iter().fold(0u8, |total, source| {
+            total.saturating_add(source.available_mana())
+        })
     }
 
     fn add_floating(&mut self, colors: ManaColorMask, amount: u8) {
@@ -658,7 +824,7 @@ impl TurnManaPool {
             )
         });
         for source_index in 0..self.sources.len() {
-            let removed = self.sources[source_index].remaining.min(amount);
+            let removed = self.sources[source_index].available_mana().min(amount);
             self.spend_from_source(source_index, removed, None);
             amount -= removed;
             if amount == 0 {
@@ -827,7 +993,7 @@ impl TurnManaPool {
             )
         });
         for source_index in 0..self.sources.len() {
-            let spent = self.sources[source_index].remaining.min(amount);
+            let spent = self.sources[source_index].available_mana().min(amount);
             self.spend_from_source(source_index, spent, None);
             amount -= spent;
             if amount == 0 {
@@ -846,15 +1012,34 @@ impl TurnManaPool {
         let Some(source) = self.sources.get_mut(source_index) else {
             return;
         };
-        if amount == 0 || source.remaining < amount {
+        if amount == 0 || source.available_mana() < amount {
             return;
+        }
+        if let BattlefieldManaBehavior::CoupledFixed(pair) = source.behavior
+            && source.remaining >= 2
+            && amount == 1
+        {
+            let spent_first = accepted_colors.is_none_or(|accepted| accepted.intersects(pair[0]));
+            let spent_second = accepted_colors.is_some_and(|accepted| accepted.intersects(pair[1]));
+            if spent_first {
+                source.colors = pair[1];
+            } else if spent_second {
+                source.colors = pair[0];
+            } else {
+                // A continuously granted basic-land or any-color activation
+                // produces one mana instead of the land's coupled pair.
+                source.remaining = 1;
+                source.colors = ManaColorMask::NONE;
+            }
         }
         let source_damage = source_damage_for_spend(*source, accepted_colors);
         source.remaining -= amount;
         if !source.first_spend_recorded {
             source.first_spend_recorded = true;
             source.activation_used = true;
-            source.physically_tapped |= source.origin_card_index.is_some() && !source.is_treasure;
+            source.physically_tapped |= (source.origin_card_index.is_some()
+                || source.origin_sequence.is_some())
+                && !source.is_treasure;
             self.pending_triggered_treasures = self
                 .pending_triggered_treasures
                 .saturating_add(source.treasure_on_first_spend);
@@ -942,7 +1127,7 @@ fn active_ability_context(deck: &CompiledDeck, zones: &KnownLineZoneState) -> Ac
         let Some(card) = deck.cards.get(presence.card_index) else {
             continue;
         };
-        for ability in card.ability_program.executable_abilities() {
+        for ability in executable_battlefield_abilities(card, zones, presence.sequence) {
             if matches!(
                 ability.timing,
                 AbilityTiming::Triggered {
@@ -995,31 +1180,126 @@ fn type_line_has_subtype(type_line: &str, subtype: &str) -> bool {
 }
 
 fn card_has_keyword(card: &CompiledCard, keyword: &str) -> bool {
-    card.ability_program.executable_abilities().any(|ability| {
-        ability.normalized_oracle.eq_ignore_ascii_case(keyword)
-            || oracle_declares_source_keyword(&ability.normalized_oracle, keyword)
-    }) || card.ability_program.unsupported_abilities().any(|ability| {
-        ability.normalized_oracle.eq_ignore_ascii_case(keyword)
-            || oracle_declares_source_keyword(&ability.normalized_oracle, keyword)
+    card.effects.has_printed_keyword(keyword)
+}
+
+fn exact_modal_cast_face(
+    card: &CompiledCard,
+    face_index: usize,
+) -> Option<(&BoundFaceAbilityProgram, &BoundFaceCastCharacteristics)> {
+    let face = card
+        .ability_program
+        .face_programs
+        .get(face_index)
+        .filter(|face| face.face_index == face_index)?;
+    Some((face, face.cast_characteristics.as_ref()?))
+}
+
+fn face_ability_compilations(
+    card: &CompiledCard,
+    face_index: Option<usize>,
+) -> &[AbilityCompilation] {
+    face_index
+        .and_then(|face_index| exact_modal_cast_face(card, face_index))
+        .map_or(card.ability_program.abilities.as_slice(), |(face, _)| {
+            face.abilities.as_slice()
+        })
+}
+
+fn executable_face_abilities<'a>(
+    card: &'a CompiledCard,
+    face_index: Option<usize>,
+) -> impl Iterator<Item = &'a crate::ability_program::ExecutableAbility> + 'a {
+    face_ability_compilations(card, face_index)
+        .iter()
+        .filter_map(|compilation| match compilation {
+            AbilityCompilation::Executable(ability) => Some(ability),
+            AbilityCompilation::Unsupported(_) => None,
+        })
+}
+
+fn battlefield_face_index(zones: &KnownLineZoneState, sequence: u16) -> Option<usize> {
+    zones.battlefield_faces.get(&sequence).copied()
+}
+
+fn battlefield_face_program<'a>(
+    card: &'a CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> Option<&'a BoundFaceAbilityProgram> {
+    let face_index = battlefield_face_index(zones, sequence)?;
+    exact_modal_cast_face(card, face_index).map(|(face, _)| face)
+}
+
+fn battlefield_type_line<'a>(
+    card: &'a CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> &'a str {
+    battlefield_face_program(card, zones, sequence)
+        .map_or(card.type_line.as_str(), |face| face.type_line.as_str())
+}
+
+fn battlefield_card_types(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> CardTypeProfile {
+    battlefield_face_program(card, zones, sequence).map_or(card.effects.card_types, |face| {
+        compile_card_types(&face.type_line)
     })
 }
 
-fn oracle_declares_source_keyword(oracle: &str, keyword: &str) -> bool {
-    let keyword = keyword.to_ascii_lowercase();
-    oracle.split(',').map(str::trim).any(|clause| {
-        let clause = clause.to_ascii_lowercase();
-        clause == keyword
-            || clause
-                .strip_prefix(&keyword)
-                .is_some_and(|suffix| suffix.trim_start().starts_with('('))
-    })
+fn battlefield_face_characteristics<'a>(
+    card: &'a CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> Option<&'a BoundFaceCastCharacteristics> {
+    let face_index = battlefield_face_index(zones, sequence)?;
+    exact_modal_cast_face(card, face_index).map(|(_, characteristics)| characteristics)
+}
+
+fn battlefield_colors<'a>(
+    card: &'a CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> &'a [String] {
+    battlefield_face_characteristics(card, zones, sequence)
+        .map_or(card.colors.as_slice(), |characteristics| {
+            characteristics.colors.as_slice()
+        })
+}
+
+fn battlefield_has_keyword(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+    keyword: &str,
+) -> bool {
+    battlefield_face_characteristics(card, zones, sequence).map_or_else(
+        || card_has_keyword(card, keyword),
+        |characteristics| {
+            characteristics
+                .keywords
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(keyword))
+        },
+    )
+}
+
+fn executable_battlefield_abilities<'a>(
+    card: &'a CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> impl Iterator<Item = &'a crate::ability_program::ExecutableAbility> + 'a {
+    executable_face_abilities(card, battlefield_face_index(zones, sequence))
 }
 
 fn combat_object_id(sequence: u16) -> ObjectId {
     ObjectId(u64::from(sequence).saturating_add(1))
 }
 
-fn permanent_types_for_card(card: &CompiledCard) -> BTreeSet<PermanentType> {
+fn permanent_types_for_type_line(type_line: &str) -> BTreeSet<PermanentType> {
     [
         ("Artifact", PermanentType::Artifact),
         ("Battle", PermanentType::Battle),
@@ -1030,13 +1310,13 @@ fn permanent_types_for_card(card: &CompiledCard) -> BTreeSet<PermanentType> {
         ("Planeswalker", PermanentType::Planeswalker),
     ]
     .into_iter()
-    .filter_map(|(name, kind)| type_line_has_subtype(&card.type_line, name).then_some(kind))
+    .filter_map(|(name, kind)| type_line_has_subtype(type_line, name).then_some(kind))
     .collect()
 }
 
 fn creature_types_from_type_line(type_line: &str) -> BTreeSet<String> {
     let subtype_text = type_line
-        .split_once('\u{2014}')
+        .split_once('-')
         .map(|(_, subtypes)| subtypes)
         .or_else(|| type_line.split_once(" - ").map(|(_, subtypes)| subtypes));
     subtype_text
@@ -1108,7 +1388,9 @@ fn preferred_creature_type(deck: &CompiledDeck, zones: &KnownLineZoneState) -> O
     }
     for presence in &zones.battlefield {
         if let Some(card) = deck.cards.get(presence.card_index) {
-            for creature_type in creature_types_from_type_line(&card.type_line) {
+            for creature_type in
+                creature_types_from_type_line(battlefield_type_line(card, zones, presence.sequence))
+            {
                 let current = scores.get(&creature_type).copied().unwrap_or_default();
                 scores.insert(creature_type, current.saturating_add(4));
             }
@@ -1130,6 +1412,73 @@ fn preferred_creature_type(deck: &CompiledDeck, zones: &KnownLineZoneState) -> O
         .map(|(creature_type, _)| creature_type)
 }
 
+fn characteristic_keyword_to_combat(keyword: CharacteristicCombatKeyword) -> Option<CombatKeyword> {
+    Some(match keyword {
+        CharacteristicCombatKeyword::Deathtouch => CombatKeyword::Deathtouch,
+        CharacteristicCombatKeyword::DoubleStrike => CombatKeyword::DoubleStrike,
+        CharacteristicCombatKeyword::FirstStrike => CombatKeyword::FirstStrike,
+        CharacteristicCombatKeyword::Flying => CombatKeyword::Flying,
+        CharacteristicCombatKeyword::Haste => CombatKeyword::Haste,
+        CharacteristicCombatKeyword::Hexproof => CombatKeyword::Hexproof,
+        CharacteristicCombatKeyword::Indestructible => CombatKeyword::Indestructible,
+        CharacteristicCombatKeyword::Lifelink => CombatKeyword::Lifelink,
+        CharacteristicCombatKeyword::Menace => CombatKeyword::Menace,
+        CharacteristicCombatKeyword::Reach => CombatKeyword::Reach,
+        CharacteristicCombatKeyword::Shroud => CombatKeyword::Shroud,
+        CharacteristicCombatKeyword::Trample => CombatKeyword::Trample,
+        CharacteristicCombatKeyword::Vigilance => CombatKeyword::Vigilance,
+        CharacteristicCombatKeyword::Defender => return None,
+    })
+}
+
+fn characteristic_oracle_authorizes_keyword(
+    card: &CompiledCard,
+    face_index: u16,
+    keyword: CombatKeyword,
+) -> bool {
+    card.effects.characteristic_oracle.iter().any(|compiled| {
+        let CharacteristicOracleProgram::PureCombatKeyword(program) = &compiled.program else {
+            return false;
+        };
+        compiled.ownership.face_index == face_index
+            && program
+                .complete_clause_keywords
+                .contains(&program.owned_keyword)
+            && program
+                .complete_clause_keywords
+                .iter()
+                .copied()
+                .any(|candidate| characteristic_keyword_to_combat(candidate) == Some(keyword))
+    })
+}
+
+fn characteristic_oracle_authorizes_devotion_toughness(
+    card: &CompiledCard,
+    color: crate::effects::DevotionColor,
+) -> bool {
+    let reviewed_color = match color {
+        crate::effects::DevotionColor::White => ReviewedDevotionColor::White,
+        crate::effects::DevotionColor::Blue => ReviewedDevotionColor::Blue,
+        crate::effects::DevotionColor::Black => ReviewedDevotionColor::Black,
+        crate::effects::DevotionColor::Red => ReviewedDevotionColor::Red,
+        crate::effects::DevotionColor::Green => ReviewedDevotionColor::Green,
+    };
+    card.effects.characteristic_oracle.iter().any(|compiled| {
+        matches!(
+            compiled.program,
+            CharacteristicOracleProgram::DevotionToughness(ref program)
+                if program.printed_toughness_is_star
+                    && program.color == reviewed_color
+                    && program.source_card_types.iter().any(|card_type| {
+                        matches!(
+                            card_type,
+                            crate::characteristic_oracle_runtime::SourceCardType::Creature
+                        )
+                    })
+        )
+    })
+}
+
 fn printed_combat_keywords(card: &CompiledCard) -> BTreeSet<CombatKeyword> {
     [
         ("Deathtouch", CombatKeyword::Deathtouch),
@@ -1147,7 +1496,51 @@ fn printed_combat_keywords(card: &CompiledCard) -> BTreeSet<CombatKeyword> {
         ("Vigilance", CombatKeyword::Vigilance),
     ]
     .into_iter()
-    .filter_map(|(oracle, keyword)| card_has_keyword(card, oracle).then_some(keyword))
+    .filter_map(|(oracle, keyword)| {
+        (card_has_keyword(card, oracle)
+            && characteristic_oracle_authorizes_keyword(card, 0, keyword))
+        .then_some(keyword)
+    })
+    .collect()
+}
+
+fn printed_combat_keywords_for_presence(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> BTreeSet<CombatKeyword> {
+    let Some(characteristics) = battlefield_face_characteristics(card, zones, sequence) else {
+        return printed_combat_keywords(card);
+    };
+    let Some(face_index) = battlefield_face_index(zones, sequence)
+        .and_then(|face_index| u16::try_from(face_index).ok())
+    else {
+        return BTreeSet::new();
+    };
+    [
+        ("Deathtouch", CombatKeyword::Deathtouch),
+        ("Double strike", CombatKeyword::DoubleStrike),
+        ("First strike", CombatKeyword::FirstStrike),
+        ("Flying", CombatKeyword::Flying),
+        ("Haste", CombatKeyword::Haste),
+        ("Hexproof", CombatKeyword::Hexproof),
+        ("Indestructible", CombatKeyword::Indestructible),
+        ("Lifelink", CombatKeyword::Lifelink),
+        ("Menace", CombatKeyword::Menace),
+        ("Reach", CombatKeyword::Reach),
+        ("Shroud", CombatKeyword::Shroud),
+        ("Trample", CombatKeyword::Trample),
+        ("Vigilance", CombatKeyword::Vigilance),
+    ]
+    .into_iter()
+    .filter_map(|(name, keyword)| {
+        (characteristics
+            .keywords
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(name))
+            && characteristic_oracle_authorizes_keyword(card, face_index, keyword))
+        .then_some(keyword)
+    })
     .collect()
 }
 
@@ -1186,7 +1579,7 @@ fn controller_has_creature_with_program_keyword(
         let Some(card) = deck.cards.get(presence.card_index) else {
             return false;
         };
-        if !card.effects.card_types.is_creature {
+        if !battlefield_card_types(card, zones, presence.sequence).is_creature {
             return false;
         }
         combat_runtime
@@ -1197,7 +1590,8 @@ fn controller_has_creature_with_program_keyword(
                     .ok()
             })
             .is_some_and(|profile| profile.keywords.contains(&combat_keyword))
-            || printed_combat_keywords(card).contains(&combat_keyword)
+            || printed_combat_keywords_for_presence(card, zones, presence.sequence)
+                .contains(&combat_keyword)
     }) || zones.creature_tokens.iter().any(|token| {
         combat_runtime
             .as_ref()
@@ -1216,6 +1610,15 @@ fn generic_spell_cost_reduction(
     zones: &KnownLineZoneState,
     card_index: usize,
 ) -> u16 {
+    generic_spell_cost_reduction_for_face(deck, zones, card_index, None)
+}
+
+fn generic_spell_cost_reduction_for_face(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+    card_index: usize,
+    face_index: Option<usize>,
+) -> u16 {
     let Some(spell) = deck.cards.get(card_index) else {
         return 0;
     };
@@ -1225,7 +1628,7 @@ fn generic_spell_cost_reduction(
         let Some(source) = deck.cards.get(source_presence.card_index) else {
             continue;
         };
-        for ability in source.ability_program.executable_abilities() {
+        for ability in executable_battlefield_abilities(source, zones, source_presence.sequence) {
             if ability.timing != AbilityTiming::StaticModifier
                 || !ability.costs.is_empty()
                 || ability.preconditions
@@ -1238,7 +1641,8 @@ fn generic_spell_cost_reduction(
             };
             let matches = match effect.affected_spell {
                 SpellCostReductionScope::CreatureSpellYouCastWithKeyword(keyword) => {
-                    effect.condition.is_none() && card_has_program_creature_keyword(spell, keyword)
+                    effect.condition.is_none()
+                        && face_has_program_creature_keyword(spell, face_index, keyword)
                 }
                 SpellCostReductionScope::SourceSpell => false,
             };
@@ -1248,7 +1652,7 @@ fn generic_spell_cost_reduction(
         }
     }
 
-    for ability in spell.ability_program.executable_abilities() {
+    for ability in executable_face_abilities(spell, face_index) {
         if ability.timing != AbilityTiming::StaticModifier
             || !ability.costs.is_empty()
             || !ability.preconditions.is_empty()
@@ -1273,6 +1677,38 @@ fn generic_spell_cost_reduction(
     }
 
     reduction
+}
+
+fn face_has_program_creature_keyword(
+    card: &CompiledCard,
+    face_index: Option<usize>,
+    keyword: GrantedCreatureKeyword,
+) -> bool {
+    let Some(face_index) = face_index else {
+        return card_has_program_creature_keyword(card, keyword);
+    };
+    let Some((face, characteristics)) = exact_modal_cast_face(card, face_index) else {
+        return false;
+    };
+    compile_card_types(&face.type_line).is_creature
+        && characteristics.keywords.iter().any(|candidate| {
+            candidate.eq_ignore_ascii_case(match keyword {
+                GrantedCreatureKeyword::CantBeBlocked => "Can't be blocked",
+                GrantedCreatureKeyword::Deathtouch => "Deathtouch",
+                GrantedCreatureKeyword::DoubleStrike => "Double strike",
+                GrantedCreatureKeyword::FirstStrike => "First strike",
+                GrantedCreatureKeyword::Flying => "Flying",
+                GrantedCreatureKeyword::Haste => "Haste",
+                GrantedCreatureKeyword::Hexproof => "Hexproof",
+                GrantedCreatureKeyword::Indestructible => "Indestructible",
+                GrantedCreatureKeyword::Lifelink => "Lifelink",
+                GrantedCreatureKeyword::Menace => "Menace",
+                GrantedCreatureKeyword::Reach => "Reach",
+                GrantedCreatureKeyword::Shroud => "Shroud",
+                GrantedCreatureKeyword::Trample => "Trample",
+                GrantedCreatureKeyword::Vigilance => "Vigilance",
+            })
+        })
 }
 
 fn exact_self_alternative_spell_cost(
@@ -1312,6 +1748,239 @@ fn exact_self_alternative_spell_cost(
     matched
 }
 
+fn reviewed_alternative_cast_choice(
+    card: &CompiledCard,
+) -> Option<&crate::alternative_cast_runtime::CastChoice> {
+    let compiled = card.effects.alternative_cast.as_ref()?;
+    let cast = match &compiled.program {
+        ReviewedAlternativeCastProgram::Bounce(program) => &program.cast,
+        ReviewedAlternativeCastProgram::ExileWithControllerCompensation(program) => &program.cast,
+        ReviewedAlternativeCastProgram::ConditionalFreeCounter(program) => &program.cast,
+        ReviewedAlternativeCastProgram::EscapeAura(program) => &program.cast,
+    };
+    (compiled.ownership.complete_root_required
+        && cast.choose_exactly_one
+        && cast.options.len() == 2
+        && cast
+            .options
+            .iter()
+            .filter(|option| option.kind == ReviewedCastOptionKind::Printed)
+            .count()
+            == 1)
+        .then_some(cast)
+}
+
+fn reviewed_alternative_option(
+    card: &CompiledCard,
+    choice: SpellPaymentChoice,
+) -> Option<&ReviewedCastOption> {
+    let cast = reviewed_alternative_cast_choice(card)?;
+    let mut matches = cast.options.iter().filter(|option| match choice {
+        SpellPaymentChoice::Printed => option.kind == ReviewedCastOptionKind::Printed,
+        SpellPaymentChoice::Alternative => option.kind != ReviewedCastOptionKind::Printed,
+    });
+    let option = matches.next()?;
+    matches.next().is_none().then_some(option)
+}
+
+fn reviewed_alternative_mana_profile(
+    cost: &ReviewedAlternativeManaCost,
+) -> Option<ManaCostProfile> {
+    let mut oracle = String::new();
+    for symbol in &cost.symbols {
+        match symbol {
+            ReviewedAlternativeManaSymbol::Generic(value) if *value > 0 => {
+                oracle.push_str(&format!("{{{value}}}"));
+            }
+            ReviewedAlternativeManaSymbol::Blue => oracle.push_str("{U}"),
+            ReviewedAlternativeManaSymbol::White => oracle.push_str("{W}"),
+            ReviewedAlternativeManaSymbol::Generic(_) => return None,
+        }
+    }
+    let profile = parse_mana_cost(Some(&oracle));
+    (profile.confidence >= 0.999
+        && profile.faces.len() == 1
+        && profile.faces[0].confidence >= 0.999)
+        .then_some(profile)
+}
+
+fn commander_permanent_is_controlled(deck: &CompiledDeck, zones: &KnownLineZoneState) -> bool {
+    zones
+        .battlefield
+        .iter()
+        .any(|presence| deck.commanders.contains(&presence.card_index))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pay_reviewed_alternative_spell_cost_choice(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+    mana_pool: &mut TurnManaPool,
+    card_index: usize,
+    additional_generic: u8,
+    generic_reduction: u16,
+    reserve: u8,
+    choice: SpellPaymentChoice,
+) -> Option<bool> {
+    let card = deck.cards.get(card_index)?;
+    let option = reviewed_alternative_option(card, choice)?;
+    if option.destination_zone != ReviewedAlternativeObjectZone::Stack {
+        return Some(false);
+    }
+    let valid_source = match choice {
+        SpellPaymentChoice::Printed => {
+            option.kind == ReviewedCastOptionKind::Printed
+                && option.source_zone == ReviewedAlternativeObjectZone::Hand
+                && !option.waives_printed_mana_cost
+                && option.condition.is_none()
+                && option.additional_costs.is_empty()
+        }
+        SpellPaymentChoice::Alternative => match option.kind {
+            ReviewedCastOptionKind::Overload => {
+                option.source_zone == ReviewedAlternativeObjectZone::Hand
+                    && option.waives_printed_mana_cost
+                    && option.condition.is_none()
+                    && option.additional_costs.is_empty()
+            }
+            ReviewedCastOptionKind::CommanderControlledFree => {
+                option.source_zone == ReviewedAlternativeObjectZone::Hand
+                    && option.waives_printed_mana_cost
+                    && option.mana_cost.is_none()
+                    && option.condition
+                        == Some(ReviewedCastCondition::CommanderPermanentYouControlOnBattlefield)
+                    && option.additional_costs.is_empty()
+                    && commander_permanent_is_controlled(deck, zones)
+            }
+            // The ordinary hand-cast action has no physical graveyard source
+            // identity. Escape uses the dedicated exact executor below.
+            ReviewedCastOptionKind::Escape | ReviewedCastOptionKind::Printed => false,
+        },
+    };
+    if !valid_source {
+        return Some(false);
+    }
+    let paid = match &option.mana_cost {
+        Some(cost) => reviewed_alternative_mana_profile(cost).is_some_and(|cost| {
+            mana_pool.pay_with_generic_adjustment(
+                Some(&cost),
+                0,
+                additional_generic,
+                generic_reduction,
+                reserve,
+            )
+        }),
+        None => mana_pool.pay_with_generic_adjustment(
+            None,
+            0,
+            additional_generic,
+            generic_reduction,
+            reserve,
+        ),
+    };
+    Some(paid)
+}
+
+fn pay_reviewed_escape_cast_cost(
+    deck: &CompiledDeck,
+    zones: &mut KnownLineZoneState,
+    mana_pool: &mut TurnManaPool,
+    card_index: usize,
+    source_object_id: u32,
+    additional_generic: u8,
+) -> bool {
+    let Some(card) = deck.cards.get(card_index) else {
+        return false;
+    };
+    let Some(option) = reviewed_alternative_option(card, SpellPaymentChoice::Alternative) else {
+        return false;
+    };
+    if option.kind != ReviewedCastOptionKind::Escape
+        || option.source_zone != ReviewedAlternativeObjectZone::Graveyard
+        || option.destination_zone != ReviewedAlternativeObjectZone::Stack
+        || !option.waives_printed_mana_cost
+        || option.condition.is_some()
+    {
+        return false;
+    }
+    let [
+        ReviewedAdditionalCastCost::ExileOtherGraveyardCards {
+            count,
+            source_zone,
+            destination_zone,
+            exclude_casting_card,
+            require_distinct_physical_objects,
+        },
+    ] = option.additional_costs.as_slice()
+    else {
+        return false;
+    };
+    if *count == 0
+        || *source_zone != ReviewedAlternativeObjectZone::Graveyard
+        || *destination_zone != ReviewedAlternativeObjectZone::Exile
+        || !exclude_casting_card
+        || !require_distinct_physical_objects
+        || zones
+            .graveyard
+            .object(source_object_id)
+            .is_none_or(|object| object.card_index != card_index)
+    {
+        return false;
+    }
+    let mut additional_objects = zones
+        .graveyard
+        .iter_objects()
+        .filter(|object| object.object_id != source_object_id)
+        .copied()
+        .collect::<Vec<_>>();
+    additional_objects.sort_unstable();
+    additional_objects.truncate(usize::from(*count));
+    if additional_objects.len() != usize::from(*count) {
+        return false;
+    }
+    let Some(cost) = option
+        .mana_cost
+        .as_ref()
+        .and_then(reviewed_alternative_mana_profile)
+    else {
+        return false;
+    };
+    let mut staged_pool = mana_pool.clone();
+    if !staged_pool.pay_with_generic_adjustment(Some(&cost), 0, additional_generic, 0, 0) {
+        return false;
+    }
+    let mut staged_zones = zones.clone();
+    for object in additional_objects {
+        let Some(object) = staged_zones.graveyard.remove_object(object.object_id) else {
+            return false;
+        };
+        staged_zones.push_existing_exile_card(object);
+        staged_zones.advance_sequence();
+    }
+    *zones = staged_zones;
+    *mana_pool = staged_pool;
+    true
+}
+
+fn reviewed_escape_source_object(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+    card_index: usize,
+) -> Option<KnownZoneCard> {
+    let card = deck.cards.get(card_index)?;
+    let option = reviewed_alternative_option(card, SpellPaymentChoice::Alternative)?;
+    if option.kind != ReviewedCastOptionKind::Escape
+        || option.source_zone != ReviewedAlternativeObjectZone::Graveyard
+    {
+        return None;
+    }
+    zones
+        .graveyard
+        .iter_objects()
+        .filter(|object| object.card_index == card_index)
+        .min_by_key(|object| object.object_id)
+        .copied()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SpellPaymentChoice {
     Printed,
@@ -1338,15 +2007,18 @@ fn creature_object_has_effective_subtype(
     if let Some(card_index) = card_index
         && let Some(card) = deck.cards.get(card_index)
     {
-        if card_has_keyword(card, "Changeling") || card_has_subtype(card, subtype) {
+        if battlefield_has_keyword(card, zones, sequence, "Changeling")
+            || type_line_has_subtype(battlefield_type_line(card, zones, sequence), subtype)
+        {
             return true;
         }
-        let source_has_chosen_type = card.ability_program.executable_abilities().any(|ability| {
-            ability
-                .effects
-                .iter()
-                .any(|effect| matches!(effect, AbilityEffect::SourceHasChosenCreatureType(_)))
-        });
+        let source_has_chosen_type =
+            executable_battlefield_abilities(card, zones, sequence).any(|ability| {
+                ability
+                    .effects
+                    .iter()
+                    .any(|effect| matches!(effect, AbilityEffect::SourceHasChosenCreatureType(_)))
+            });
         return source_has_chosen_type
             && zones
                 .chosen_creature_types
@@ -1379,7 +2051,7 @@ fn alternative_cost_tap_candidates(
         .filter(|source| source.physically_tapped)
         .filter_map(|source| source.origin_sequence)
         .collect::<BTreeSet<_>>();
-    // Synthetic pools used by focused tests may not carry object identities.
+    // Mana pools without object identities cannot prove which source was tapped.
     // Treat only an actual recorded activation as tapped; `activation_used`
     // alone also represents summoning sickness and is not enough.
     let mut unidentified_tapped_mana_creatures = mana_pool
@@ -1609,6 +2281,18 @@ fn pay_spell_cost_choice(
         return false;
     };
     let generic_reduction = generic_spell_cost_reduction(deck, zones, card_index);
+    if let Some(paid) = pay_reviewed_alternative_spell_cost_choice(
+        deck,
+        zones,
+        mana_pool,
+        card_index,
+        additional_generic,
+        generic_reduction,
+        reserve,
+        payment_choice,
+    ) {
+        return paid;
+    }
     match payment_choice {
         SpellPaymentChoice::Printed => {
             let exact_alternative_exists = exact_self_alternative_spell_cost(card).is_some();
@@ -1769,6 +2453,23 @@ fn pay_spell_printed_or_alternative_cost(
     )
 }
 
+fn pay_modal_face_cost(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+    mana_pool: &mut TurnManaPool,
+    card_index: usize,
+    face_index: usize,
+    cost: &ManaCostProfile,
+    additional_generic: u8,
+) -> bool {
+    if cost.confidence < 0.999 || cost.faces.len() != 1 || cost.faces[0].confidence < 0.999 {
+        return false;
+    }
+    let generic_reduction =
+        generic_spell_cost_reduction_for_face(deck, zones, card_index, Some(face_index));
+    mana_pool.pay_with_generic_adjustment(Some(cost), 0, additional_generic, generic_reduction, 0)
+}
+
 fn program_specific_type_to_permanent(card_type: SpecificCardType) -> PermanentType {
     match card_type {
         SpecificCardType::Artifact => PermanentType::Artifact,
@@ -1814,8 +2515,12 @@ fn static_modifier_value_can_help(value: &StaticModifierValue) -> bool {
     }
 }
 
-fn card_has_beneficial_attached_static_effect(card: &CompiledCard) -> bool {
-    card.ability_program.executable_abilities().any(|ability| {
+fn battlefield_has_beneficial_attached_static_effect(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> bool {
+    executable_battlefield_abilities(card, zones, sequence).any(|ability| {
         ability.effects.iter().any(|effect| {
             let AbilityEffect::ApplyStaticCreatureModifier(modifier) = effect else {
                 return false;
@@ -1830,8 +2535,12 @@ fn card_has_beneficial_attached_static_effect(card: &CompiledCard) -> bool {
     })
 }
 
-fn card_has_beneficial_attached_trigger(card: &CompiledCard) -> bool {
-    card.ability_program.executable_abilities().any(|ability| {
+fn battlefield_has_beneficial_attached_trigger(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> bool {
+    executable_battlefield_abilities(card, zones, sequence).any(|ability| {
         matches!(
             ability.timing,
             AbilityTiming::Triggered {
@@ -1909,7 +2618,7 @@ fn static_modifier_target(target: StaticCreatureModifierTarget) -> EffectTarget 
 fn battlefield_grants_all_creature_types(deck: &CompiledDeck, zones: &KnownLineZoneState) -> bool {
     zones.battlefield.iter().any(|presence| {
         deck.cards.get(presence.card_index).is_some_and(|card| {
-            card.ability_program.executable_abilities().any(|ability| {
+            executable_battlefield_abilities(card, zones, presence.sequence).any(|ability| {
                 ability.effects.iter().any(|effect| {
                     matches!(
                         effect,
@@ -1928,16 +2637,43 @@ fn combat_effect_runtime(
 ) -> Option<(CombatEffectState, CombatEffectSet)> {
     const YOU: PlayerId = PlayerId(0);
     let all_creature_types = battlefield_grants_all_creature_types(deck, zones);
+    let mut controller_devotion = [0i32; 5];
+    for presence in &zones.battlefield {
+        let card = deck.cards.get(presence.card_index)?;
+        for (total, pips) in controller_devotion
+            .iter_mut()
+            .zip(card.effects.printed_devotion_pips)
+        {
+            *total = total.checked_add(i32::from(pips))?;
+        }
+    }
     let mut permanents = Vec::new();
     for presence in &zones.battlefield {
         let card = deck.cards.get(presence.card_index)?;
+        let type_line = battlefield_type_line(card, zones, presence.sequence);
+        let face_characteristics = battlefield_face_characteristics(card, zones, presence.sequence);
         let mut snapshot = PermanentSnapshot::new(
             combat_object_id(presence.sequence),
             YOU,
-            permanent_types_for_card(card),
+            permanent_types_for_type_line(type_line),
         );
-        snapshot.base_power = card.printed_power.map(i32::from);
-        snapshot.base_toughness = card.printed_toughness.map(i32::from);
+        snapshot.base_power = face_characteristics
+            .and_then(|characteristics| characteristics.printed_power)
+            .or(card.printed_power)
+            .map(i32::from);
+        snapshot.base_toughness = match (
+            face_characteristics,
+            card.effects.dynamic_creature_characteristic,
+        ) {
+            (Some(characteristics), _) => characteristics.printed_toughness.map(i32::from),
+            (None, Some(DynamicCreatureCharacteristic::ToughnessEqualsDevotion(color)))
+                if characteristic_oracle_authorizes_devotion_toughness(card, color) =>
+            {
+                Some(controller_devotion[color.pip_index()])
+            }
+            (None, Some(DynamicCreatureCharacteristic::ToughnessEqualsDevotion(_))) => None,
+            (None, None) => card.printed_toughness.map(i32::from),
+        };
         let counters = i32::from(
             zones
                 .creature_power_counters
@@ -1952,19 +2688,21 @@ fn combat_effect_runtime(
             .unwrap_or_default();
         snapshot.power_adjustment = counters.saturating_add(i32::from(temporary.0));
         snapshot.toughness_adjustment = counters.saturating_add(i32::from(temporary.1));
-        snapshot.printed_keywords = printed_combat_keywords(card);
-        snapshot.has_all_creature_types =
-            all_creature_types || card_has_keyword(card, "Changeling");
-        snapshot.creature_types = creature_types_from_type_line(&card.type_line)
+        snapshot.printed_keywords =
+            printed_combat_keywords_for_presence(card, zones, presence.sequence);
+        snapshot.has_all_creature_types = all_creature_types
+            || battlefield_has_keyword(card, zones, presence.sequence, "Changeling");
+        snapshot.creature_types = creature_types_from_type_line(type_line)
             .into_iter()
             .filter_map(|subtype| CreatureType::new(subtype).ok())
             .collect();
-        let source_has_chosen_type = card.ability_program.executable_abilities().any(|ability| {
-            ability
-                .effects
-                .iter()
-                .any(|effect| matches!(effect, AbilityEffect::SourceHasChosenCreatureType(_)))
-        });
+        let source_has_chosen_type =
+            executable_battlefield_abilities(card, zones, presence.sequence).any(|ability| {
+                ability
+                    .effects
+                    .iter()
+                    .any(|effect| matches!(effect, AbilityEffect::SourceHasChosenCreatureType(_)))
+            });
         if source_has_chosen_type
             && let Some(chosen) = zones.chosen_creature_types.get(&presence.sequence)
             && let Ok(chosen) = CreatureType::new(chosen)
@@ -2024,7 +2762,7 @@ fn combat_effect_runtime(
     for presence in &zones.battlefield {
         let card = deck.cards.get(presence.card_index)?;
         let source = combat_object_id(presence.sequence);
-        for ability in card.ability_program.executable_abilities() {
+        for ability in executable_battlefield_abilities(card, zones, presence.sequence) {
             for effect in &ability.effects {
                 let AbilityEffect::ApplyStaticCreatureModifier(modifier) = effect else {
                     continue;
@@ -2069,7 +2807,7 @@ fn trigger_multiplier_count(
         let Some(card) = deck.cards.get(presence.card_index) else {
             continue;
         };
-        for ability in card.ability_program.executable_abilities() {
+        for ability in executable_battlefield_abilities(card, zones, presence.sequence) {
             let Ok(clause_index) = u16::try_from(ability.clause_index) else {
                 continue;
             };
@@ -2136,34 +2874,185 @@ fn trigger_multiplier_count(
         .unwrap_or(1)
 }
 
-fn equipment_activation_cost(card: &CompiledCard) -> Option<&ProgramManaCost> {
-    card.ability_program
+fn exact_aura_spell_attachment_target(card: &CompiledCard) -> Option<&ProgramObjectFilter> {
+    if card.ability_program.version != EXECUTABLE_ABILITY_PROGRAM_VERSION
+        || !card.ability_program.face_programs.is_empty()
+        || !type_line_has_subtype(&card.type_line, "Aura")
+    {
+        return None;
+    }
+    let mut matches = card
+        .ability_program
         .executable_abilities()
-        .find_map(|ability| {
-            if ability.timing
-                != (AbilityTiming::Activated {
-                    window: ActivationWindow::SorcerySpeedOnly,
-                })
-                || ability.costs.len() != 1
-                || ability.effects.len() != 1
+        .filter_map(|ability| {
+            if ability.timing != AbilityTiming::AuraSpellTargeting
+                || !ability.costs.is_empty()
+                || ability.preconditions != [AbilityPrecondition::SourceZone(ProgramZone::Stack)]
             {
                 return None;
             }
-            let AbilityCost::Mana(cost) = &ability.costs[0] else {
+            let [AbilityEffect::AttachSourceToTarget(attachment)] = ability.effects.as_slice()
+            else {
                 return None;
             };
-            let AbilityEffect::AttachSourceToTarget(attachment) = &ability.effects[0] else {
+            (attachment.attachment_kind == ProgramAttachmentKind::Aura)
+                .then_some(&attachment.target)
+        });
+    let target = matches.next()?;
+    matches.next().is_none().then_some(target)
+}
+
+fn exact_flash_hand_timing_permission(card: &CompiledCard) -> bool {
+    if card.ability_program.version != EXECUTABLE_ABILITY_PROGRAM_VERSION
+        || !card.ability_program.face_programs.is_empty()
+    {
+        return false;
+    }
+    let mut matches = card
+        .ability_program
+        .executable_abilities()
+        .filter(|ability| {
+            ability.timing == AbilityTiming::StaticModifier
+                && ability.costs.is_empty()
+                && ability.preconditions == [AbilityPrecondition::SourceZone(ProgramZone::Hand)]
+                && matches!(
+                    ability.effects.as_slice(),
+                    [AbilityEffect::GrantCastTimingPermission(permission)]
+                        if permission.from == ProgramZone::Hand
+                            && permission.window == ActivationWindow::InstantSpeedOnly
+                )
+        });
+    matches.next().is_some() && matches.next().is_none()
+}
+
+fn exact_generic_ward_payment(card: &CompiledCard) -> Option<u16> {
+    if card.ability_program.version != EXECUTABLE_ABILITY_PROGRAM_VERSION
+        || !card.ability_program.face_programs.is_empty()
+    {
+        return None;
+    }
+    let mut matches = card
+        .ability_program
+        .executable_abilities()
+        .filter_map(|ability| {
+            let AbilityTiming::Triggered { event } = &ability.timing else {
                 return None;
             };
-            (attachment.attachment_kind == ProgramAttachmentKind::Equipment
-                && attachment.target.card_type == Some(ProgramCardType::Creature)
-                && attachment.target.controller == Some(ControllerRelation::You))
-            .then_some(cost)
+            let [AbilityEffect::Ward(ward)] = ability.effects.as_slice() else {
+                return None;
+            };
+            let [AbilityCost::Mana(ProgramManaCost::PrintedSymbols { oracle, profile })] =
+                ward.payment.as_slice()
+            else {
+                return None;
+            };
+            let exact_generic = profile.generic > 0
+                && profile.white == 0
+                && profile.blue == 0
+                && profile.black == 0
+                && profile.red == 0
+                && profile.green == 0
+                && profile.colorless == 0
+                && profile.variable_x == 0
+                && *oracle == format!("{{{}}}", profile.generic);
+            (ability.costs.is_empty()
+                && ability.preconditions
+                    == [
+                        AbilityPrecondition::SourceZone(ProgramZone::Battlefield),
+                        AbilityPrecondition::EventObjectIsSource,
+                        AbilityPrecondition::EventObjectMatches(event.object_filter.clone()),
+                    ]
+                && event.kind == TriggerEventKind::SourceBecomesTargetByOpponentSpellOrAbility
+                && event.actor == ControllerRelation::Opponent
+                && event.object_filter
+                    == (ProgramObjectFilter {
+                        card_type: Some(ProgramCardType::Permanent),
+                        controller: Some(ControllerRelation::You),
+                        ..ProgramObjectFilter::default()
+                    })
+                && ward.target == TargetSelector::SelfPermanent
+                && ward.triggering_object_controller == ControllerRelation::Opponent
+                && ward.counter_triggering_spell_or_ability_unless_paid
+                && exact_generic)
+                .then_some(profile.generic)
+        });
+    let payment = matches.next()?;
+    matches.next().is_none().then_some(payment)
+}
+
+fn first_table_response_payment(activity: &TableTurnActivity) -> Option<TablePaymentDecision> {
+    activity
+        .opponents()
+        .iter()
+        .find_map(|opponent| opponent.first_spell().map(|spell| spell.payment()))
+        .or_else(|| {
+            activity
+                .opponents()
+                .iter()
+                .find_map(|opponent| opponent.draws().first().map(|draw| draw.payment()))
         })
 }
 
-fn equipment_grants_shroud(card: &CompiledCard) -> bool {
-    card.ability_program.executable_abilities().any(|ability| {
+fn ward_counters_targeted_removal(card: &CompiledCard, payment: TablePaymentDecision) -> bool {
+    exact_generic_ward_payment(card).is_some_and(|cost| !payment.pays_generic(cost))
+}
+
+fn combat_attachment_filter(target: &ProgramObjectFilter) -> Option<PermanentFilter> {
+    if target.card_type != Some(ProgramCardType::Creature)
+        || !target.any_of_card_types.is_empty()
+        || target.excluded_card_type.is_some()
+        || target.subtype.is_some()
+        || target.excluded_subtype.is_some()
+        || target.nonland
+    {
+        return None;
+    }
+    let controller = match target.controller {
+        None | Some(ControllerRelation::Any) => ControllerConstraint::Any,
+        Some(ControllerRelation::You) => ControllerConstraint::SameAsSource,
+        Some(ControllerRelation::Opponent) => ControllerConstraint::DifferentFromSource,
+    };
+    Some(PermanentFilter {
+        controller,
+        all_card_types: BTreeSet::from([PermanentType::Creature]),
+        ..PermanentFilter::default()
+    })
+}
+
+fn equipment_activation_cost<'a>(
+    card: &'a CompiledCard,
+    zones: &KnownLineZoneState,
+    source_sequence: u16,
+) -> Option<&'a ProgramManaCost> {
+    executable_battlefield_abilities(card, zones, source_sequence).find_map(|ability| {
+        if ability.timing
+            != (AbilityTiming::Activated {
+                window: ActivationWindow::SorcerySpeedOnly,
+            })
+            || ability.costs.len() != 1
+            || ability.effects.len() != 1
+        {
+            return None;
+        }
+        let AbilityCost::Mana(cost) = &ability.costs[0] else {
+            return None;
+        };
+        let AbilityEffect::AttachSourceToTarget(attachment) = &ability.effects[0] else {
+            return None;
+        };
+        (attachment.attachment_kind == ProgramAttachmentKind::Equipment
+            && attachment.target.card_type == Some(ProgramCardType::Creature)
+            && attachment.target.controller == Some(ControllerRelation::You))
+        .then_some(cost)
+    })
+}
+
+fn equipment_grants_shroud(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    source_sequence: u16,
+) -> bool {
+    executable_battlefield_abilities(card, zones, source_sequence).any(|ability| {
         ability.effects.iter().any(|effect| {
             matches!(
                 effect,
@@ -2177,14 +3066,17 @@ fn equipment_grants_shroud(card: &CompiledCard) -> bool {
     })
 }
 
-fn equipped_creature_dies_draw_count(card: &CompiledCard) -> u32 {
+fn equipped_creature_dies_draw_count(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    source_sequence: u16,
+) -> u32 {
     let expected_filter = ProgramObjectFilter {
         card_type: Some(ProgramCardType::Creature),
         controller: Some(ControllerRelation::You),
         ..ProgramObjectFilter::default()
     };
-    card.ability_program
-        .executable_abilities()
+    executable_battlefield_abilities(card, zones, source_sequence)
         .filter_map(|ability| {
             let AbilityTiming::Triggered { event } = &ability.timing else {
                 return None;
@@ -2231,7 +3123,7 @@ fn choose_equipment_target_sequence(
     // real card-access action rather than a failed combat buff. Prefer a token
     // when several exact lethal targets exist, then the lowest stable object
     // identity. No hidden information or card identity participates.
-    if equipped_creature_dies_draw_count(card) > 0
+    if equipped_creature_dies_draw_count(card, zones, source_sequence) > 0
         && let Some(target) = state
             .permanents()
             .filter(|permanent| {
@@ -2366,7 +3258,7 @@ fn equipped_creature_death_trigger_draws(
                 .iter()
                 .find(|presence| presence.sequence == source_sequence)
                 .and_then(|presence| deck.cards.get(presence.card_index))?;
-            let base_draws = equipped_creature_dies_draw_count(source);
+            let base_draws = equipped_creature_dies_draw_count(source, zones, source_sequence);
             if base_draws == 0 {
                 return None;
             }
@@ -2464,9 +3356,9 @@ fn activate_equipment_for_combat(
         .iter()
         .filter_map(|presence| {
             let card = deck.cards.get(presence.card_index)?;
-            equipment_activation_cost(card)?;
+            equipment_activation_cost(card, zones, presence.sequence)?;
             Some((
-                equipment_grants_shroud(card),
+                equipment_grants_shroud(card, zones, presence.sequence),
                 presence.sequence,
                 presence.card_index,
             ))
@@ -2483,7 +3375,7 @@ fn activate_equipment_for_combat(
         let Some(card) = deck.cards.get(card_index) else {
             continue;
         };
-        let Some(cost) = equipment_activation_cost(card) else {
+        let Some(cost) = equipment_activation_cost(card, zones, source_sequence) else {
             continue;
         };
         let Some((state, effects)) = combat_effect_runtime(deck, zones) else {
@@ -2527,15 +3419,72 @@ fn activate_equipment_for_combat(
     resolution
 }
 
-fn card_has_oracle_paragraph(card: &CompiledCard, expected: &str) -> bool {
-    let expected = expected.trim().trim_end_matches('.').to_ascii_lowercase();
-    card.ability_program.abilities.iter().any(|ability| {
-        let oracle = match ability {
-            AbilityCompilation::Executable(ability) => &ability.normalized_oracle,
-            AbilityCompilation::Unsupported(ability) => &ability.normalized_oracle,
-        };
-        oracle.trim().trim_end_matches('.').to_ascii_lowercase() == expected
-    })
+fn reviewed_creature_token_replacement(
+    card: &CompiledCard,
+) -> Option<&ReviewedCreatureTokenReplacementProgram> {
+    let compiled = card.effects.object_lifecycle.as_ref()?;
+    let ReviewedObjectLifecycleProgram::CreatureTokenReplacement(program) = &compiled.program
+    else {
+        return None;
+    };
+    (program.preserve_original_count
+        && program.replacement.card_types == [ReviewedLifecycleCardType::Creature]
+        && program.replacement.subtypes == [ReviewedLifecycleSubtype::Angel]
+        && program.replacement.power == 4
+        && program.replacement.toughness == 4
+        && program.replacement.keywords
+            == [
+                ReviewedLifecycleKeyword::Flying,
+                ReviewedLifecycleKeyword::Vigilance,
+            ])
+    .then_some(program)
+}
+
+fn reviewed_creature_entry_counter_count(card: &CompiledCard) -> Option<u16> {
+    let compiled = card.effects.object_lifecycle.as_ref()?;
+    let ReviewedObjectLifecycleProgram::CreatureEntryCounters(program) = &compiled.program else {
+        return None;
+    };
+    (program.counter == ReviewedLifecycleCounterKind::PlusOnePlusOne
+        && program.count_per_trigger > 0)
+        .then_some(program.count_per_trigger)
+}
+
+fn reviewed_aura_entry_draw_count(card: &CompiledCard) -> u32 {
+    let Some(compiled) = card.effects.object_lifecycle.as_ref() else {
+        return 0;
+    };
+    let ReviewedObjectLifecycleProgram::AuraChoiceLifecycle(program) = &compiled.program else {
+        return 0;
+    };
+    let mut stored_choice_seen = false;
+    let mut draw_count = 0u32;
+    let mut grant_seen = false;
+    for step in &program.ordered_steps {
+        match step {
+            ReviewedAuraChoiceStep::ChooseAndStore { .. }
+                if !stored_choice_seen && draw_count == 0 && !grant_seen =>
+            {
+                stored_choice_seen = true;
+            }
+            ReviewedAuraChoiceStep::QueueEntryDraw { cards, .. }
+                if stored_choice_seen && draw_count == 0 && !grant_seen && *cards > 0 =>
+            {
+                draw_count = u32::from(*cards);
+            }
+            ReviewedAuraChoiceStep::GrantChosenTypeLandwalkToEnchantedCreature
+                if stored_choice_seen && draw_count > 0 && !grant_seen =>
+            {
+                grant_seen = true;
+            }
+            _ => return 0,
+        }
+    }
+    if stored_choice_seen && draw_count > 0 && grant_seen {
+        draw_count
+    } else {
+        0
+    }
 }
 
 fn four_four_flying_creature_token_replacement_is_active(
@@ -2543,12 +3492,10 @@ fn four_four_flying_creature_token_replacement_is_active(
     zones: &KnownLineZoneState,
 ) -> bool {
     zones.battlefield.iter().any(|presence| {
-        deck.cards.get(presence.card_index).is_some_and(|card| {
-            card_has_oracle_paragraph(
-                card,
-                "if one or more creature tokens would be created under your control, that many 4/4 white Angel creature tokens with flying and vigilance are created instead",
-            )
-        })
+        deck.cards
+            .get(presence.card_index)
+            .and_then(reviewed_creature_token_replacement)
+            .is_some()
     })
 }
 
@@ -3096,6 +4043,29 @@ fn draw_bounded_cards(
     }
 }
 
+fn draw_required_controller_card(
+    hand: &mut Vec<usize>,
+    library_order: &[usize],
+    next_draw_position: &mut usize,
+) -> bool {
+    let Some(card_index) = library_order.get(*next_draw_position).copied() else {
+        return false;
+    };
+    hand.push(card_index);
+    *next_draw_position = next_draw_position.saturating_add(1);
+    true
+}
+
+fn resolve_post_graveyard_storm_controller_draw(
+    zones: &KnownLineZoneState,
+    hand: &mut Vec<usize>,
+    library_order: &[usize],
+    next_draw_position: &mut usize,
+) -> bool {
+    !zones.controller_is_monarch()
+        || draw_required_controller_card(hand, library_order, next_draw_position)
+}
+
 fn combat_lifelink_gain(
     deck: &CompiledDeck,
     zones: &KnownLineZoneState,
@@ -3165,9 +4135,9 @@ fn battlefield_artifact_count(deck: &CompiledDeck, zones: &KnownLineZoneState) -
         .battlefield
         .iter()
         .filter(|presence| {
-            deck.cards
-                .get(presence.card_index)
-                .is_some_and(|card| card.effects.card_types.is_artifact)
+            deck.cards.get(presence.card_index).is_some_and(|card| {
+                battlefield_card_types(card, zones, presence.sequence).is_artifact
+            })
         })
         .count()
 }
@@ -3223,6 +4193,7 @@ fn synchronize_turn_pool_with_battlefield(
             source.origin_sequence = None;
             source.behavior = BattlefieldManaBehavior::Fixed;
             source.base_capacity = 0;
+            source.is_land = false;
             source.activation_used = true;
             return true;
         }
@@ -3243,6 +4214,7 @@ fn synchronize_turn_pool_with_battlefield(
         source.origin_sequence = None;
         source.behavior = BattlefieldManaBehavior::Fixed;
         source.base_capacity = 0;
+        source.is_land = false;
         source.activation_used = true;
         true
     });
@@ -3255,14 +4227,20 @@ fn controlled_legendary_creature_or_planeswalker_colors(
     zones
         .battlefield
         .iter()
-        .filter_map(|presence| deck.cards.get(presence.card_index))
-        .filter(|card| {
-            type_line_has_subtype(&card.type_line, "Legendary")
-                && (card.effects.card_types.is_creature
-                    || type_line_has_subtype(&card.type_line, "Planeswalker"))
+        .filter_map(|presence| {
+            deck.cards
+                .get(presence.card_index)
+                .map(|card| (presence, card))
         })
-        .fold(ManaColorMask::NONE, |colors, card| {
-            colors | printed_card_colors(card)
+        .filter(|(presence, card)| {
+            let type_line = battlefield_type_line(card, zones, presence.sequence);
+            let types = battlefield_card_types(card, zones, presence.sequence);
+            type_line_has_subtype(type_line, "Legendary")
+                && (types.is_creature || types.is_planeswalker)
+        })
+        .fold(ManaColorMask::NONE, |colors, (presence, card)| {
+            colors
+                | mana_color_mask_from_symbols(battlefield_colors(card, zones, presence.sequence))
         })
 }
 
@@ -3293,9 +4271,15 @@ fn reserve_dwarf_attack_taps(
         let Some(card) = deck.cards.get(presence.card_index) else {
             continue;
         };
-        if !card.effects.card_types.is_creature
-            || !card_has_subtype(card, "Dwarf")
-            || card_has_keyword(card, "Defender")
+        if !battlefield_card_types(card, zones, presence.sequence).is_creature
+            || !creature_object_has_effective_subtype(
+                deck,
+                zones,
+                presence.sequence,
+                Some(presence.card_index),
+                "Dwarf",
+            )
+            || battlefield_has_keyword(card, zones, presence.sequence, "Defender")
         {
             continue;
         }
@@ -3304,50 +4288,6 @@ fn reserve_dwarf_attack_taps(
         }
     }
     (reserved, treasures)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModeledLineCardKind {
-    Permanent,
-    Spell,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BasicLandSubtype {
-    Plains,
-    Island,
-    Swamp,
-    Mountain,
-    Forest,
-}
-
-impl BasicLandSubtype {
-    fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "plains" => Some(Self::Plains),
-            "island" => Some(Self::Island),
-            "swamp" => Some(Self::Swamp),
-            "mountain" => Some(Self::Mountain),
-            "forest" => Some(Self::Forest),
-            _ => None,
-        }
-    }
-
-    fn type_name(self) -> &'static str {
-        match self {
-            Self::Plains => "Plains",
-            Self::Island => "Island",
-            Self::Swamp => "Swamp",
-            Self::Mountain => "Mountain",
-            Self::Forest => "Forest",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ReviewedFetchland {
-    first_subtype: BasicLandSubtype,
-    second_subtype: BasicLandSubtype,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3394,6 +4334,280 @@ struct TurnLineSpell {
     sequence: u16,
 }
 
+/// Exact identity for one physical card retained in a non-battlefield zone.
+///
+/// Card indices identify card definitions, not physical copies. The bounded
+/// runtime therefore assigns a separate stable identity whenever a card first
+/// enters its known-zone ledger. Moving a Flashback source from graveyard to
+/// exile preserves this identity so an equal-index sibling can never be moved
+/// in its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct KnownZoneCard {
+    card_index: usize,
+    object_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingPermanentEntryTriggerBatch {
+    turn: u8,
+    becomes_monarch: bool,
+    team_counter_count: u16,
+    temporary_adjustments: Vec<(u16, i16, i16)>,
+    pending_draws: u32,
+    creature_tokens: Vec<PendingCreatureTokenCreation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingCreatureTokenCreation {
+    count: u16,
+    power: i16,
+    toughness: i16,
+    description: String,
+    keywords: Vec<CreatureTokenKeyword>,
+}
+
+const GRAVEYARD_OBJECT_NAMESPACE: u32 = 0x1000_0000;
+const EXILE_OBJECT_NAMESPACE: u32 = 0x2000_0000;
+const ZONE_OBJECT_LOCAL_MASK: u32 = 0x0fff_ffff;
+
+/// An index-compatible known zone that keeps definition and physical identity
+/// in one record. All mutations go through this wrapper, so the two values
+/// cannot become desynchronized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KnownCardZone {
+    cards: Vec<KnownZoneCard>,
+    object_namespace: u32,
+    next_local_object_id: u32,
+}
+
+impl KnownCardZone {
+    fn new(object_namespace: u32) -> Self {
+        debug_assert_eq!(object_namespace & ZONE_OBJECT_LOCAL_MASK, 0);
+        Self {
+            cards: Vec::new(),
+            object_namespace,
+            next_local_object_id: 1,
+        }
+    }
+
+    fn allocate_object(&mut self, card_index: usize) -> KnownZoneCard {
+        assert!(
+            self.next_local_object_id <= ZONE_OBJECT_LOCAL_MASK,
+            "known-zone physical identity space is exhausted"
+        );
+        let object = KnownZoneCard {
+            card_index,
+            object_id: self.object_namespace | self.next_local_object_id,
+        };
+        self.next_local_object_id = self
+            .next_local_object_id
+            .checked_add(1)
+            .expect("known-zone physical identity counter overflowed");
+        object
+    }
+
+    fn push_card(&mut self, card_index: usize) -> KnownZoneCard {
+        let object = self.allocate_object(card_index);
+        self.cards.push(object);
+        object
+    }
+
+    fn push(&mut self, card_index: usize) {
+        let _ = self.push_card(card_index);
+    }
+
+    fn push_existing(&mut self, object: KnownZoneCard) {
+        assert!(
+            self.cards
+                .iter()
+                .all(|candidate| candidate.object_id != object.object_id),
+            "known-zone physical identity must remain unique"
+        );
+        self.cards.push(object);
+    }
+
+    fn contains(&self, card_index: &usize) -> bool {
+        self.cards
+            .iter()
+            .any(|object| object.card_index == *card_index)
+    }
+
+    fn object(&self, object_id: u32) -> Option<KnownZoneCard> {
+        self.cards
+            .iter()
+            .find(|object| object.object_id == object_id)
+            .copied()
+    }
+
+    fn remove_object(&mut self, object_id: u32) -> Option<KnownZoneCard> {
+        let position = self
+            .cards
+            .iter()
+            .position(|object| object.object_id == object_id)?;
+        Some(self.cards.remove(position))
+    }
+
+    fn remove_object_at(&mut self, position: usize) -> KnownZoneCard {
+        self.cards.remove(position)
+    }
+
+    fn remove(&mut self, position: usize) -> usize {
+        self.remove_object_at(position).card_index
+    }
+
+    fn len(&self) -> usize {
+        self.cards.len()
+    }
+
+    fn get(&self, position: usize) -> Option<&usize> {
+        self.cards.get(position).map(|object| &object.card_index)
+    }
+
+    fn last(&self) -> Option<&usize> {
+        self.cards.last().map(|object| &object.card_index)
+    }
+
+    fn iter(&self) -> impl DoubleEndedIterator<Item = &usize> + ExactSizeIterator {
+        self.cards.iter().map(|object| &object.card_index)
+    }
+
+    fn iter_objects(&self) -> impl DoubleEndedIterator<Item = &KnownZoneCard> + ExactSizeIterator {
+        self.cards.iter()
+    }
+
+    fn canonical_objects(&self) -> Vec<KnownZoneCard> {
+        let mut objects = self.cards.clone();
+        objects.sort_unstable();
+        objects
+    }
+
+    fn allocator_fingerprint(&self) -> (u32, u32) {
+        (self.object_namespace, self.next_local_object_id)
+    }
+}
+
+impl Extend<usize> for KnownCardZone {
+    fn extend<T: IntoIterator<Item = usize>>(&mut self, iter: T) {
+        for card_index in iter {
+            self.push(card_index);
+        }
+    }
+}
+
+impl<const N: usize> PartialEq<[usize; N]> for KnownCardZone {
+    fn eq(&self, other: &[usize; N]) -> bool {
+        self.iter().copied().eq(other.iter().copied())
+    }
+}
+
+impl PartialEq<Vec<usize>> for KnownCardZone {
+    fn eq(&self, other: &Vec<usize>) -> bool {
+        self.iter().copied().eq(other.iter().copied())
+    }
+}
+
+impl PartialEq<KnownCardZone> for Vec<usize> {
+    fn eq(&self, other: &KnownCardZone) -> bool {
+        self.iter().copied().eq(other.iter().copied())
+    }
+}
+
+fn reviewed_graveyard_mode_matches(
+    card: &CompiledCard,
+    predicate: ReviewedGraveyardCardPredicate,
+) -> bool {
+    match predicate {
+        ReviewedGraveyardCardPredicate::ArtifactCard => card.effects.card_types.is_artifact,
+        ReviewedGraveyardCardPredicate::CreatureCard => card.effects.card_types.is_creature,
+    }
+}
+
+fn reviewed_graveyard_return_rank(card: &CompiledCard) -> (u32, i32) {
+    let role_value = [
+        (role::WIN_CONDITION, 9),
+        (role::COMBO_PIECE, 8),
+        (role::PAYOFF, 7),
+        (role::ENGINE, 6),
+        (role::TUTOR, 5),
+        (role::DRAW, 4),
+        (role::RAMP, 3),
+        (role::PROTECTION, 2),
+        (role::ENABLER, 1),
+    ]
+    .into_iter()
+    .filter_map(|(role, value)| card.has(role).then_some(value))
+    .max()
+    .unwrap_or_default();
+    (
+        role_value,
+        (card.mana_value.max(0.0) * 100.0).round() as i32,
+    )
+}
+
+/// Resolve the exact one-or-both graveyard return transaction retained by the
+/// reviewed object-lifecycle compiler. Targets are selected from the physical
+/// pre-resolution graveyard objects, then moved in printed mode order. The
+/// resolving source object is excluded because it was still on the stack when
+/// targets were chosen.
+fn resolve_reviewed_modal_graveyard_return(
+    deck: &CompiledDeck,
+    source_card_index: usize,
+    hand: &mut Vec<usize>,
+    zones: &mut KnownLineZoneState,
+) -> u8 {
+    let Some(source) = deck.cards.get(source_card_index) else {
+        return 0;
+    };
+    let Some(compiled) = source.effects.object_lifecycle.as_ref() else {
+        return 0;
+    };
+    let ReviewedObjectLifecycleProgram::ModalGraveyardReturn(program) = &compiled.program else {
+        return 0;
+    };
+    let resolving_source_object = zones
+        .graveyard
+        .iter_objects()
+        .rev()
+        .find(|object| object.card_index == source_card_index)
+        .map(|object| object.object_id);
+    let mut selected = Vec::<KnownZoneCard>::new();
+    for mode in &program.ordered_modes {
+        let target = zones
+            .graveyard
+            .iter_objects()
+            .filter(|object| Some(object.object_id) != resolving_source_object)
+            .filter(|object| {
+                !selected
+                    .iter()
+                    .any(|selected| selected.object_id == object.object_id)
+            })
+            .filter_map(|object| {
+                let card = deck.cards.get(object.card_index)?;
+                reviewed_graveyard_mode_matches(card, mode.card)
+                    .then_some((*object, reviewed_graveyard_return_rank(card)))
+            })
+            .max_by(|(left_object, left_rank), (right_object, right_rank)| {
+                left_rank
+                    .cmp(right_rank)
+                    .then_with(|| right_object.object_id.cmp(&left_object.object_id))
+            })
+            .map(|(object, _)| object);
+        if let Some(target) = target {
+            selected.push(target);
+        }
+    }
+    let mut moved = 0u8;
+    for target in selected {
+        let Some(object) = zones.graveyard.remove_object(target.object_id) else {
+            return 0;
+        };
+        hand.push(object.card_index);
+        zones.advance_sequence();
+        moved = moved.saturating_add(1);
+    }
+    moved
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingDelayedCardAccess {
     card_index: usize,
@@ -3424,9 +4638,12 @@ impl Default for RuntimeTurnEvents {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct KnownLineZoneState {
     battlefield: Vec<BattlefieldLineCard>,
+    /// Selected modal face keyed by the battlefield object's stable sequence.
+    /// No face identity survives a move to any other zone.
+    battlefield_faces: HashMap<u16, usize>,
     creature_tokens: Vec<BattlefieldCreatureToken>,
     attachments: HashMap<u16, BattlefieldAttachment>,
     chosen_creature_types: HashMap<u16, String>,
@@ -3437,14 +4654,38 @@ struct KnownLineZoneState {
     turn_events: RuntimeTurnEvents,
     spells_cast_this_turn: Vec<TurnLineSpell>,
     typed_overrun_casts_this_turn: Vec<usize>,
-    graveyard: Vec<usize>,
-    exile: Vec<usize>,
+    graveyard: KnownCardZone,
+    exile: KnownCardZone,
     graveyard_cards_at_turn_start: u16,
     next_sequence: u16,
     /// Set only when the complete reviewed land-sacrifice-mana spell resolves.
     /// The grant is public current-turn state, never inferred from a cast that
     /// was countered, and is cleared before the next turn begins.
     land_sacrifice_mana_grant_turn: Option<u8>,
+}
+
+impl Default for KnownLineZoneState {
+    fn default() -> Self {
+        Self {
+            battlefield: Vec::new(),
+            battlefield_faces: HashMap::new(),
+            creature_tokens: Vec::new(),
+            attachments: HashMap::new(),
+            chosen_creature_types: HashMap::new(),
+            creature_power_counters: HashMap::new(),
+            temporary_power_toughness_adjustments: HashMap::new(),
+            tapped_creatures_this_turn: BTreeSet::new(),
+            pending_card_draws: 0,
+            turn_events: RuntimeTurnEvents::default(),
+            spells_cast_this_turn: Vec::new(),
+            typed_overrun_casts_this_turn: Vec::new(),
+            graveyard: KnownCardZone::new(GRAVEYARD_OBJECT_NAMESPACE),
+            exile: KnownCardZone::new(EXILE_OBJECT_NAMESPACE),
+            graveyard_cards_at_turn_start: 0,
+            next_sequence: 0,
+            land_sacrifice_mana_grant_turn: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3455,6 +4696,22 @@ enum CompiledLineActivationCost {
 }
 
 impl KnownLineZoneState {
+    fn push_graveyard_card(&mut self, card_index: usize) -> KnownZoneCard {
+        self.graveyard.push_card(card_index)
+    }
+
+    fn push_existing_exile_card(&mut self, object: KnownZoneCard) {
+        self.exile.push_existing(object);
+    }
+
+    fn graveyard_object(&self, object_id: u32) -> Option<KnownZoneCard> {
+        self.graveyard.object(object_id)
+    }
+
+    fn remove_graveyard_object(&mut self, object_id: u32) -> Option<KnownZoneCard> {
+        self.graveyard.remove_object(object_id)
+    }
+
     fn begin_turn(&mut self) {
         let _ = self.turn_events.state.start_next_turn();
         self.spells_cast_this_turn.clear();
@@ -3473,13 +4730,22 @@ impl KnownLineZoneState {
         self.record_zone_change(deck, card_index, turn, false);
     }
 
+    fn record_spell_cast_event(&mut self, card_index: usize, turn: u8) {
+        let sequence = self.advance_sequence();
+        self.spells_cast_this_turn.push(TurnLineSpell {
+            card_index,
+            turn,
+            sequence,
+        });
+    }
+
     /// Record a real discard event, then immediately resolve the exact
     /// discarded-object trigger when the complete lifecycle is active. The
     /// object reaches the graveyard first; casts, sacrifices, mills, and
     /// London bottoms must not call this helper.
     fn record_discard(&mut self, deck: &CompiledDeck, card_index: usize) {
         let graveyard_position = self.graveyard.len();
-        self.graveyard.push(card_index);
+        self.push_graveyard_card(card_index);
         self.advance_sequence();
         if !active_necropotence_lifecycle(deck, self) {
             return;
@@ -3489,9 +4755,9 @@ impl KnownLineZoneState {
             Some(&card_index),
             "the just-discarded object remains in its exact graveyard slot"
         );
-        let discarded = self.graveyard.remove(graveyard_position);
+        let discarded = self.graveyard.remove_object_at(graveyard_position);
         self.advance_sequence();
-        self.exile.push(discarded);
+        self.push_existing_exile_card(discarded);
     }
 
     fn record_discards(
@@ -3517,20 +4783,377 @@ impl KnownLineZoneState {
                 Some(ModeledLineCardKind::Permanent)
             )
         }) {
-            self.battlefield.push(BattlefieldLineCard {
-                card_index,
-                entered_turn: turn,
-                sequence,
-                age_counters: 0,
+            self.record_permanent_entry(deck, card_index, turn, sequence);
+        }
+    }
+
+    fn record_typed_permanent_cast(
+        &mut self,
+        deck: &CompiledDeck,
+        card_index: usize,
+        turn: u8,
+    ) -> bool {
+        if deck.cards.get(card_index).is_none() {
+            return false;
+        }
+        let sequence = self.advance_sequence();
+        self.record_permanent_entry(deck, card_index, turn, sequence);
+        true
+    }
+
+    fn record_modal_face_permanent_cast(
+        &mut self,
+        deck: &CompiledDeck,
+        card_index: usize,
+        face_index: usize,
+        turn: u8,
+    ) -> bool {
+        let Some(card) = deck.cards.get(card_index) else {
+            return false;
+        };
+        let Some((face, _)) = exact_modal_cast_face(card, face_index) else {
+            return false;
+        };
+        let types = compile_card_types(&face.type_line);
+        if types.is_land
+            || !(types.is_creature
+                || types.is_artifact
+                || types.is_enchantment
+                || types.is_planeswalker
+                || types.is_battle)
+        {
+            return false;
+        }
+        let sequence = self.advance_sequence();
+        let pending = self.stage_permanent_entry_with_face(
+            deck,
+            card_index,
+            turn,
+            sequence,
+            Some(face_index),
+        );
+        self.resolve_pending_permanent_entry_triggers(deck, pending);
+        true
+    }
+
+    fn record_permanent_entry(
+        &mut self,
+        deck: &CompiledDeck,
+        card_index: usize,
+        turn: u8,
+        sequence: u16,
+    ) {
+        let pending = self.stage_permanent_entry_with_face(deck, card_index, turn, sequence, None);
+        self.resolve_pending_permanent_entry_triggers(deck, pending);
+    }
+
+    fn stage_permanent_entry(
+        &mut self,
+        deck: &CompiledDeck,
+        card_index: usize,
+        turn: u8,
+        sequence: u16,
+    ) -> PendingPermanentEntryTriggerBatch {
+        self.stage_permanent_entry_with_face(deck, card_index, turn, sequence, None)
+    }
+
+    fn stage_permanent_entry_with_face(
+        &mut self,
+        deck: &CompiledDeck,
+        card_index: usize,
+        turn: u8,
+        sequence: u16,
+        face_index: Option<usize>,
+    ) -> PendingPermanentEntryTriggerBatch {
+        self.battlefield.push(BattlefieldLineCard {
+            card_index,
+            entered_turn: turn,
+            sequence,
+            age_counters: 0,
+        });
+        if let Some(face_index) = face_index {
+            self.battlefield_faces.insert(sequence, face_index);
+        }
+        self.turn_events.state.register_object(sequence);
+        self.choose_entering_creature_type(deck, sequence);
+        self.attach_entering_positive_aura(deck, sequence);
+        self.capture_permanent_entry_triggers(deck, card_index, sequence, turn)
+    }
+
+    fn capture_permanent_entry_triggers(
+        &self,
+        deck: &CompiledDeck,
+        card_index: usize,
+        sequence: u16,
+        turn: u8,
+    ) -> PendingPermanentEntryTriggerBatch {
+        let becomes_monarch = self
+            .battlefield
+            .iter()
+            .find(|presence| presence.sequence == sequence)
+            .and_then(|presence| deck.cards.get(presence.card_index))
+            .is_some_and(|source| {
+                executable_battlefield_abilities(source, self, sequence).any(|ability| {
+                    matches!(
+                        &ability.timing,
+                        AbilityTiming::Triggered { event }
+                            if event.kind == TriggerEventKind::PermanentEntersBattlefield
+                                && event.actor == ControllerRelation::You
+                    ) && ability
+                        .preconditions
+                        .contains(&AbilityPrecondition::EventObjectIsSource)
+                        && ability.effects.iter().any(|effect| {
+                            matches!(
+                                effect,
+                                AbilityEffect::BecomeMonarch(monarch)
+                                    if monarch.player == ControllerRelation::You
+                            )
+                        })
+                })
             });
-            self.turn_events.state.register_object(sequence);
-            self.resolve_self_entry_turn_state_effects(deck, sequence);
-            self.choose_entering_creature_type(deck, sequence);
-            self.attach_entering_positive_aura(deck, sequence);
-            self.resolve_creature_entry_counters(deck, sequence);
-            self.resolve_other_flying_creature_entry_triggers(deck, sequence);
-            self.resolve_chosen_type_creature_entry_draw_triggers(deck, sequence);
-            self.resolve_permanent_entry_creature_triggers(deck, card_index, sequence, turn);
+
+        let entered_is_creature = deck
+            .cards
+            .get(card_index)
+            .is_some_and(|card| battlefield_card_types(card, self, sequence).is_creature);
+        let team_counter_count = if entered_is_creature {
+            self.battlefield
+                .iter()
+                .filter_map(|presence| {
+                    deck.cards
+                        .get(presence.card_index)
+                        .and_then(reviewed_creature_entry_counter_count)
+                        .map(|count| (presence.sequence, count))
+                })
+                .map(|(source_sequence, count)| {
+                    trigger_multiplier_count(
+                        deck,
+                        self,
+                        CombatTriggerEventKind::PermanentEnteredBattlefield,
+                        Some(sequence),
+                        source_sequence,
+                    )
+                    .saturating_mul(u32::from(count))
+                })
+                .sum::<u32>()
+                .min(u32::from(u16::MAX)) as u16
+        } else {
+            0
+        };
+
+        let entered_has_flying = deck.cards.get(card_index).is_some_and(|card| {
+            battlefield_card_types(card, self, sequence).is_creature
+                && battlefield_has_keyword(card, self, sequence, "Flying")
+        });
+        let mut temporary_adjustments = Vec::new();
+        if entered_has_flying {
+            for presence in &self.battlefield {
+                if presence.sequence == sequence {
+                    continue;
+                }
+                let Some(source) = deck.cards.get(presence.card_index) else {
+                    continue;
+                };
+                for ability in executable_battlefield_abilities(source, self, presence.sequence) {
+                    let AbilityTiming::Triggered { event } = &ability.timing else {
+                        continue;
+                    };
+                    if event.kind != TriggerEventKind::OtherFlyingCreatureEntersBattlefield
+                        || !ability.costs.is_empty()
+                        || !ability
+                            .preconditions
+                            .contains(&AbilityPrecondition::SourceZone(ProgramZone::Battlefield))
+                    {
+                        continue;
+                    }
+                    let trigger_count = trigger_multiplier_count(
+                        deck,
+                        self,
+                        CombatTriggerEventKind::PermanentEnteredBattlefield,
+                        Some(sequence),
+                        presence.sequence,
+                    )
+                    .min(i16::MAX as u32) as i16;
+                    for effect in &ability.effects {
+                        let AbilityEffect::ModifyPowerToughnessUntilEndOfTurn(modifier) = effect
+                        else {
+                            continue;
+                        };
+                        if modifier.target == TargetSelector::SelfPermanent {
+                            temporary_adjustments.push((
+                                presence.sequence,
+                                modifier.power_delta.saturating_mul(trigger_count),
+                                modifier.toughness_delta.saturating_mul(trigger_count),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut pending_draws = deck
+            .cards
+            .get(card_index)
+            .map_or(0, reviewed_aura_entry_draw_count);
+        for presence in &self.battlefield {
+            let Some(source) = deck.cards.get(presence.card_index) else {
+                continue;
+            };
+            for ability in executable_battlefield_abilities(source, self, presence.sequence) {
+                let AbilityTiming::Triggered { event } = &ability.timing else {
+                    continue;
+                };
+                if event.kind != TriggerEventKind::ChosenTypeCreatureEntersOrAttacks
+                    || !ability.costs.is_empty()
+                    || !attacker_matches_source_chosen_type(
+                        deck,
+                        self,
+                        u32::from(sequence).saturating_add(1),
+                        presence.sequence,
+                    )
+                {
+                    continue;
+                }
+                let trigger_count = trigger_multiplier_count(
+                    deck,
+                    self,
+                    CombatTriggerEventKind::PermanentEnteredBattlefield,
+                    Some(sequence),
+                    presence.sequence,
+                );
+                pending_draws = pending_draws.saturating_add(
+                    draw_count_from_effects(&ability.effects).saturating_mul(trigger_count),
+                );
+            }
+        }
+
+        let mut creature_tokens = Vec::new();
+        if let Some(entered_card) = deck.cards.get(card_index) {
+            for presence in &self.battlefield {
+                let Some(source) = deck.cards.get(presence.card_index) else {
+                    continue;
+                };
+                for ability in executable_battlefield_abilities(source, self, presence.sequence) {
+                    let AbilityTiming::Triggered { event } = &ability.timing else {
+                        continue;
+                    };
+                    if event.kind != TriggerEventKind::PermanentEntersBattlefield
+                        || !matches!(
+                            event.actor,
+                            ControllerRelation::You | ControllerRelation::Any
+                        )
+                        || !ability.costs.is_empty()
+                        || !ability
+                            .preconditions
+                            .contains(&AbilityPrecondition::SourceZone(ProgramZone::Battlefield))
+                        || !program_filter_matches_controller_spell_characteristics(
+                            &event.object_filter,
+                            battlefield_card_types(entered_card, self, sequence),
+                            battlefield_type_line(entered_card, self, sequence),
+                        )
+                    {
+                        continue;
+                    }
+                    for effect in &ability.effects {
+                        if let AbilityEffect::CreateToken(token) = effect
+                            && let TokenKind::Creature {
+                                power,
+                                toughness,
+                                description,
+                                keywords,
+                            } = &token.kind
+                        {
+                            let trigger_count = trigger_multiplier_count(
+                                deck,
+                                self,
+                                CombatTriggerEventKind::PermanentEnteredBattlefield,
+                                Some(sequence),
+                                presence.sequence,
+                            )
+                            .min(u32::from(u16::MAX));
+                            creature_tokens.push(PendingCreatureTokenCreation {
+                                count: u32::from(token.count)
+                                    .saturating_mul(trigger_count)
+                                    .min(u32::from(u16::MAX))
+                                    as u16,
+                                power: *power,
+                                toughness: *toughness,
+                                description: description.clone(),
+                                keywords: keywords.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        PendingPermanentEntryTriggerBatch {
+            turn,
+            becomes_monarch,
+            team_counter_count,
+            temporary_adjustments,
+            pending_draws,
+            creature_tokens,
+        }
+    }
+
+    fn resolve_pending_permanent_entry_triggers(
+        &mut self,
+        deck: &CompiledDeck,
+        pending: PendingPermanentEntryTriggerBatch,
+    ) {
+        if pending.becomes_monarch {
+            let _ = self.turn_events.state.set_monarch(0);
+        }
+        if pending.team_counter_count > 0 {
+            for presence in &self.battlefield {
+                if deck.cards.get(presence.card_index).is_some_and(|card| {
+                    battlefield_card_types(card, self, presence.sequence).is_creature
+                }) {
+                    let current = self
+                        .creature_power_counters
+                        .entry(presence.sequence)
+                        .or_default();
+                    *current = current.saturating_add(pending.team_counter_count);
+                }
+            }
+            for token in &mut self.creature_tokens {
+                token.combat_power_counters = token
+                    .combat_power_counters
+                    .saturating_add(pending.team_counter_count);
+            }
+        }
+        for (source_sequence, power_delta, toughness_delta) in pending.temporary_adjustments {
+            let source_still_exists = self
+                .battlefield
+                .iter()
+                .any(|presence| presence.sequence == source_sequence)
+                || self
+                    .creature_tokens
+                    .iter()
+                    .any(|token| token.sequence == source_sequence);
+            if source_still_exists {
+                let adjustment = self
+                    .temporary_power_toughness_adjustments
+                    .entry(source_sequence)
+                    .or_default();
+                adjustment.0 = adjustment.0.saturating_add(power_delta);
+                adjustment.1 = adjustment.1.saturating_add(toughness_delta);
+            }
+        }
+        self.pending_card_draws = self
+            .pending_card_draws
+            .saturating_add(pending.pending_draws);
+        for token in pending.creature_tokens {
+            self.record_creature_tokens(
+                deck,
+                pending.turn,
+                token.count,
+                token.power,
+                token.toughness,
+                &token.description,
+                &token.keywords,
+            );
         }
     }
 
@@ -3547,20 +5170,7 @@ impl KnownLineZoneState {
         };
         match modeled_line_card_kind(card) {
             Some(ModeledLineCardKind::Permanent) if !is_land_play || card.has(role::LAND) => {
-                self.battlefield.push(BattlefieldLineCard {
-                    card_index,
-                    entered_turn: turn,
-                    sequence,
-                    age_counters: 0,
-                });
-                self.turn_events.state.register_object(sequence);
-                self.resolve_self_entry_turn_state_effects(deck, sequence);
-                self.choose_entering_creature_type(deck, sequence);
-                self.attach_entering_positive_aura(deck, sequence);
-                self.resolve_creature_entry_counters(deck, sequence);
-                self.resolve_other_flying_creature_entry_triggers(deck, sequence);
-                self.resolve_chosen_type_creature_entry_draw_triggers(deck, sequence);
-                self.resolve_permanent_entry_creature_triggers(deck, card_index, sequence, turn);
+                self.record_permanent_entry(deck, card_index, turn, sequence);
             }
             Some(ModeledLineCardKind::Spell) if !is_land_play => {
                 self.spells_cast_this_turn.push(TurnLineSpell {
@@ -3571,7 +5181,7 @@ impl KnownLineZoneState {
                 // The bounded simulator resolves spells immediately. Keeping a
                 // separate current-turn cast event lets a line consume that
                 // execution without pretending the card remains usable later.
-                self.graveyard.push(card_index);
+                self.push_graveyard_card(card_index);
             }
             _ => {}
         }
@@ -3647,7 +5257,7 @@ impl KnownLineZoneState {
                     .get(removed.card_index)
                     .is_some_and(|card| !card.is_commander)
             {
-                self.graveyard.push(removed.card_index);
+                self.push_graveyard_card(removed.card_index);
             }
             removed_card_indices.push(removed.card_index);
 
@@ -3723,7 +5333,7 @@ impl KnownLineZoneState {
             .iter()
             .filter(|presence| {
                 deck.cards.get(presence.card_index).is_some_and(|card| {
-                    card.effects.card_types.is_creature || card.has(role::CREATURE)
+                    battlefield_card_types(card, self, presence.sequence).is_creature
                 }) && !indestructible_sequences.contains(&presence.sequence)
             })
             .map(|presence| presence.sequence)
@@ -3785,19 +5395,19 @@ impl KnownLineZoneState {
         let Some(source) = deck.cards.get(source_presence.card_index) else {
             return;
         };
-        if !type_line_has_subtype(&source.type_line, "Aura")
-            || !(card_has_beneficial_attached_static_effect(source)
-                || card_has_beneficial_attached_trigger(source))
+        let Some(enchant_target) = exact_aura_spell_attachment_target(source) else {
+            return;
+        };
+        if !(battlefield_has_beneficial_attached_static_effect(source, self, source_sequence)
+            || battlefield_has_beneficial_attached_trigger(source, self, source_sequence))
         {
             return;
         }
         let Some((state, effects)) = combat_effect_runtime(deck, self) else {
             return;
         };
-        let legal = PermanentFilter {
-            controller: ControllerConstraint::SameAsSource,
-            all_card_types: BTreeSet::from([PermanentType::Creature]),
-            ..PermanentFilter::default()
+        let Some(legal) = combat_attachment_filter(enchant_target) else {
+            return;
         };
         let Ok(Some(choice)) = state.choose_attachment_target(
             combat_object_id(source_sequence),
@@ -3828,10 +5438,8 @@ impl KnownLineZoneState {
         else {
             return;
         };
-        let chooses_type = source
-            .ability_program
-            .executable_abilities()
-            .any(|ability| {
+        let chooses_type =
+            executable_battlefield_abilities(source, self, source_sequence).any(|ability| {
                 ability
                     .effects
                     .iter()
@@ -3843,40 +5451,6 @@ impl KnownLineZoneState {
         if let Some(creature_type) = preferred_creature_type(deck, self) {
             self.chosen_creature_types
                 .insert(source_sequence, creature_type);
-        }
-    }
-
-    fn resolve_self_entry_turn_state_effects(&mut self, deck: &CompiledDeck, source_sequence: u16) {
-        let Some(source) = self
-            .battlefield
-            .iter()
-            .find(|presence| presence.sequence == source_sequence)
-            .and_then(|presence| deck.cards.get(presence.card_index))
-        else {
-            return;
-        };
-        let becomes_monarch = source
-            .ability_program
-            .executable_abilities()
-            .any(|ability| {
-                matches!(
-                    &ability.timing,
-                    AbilityTiming::Triggered { event }
-                        if event.kind == TriggerEventKind::PermanentEntersBattlefield
-                            && event.actor == ControllerRelation::You
-                ) && ability
-                    .preconditions
-                    .contains(&AbilityPrecondition::EventObjectIsSource)
-                    && ability.effects.iter().any(|effect| {
-                        matches!(
-                            effect,
-                            AbilityEffect::BecomeMonarch(monarch)
-                                if monarch.player == ControllerRelation::You
-                        )
-                    })
-            });
-        if becomes_monarch {
-            let _ = self.turn_events.state.set_monarch(0);
         }
     }
 
@@ -3907,6 +5481,7 @@ impl KnownLineZoneState {
 
     fn remove_object_state(&mut self, sequence: u16) {
         self.turn_events.state.unregister_object(sequence);
+        self.battlefield_faces.remove(&sequence);
         self.attachments.remove(&sequence);
         self.attachments
             .retain(|_, attachment| attachment.target_sequence != sequence);
@@ -3979,7 +5554,8 @@ impl KnownLineZoneState {
             .find(|presence| presence.sequence == entered_sequence)
             .and_then(|presence| deck.cards.get(presence.card_index))
             .is_some_and(|card| {
-                card.effects.card_types.is_creature && card_has_keyword(card, "Flying")
+                battlefield_card_types(card, self, entered_sequence).is_creature
+                    && battlefield_has_keyword(card, self, entered_sequence, "Flying")
             })
             || self
                 .creature_tokens
@@ -3998,7 +5574,7 @@ impl KnownLineZoneState {
             let Some(source) = deck.cards.get(presence.card_index) else {
                 continue;
             };
-            for ability in source.ability_program.executable_abilities() {
+            for ability in executable_battlefield_abilities(source, self, presence.sequence) {
                 let AbilityTiming::Triggered { event } = &ability.timing else {
                     continue;
                 };
@@ -4050,7 +5626,7 @@ impl KnownLineZoneState {
             let Some(source) = deck.cards.get(presence.card_index) else {
                 continue;
             };
-            for ability in source.ability_program.executable_abilities() {
+            for ability in executable_battlefield_abilities(source, self, presence.sequence) {
                 let AbilityTiming::Triggered { event } = &ability.timing else {
                     continue;
                 };
@@ -4089,7 +5665,7 @@ impl KnownLineZoneState {
             .iter()
             .find(|presence| presence.sequence == entered_sequence)
             .and_then(|presence| deck.cards.get(presence.card_index))
-            .is_some_and(|card| card.effects.card_types.is_creature)
+            .is_some_and(|card| battlefield_card_types(card, self, entered_sequence).is_creature)
             || self
                 .creature_tokens
                 .iter()
@@ -4103,13 +5679,8 @@ impl KnownLineZoneState {
             .filter_map(|presence| {
                 deck.cards
                     .get(presence.card_index)
-                    .is_some_and(|card| {
-                        card_has_oracle_paragraph(
-                            card,
-                            "whenever a creature you control enters, put a +1/+1 counter on each creature you control",
-                        )
-                    })
-                    .then_some(presence.sequence)
+                    .and_then(reviewed_creature_entry_counter_count)
+                    .map(|count| (presence.sequence, count))
             })
             .collect::<Vec<_>>();
         if team_counter_sources.is_empty() {
@@ -4117,7 +5688,7 @@ impl KnownLineZoneState {
         }
         let counters = team_counter_sources
             .into_iter()
-            .map(|source_sequence| {
+            .map(|(source_sequence, count)| {
                 trigger_multiplier_count(
                     deck,
                     self,
@@ -4125,15 +5696,14 @@ impl KnownLineZoneState {
                     Some(entered_sequence),
                     source_sequence,
                 )
+                .saturating_mul(u32::from(count))
             })
             .sum::<u32>()
             .min(u32::from(u16::MAX)) as u16;
         for presence in &self.battlefield {
-            if deck
-                .cards
-                .get(presence.card_index)
-                .is_some_and(|card| card.effects.card_types.is_creature)
-            {
+            if deck.cards.get(presence.card_index).is_some_and(|card| {
+                battlefield_card_types(card, self, presence.sequence).is_creature
+            }) {
                 let current = self
                     .creature_power_counters
                     .entry(presence.sequence)
@@ -4143,82 +5713,6 @@ impl KnownLineZoneState {
         }
         for token in &mut self.creature_tokens {
             token.combat_power_counters = token.combat_power_counters.saturating_add(counters);
-        }
-    }
-
-    fn resolve_permanent_entry_creature_triggers(
-        &mut self,
-        deck: &CompiledDeck,
-        entered_card_index: usize,
-        entered_sequence: u16,
-        turn: u8,
-    ) {
-        let Some(entered_card) = deck.cards.get(entered_card_index) else {
-            return;
-        };
-        let sources = self.battlefield.clone();
-        let mut tokens = Vec::new();
-        for presence in sources {
-            let Some(source) = deck.cards.get(presence.card_index) else {
-                continue;
-            };
-            for ability in source.ability_program.executable_abilities() {
-                let AbilityTiming::Triggered { event } = &ability.timing else {
-                    continue;
-                };
-                if event.kind != TriggerEventKind::PermanentEntersBattlefield
-                    || !matches!(
-                        event.actor,
-                        ControllerRelation::You | ControllerRelation::Any
-                    )
-                    || !ability.costs.is_empty()
-                    || !ability
-                        .preconditions
-                        .contains(&AbilityPrecondition::SourceZone(ProgramZone::Battlefield))
-                    || !program_object_filter_matches(&event.object_filter, entered_card)
-                {
-                    continue;
-                }
-                for effect in &ability.effects {
-                    if let AbilityEffect::CreateToken(token) = effect
-                        && let TokenKind::Creature {
-                            power,
-                            toughness,
-                            description,
-                            keywords,
-                        } = &token.kind
-                    {
-                        let trigger_count = trigger_multiplier_count(
-                            deck,
-                            self,
-                            CombatTriggerEventKind::PermanentEnteredBattlefield,
-                            Some(entered_sequence),
-                            presence.sequence,
-                        )
-                        .min(u32::from(u16::MAX));
-                        tokens.push((
-                            u32::from(token.count)
-                                .saturating_mul(trigger_count)
-                                .min(u32::from(u16::MAX)) as u16,
-                            *power,
-                            *toughness,
-                            description.clone(),
-                            keywords.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-        for (count, power, toughness, description, keywords) in tokens {
-            self.record_creature_tokens(
-                deck,
-                turn,
-                count,
-                power,
-                toughness,
-                &description,
-                &keywords,
-            );
         }
     }
 
@@ -4285,9 +5779,13 @@ fn optional_payment_amount(payment: &OptionalManaPayment, source: &CompiledCard)
     }
 }
 
-fn cumulative_upkeep_program(card: &CompiledCard) -> Option<(u16, u16)> {
+fn cumulative_upkeep_program(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> Option<(u16, u16)> {
     let mut program = None;
-    for ability in card.ability_program.executable_abilities() {
+    for ability in executable_battlefield_abilities(card, zones, sequence) {
         let AbilityTiming::Triggered { event } = &ability.timing else {
             continue;
         };
@@ -4392,7 +5890,7 @@ fn resolve_controller_upkeep_creature_triggers(
         let Some(source) = deck.cards.get(presence.card_index) else {
             continue;
         };
-        for ability in source.ability_program.executable_abilities() {
+        for ability in executable_battlefield_abilities(source, zones, presence.sequence) {
             let AbilityTiming::Triggered { event } = &ability.timing else {
                 continue;
             };
@@ -4453,7 +5951,7 @@ fn resolve_opponent_end_step_counter_triggers(
         let Some(source) = deck.cards.get(presence.card_index) else {
             continue;
         };
-        for ability in source.ability_program.executable_abilities() {
+        for ability in executable_battlefield_abilities(source, zones, presence.sequence) {
             let AbilityTiming::Triggered { event } = &ability.timing else {
                 continue;
             };
@@ -4516,7 +6014,7 @@ fn activate_counter_threshold_token_abilities(
         let Some(source) = deck.cards.get(presence.card_index) else {
             continue;
         };
-        for ability in source.ability_program.executable_abilities() {
+        for ability in executable_battlefield_abilities(source, zones, presence.sequence) {
             if !matches!(
                 ability.timing,
                 AbilityTiming::Activated {
@@ -4600,8 +6098,12 @@ fn resolve_cumulative_upkeep_triggers(
         .battlefield
         .iter()
         .filter_map(|presence| {
-            cumulative_upkeep_program(deck.cards.get(presence.card_index)?)
-                .map(|program| (presence.sequence, program))
+            cumulative_upkeep_program(
+                deck.cards.get(presence.card_index)?,
+                zones,
+                presence.sequence,
+            )
+            .map(|program| (presence.sequence, program))
         })
         .collect::<Vec<_>>();
     let mut removed = Vec::new();
@@ -4682,9 +6184,10 @@ fn program_filter_matches_opponent_draw(filter: &ProgramObjectFilter) -> bool {
         )
 }
 
-fn program_filter_matches_controller_spell(
+fn program_filter_matches_controller_spell_characteristics(
     filter: &ProgramObjectFilter,
-    card: &CompiledCard,
+    types: CardTypeProfile,
+    type_line: &str,
 ) -> bool {
     if !matches!(
         filter.controller,
@@ -4694,7 +6197,6 @@ fn program_filter_matches_controller_spell(
     {
         return false;
     }
-    let types = card.effects.card_types;
     let included = match filter.card_type {
         None | Some(ProgramCardType::Spell | ProgramCardType::Card) => true,
         Some(ProgramCardType::Creature) => types.is_creature,
@@ -4703,7 +6205,7 @@ fn program_filter_matches_controller_spell(
         Some(ProgramCardType::Permanent) => {
             types.is_land || types.is_creature || types.is_artifact || types.is_enchantment
         }
-        Some(ProgramCardType::Dragon) => card_has_subtype(card, "Dragon"),
+        Some(ProgramCardType::Dragon) => type_line_has_subtype(type_line, "Dragon"),
     };
     let excluded = match filter.excluded_card_type {
         None => false,
@@ -4714,7 +6216,7 @@ fn program_filter_matches_controller_spell(
             types.is_land || types.is_creature || types.is_artifact || types.is_enchantment
         }
         Some(ProgramCardType::Spell | ProgramCardType::Card) => true,
-        Some(ProgramCardType::Dragon) => card_has_subtype(card, "Dragon"),
+        Some(ProgramCardType::Dragon) => type_line_has_subtype(type_line, "Dragon"),
     };
     let matches_specific_type = filter.any_of_card_types.is_empty()
         || filter
@@ -4800,10 +6302,59 @@ fn execute_table_trigger_effects(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn apply_opponent_draw_triggers(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+    draw_event: &OpponentDrawActivity,
+    hand: &mut Vec<usize>,
+    library_order: &[usize],
+    next_draw_position: &mut usize,
+    treasure_reserve: &mut u8,
+    player_life: &mut f32,
+) {
+    let sources = zones.battlefield.clone();
+    for presence in &sources {
+        let Some(source) = deck.cards.get(presence.card_index) else {
+            continue;
+        };
+        for ability in executable_battlefield_abilities(source, zones, presence.sequence) {
+            let AbilityTiming::Triggered { event } = &ability.timing else {
+                continue;
+            };
+            if event.kind != TriggerEventKind::CardDraw
+                || !matches!(
+                    event.actor,
+                    ControllerRelation::Opponent | ControllerRelation::Any
+                )
+                || !ability.costs.is_empty()
+                || !ability
+                    .preconditions
+                    .contains(&AbilityPrecondition::SourceZone(ProgramZone::Battlefield))
+                || !program_filter_matches_opponent_draw(&event.object_filter)
+                || !table_trigger_effects_supported(&ability.effects, source)
+            {
+                continue;
+            }
+            execute_table_trigger_effects(
+                &ability.effects,
+                source,
+                draw_event.payment(),
+                hand,
+                library_order,
+                next_draw_position,
+                treasure_reserve,
+                player_life,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn apply_opponent_turn_activity(
     deck: &CompiledDeck,
     zones: &KnownLineZoneState,
     opponent: &OpponentTurnActivity,
+    include_draws: bool,
     hand: &mut Vec<usize>,
     library_order: &[usize],
     next_draw_position: &mut usize,
@@ -4811,40 +6362,18 @@ fn apply_opponent_turn_activity(
     player_life: &mut f32,
 ) -> bool {
     let sources = zones.battlefield.clone();
-    for draw_event in opponent.draws() {
-        for presence in &sources {
-            let Some(source) = deck.cards.get(presence.card_index) else {
-                continue;
-            };
-            for ability in source.ability_program.executable_abilities() {
-                let AbilityTiming::Triggered { event } = &ability.timing else {
-                    continue;
-                };
-                if event.kind != TriggerEventKind::CardDraw
-                    || !matches!(
-                        event.actor,
-                        ControllerRelation::Opponent | ControllerRelation::Any
-                    )
-                    || !ability.costs.is_empty()
-                    || !ability
-                        .preconditions
-                        .contains(&AbilityPrecondition::SourceZone(ProgramZone::Battlefield))
-                    || !program_filter_matches_opponent_draw(&event.object_filter)
-                    || !table_trigger_effects_supported(&ability.effects, source)
-                {
-                    continue;
-                }
-                execute_table_trigger_effects(
-                    &ability.effects,
-                    source,
-                    draw_event.payment(),
-                    hand,
-                    library_order,
-                    next_draw_position,
-                    treasure_reserve,
-                    player_life,
-                );
-            }
+    if include_draws {
+        for draw_event in opponent.draws() {
+            apply_opponent_draw_triggers(
+                deck,
+                zones,
+                draw_event,
+                hand,
+                library_order,
+                next_draw_position,
+                treasure_reserve,
+                player_life,
+            );
         }
     }
     for spell_event in opponent.spells() {
@@ -4852,7 +6381,7 @@ fn apply_opponent_turn_activity(
             let Some(source) = deck.cards.get(presence.card_index) else {
                 continue;
             };
-            for ability in source.ability_program.executable_abilities() {
+            for ability in executable_battlefield_abilities(source, zones, presence.sequence) {
                 let AbilityTiming::Triggered { event } = &ability.timing else {
                     continue;
                 };
@@ -4899,7 +6428,8 @@ fn apply_table_turn_activity_with_end_steps(
     deck: &CompiledDeck,
     zones: &mut KnownLineZoneState,
     activity: &TableTurnActivity,
-    combat_state: &CommanderCombatState,
+    combat_state: &mut CommanderCombatState,
+    opponent_libraries: &mut OpponentLibraryTable,
     hand: &mut Vec<usize>,
     library_order: &[usize],
     next_draw_position: &mut usize,
@@ -4919,10 +6449,43 @@ fn apply_table_turn_activity_with_end_steps(
         // survive this epoch advance; life-loss receipts do not.
         let _ = zones.turn_events.state.start_next_turn();
         let life_before_opponent_turn = *player_life;
+
+        for draw_event in opponent.draws() {
+            let Some(draw_resolution) = opponent_libraries.resolve_draw_requirement(opponent_id, 1)
+            else {
+                break;
+            };
+            if draw_resolution.cards_drawn() == 1 {
+                apply_opponent_draw_triggers(
+                    deck,
+                    zones,
+                    draw_event,
+                    hand,
+                    library_order,
+                    next_draw_position,
+                    treasure_reserve,
+                    player_life,
+                );
+                if *player_life <= 0.0 {
+                    return false;
+                }
+            }
+            if matches!(draw_resolution, OpponentDrawResolution::Loses(_)) {
+                combat_state
+                    .record_required_draw_from_empty_library(opponent_id)
+                    .expect("only an active opponent can receive modeled turn activity");
+                break;
+            }
+        }
+        if !combat_state.is_opponent_active(opponent_id) {
+            zones.record_controller_life_delta(life_before_opponent_turn, *player_life);
+            continue;
+        }
         if !apply_opponent_turn_activity(
             deck,
             zones,
             opponent,
+            false,
             hand,
             library_order,
             next_draw_position,
@@ -4962,14 +6525,43 @@ fn apply_controller_spell_cast_triggers(
     mana_pool: &mut TurnManaPool,
     player_life: &mut f32,
 ) -> bool {
+    apply_controller_spell_cast_triggers_for_face(
+        deck,
+        zones,
+        cast_card_index,
+        None,
+        turn,
+        spell_ordinal,
+        mana_pool,
+        player_life,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_controller_spell_cast_triggers_for_face(
+    deck: &CompiledDeck,
+    zones: &mut KnownLineZoneState,
+    cast_card_index: usize,
+    cast_face_index: Option<usize>,
+    turn: u8,
+    spell_ordinal: u8,
+    mana_pool: &mut TurnManaPool,
+    player_life: &mut f32,
+) -> bool {
     let Some(cast_card) = deck.cards.get(cast_card_index) else {
         return false;
     };
+    let (cast_types, cast_type_line) = cast_face_index
+        .and_then(|face_index| exact_modal_cast_face(cast_card, face_index))
+        .map_or(
+            (cast_card.effects.card_types, cast_card.type_line.as_str()),
+            |(face, _)| (compile_card_types(&face.type_line), face.type_line.as_str()),
+        );
     for presence in zones.battlefield.clone() {
         let Some(source) = deck.cards.get(presence.card_index) else {
             continue;
         };
-        for ability in source.ability_program.executable_abilities() {
+        for ability in executable_battlefield_abilities(source, zones, presence.sequence) {
             let AbilityTiming::Triggered { event } = &ability.timing else {
                 continue;
             };
@@ -4980,7 +6572,11 @@ fn apply_controller_spell_cast_triggers(
                 || !ability
                     .preconditions
                     .contains(&AbilityPrecondition::SourceZone(ProgramZone::Battlefield))
-                || !program_filter_matches_controller_spell(&event.object_filter, cast_card)
+                || !program_filter_matches_controller_spell_characteristics(
+                    &event.object_filter,
+                    cast_types,
+                    cast_type_line,
+                )
                 || !controller_spell_trigger_effects_supported(&ability.effects)
             {
                 continue;
@@ -5214,19 +6810,6 @@ fn should_repeat_top_card_reveal(
     life_total > maximum_mana_value
 }
 
-fn modeled_line_card_kind(card: &CompiledCard) -> Option<ModeledLineCardKind> {
-    let is_permanent = card.has(role::LAND | role::CREATURE | role::ARTIFACT | role::ENCHANTMENT);
-    let is_spell = card.has(role::INSTANT_SORCERY);
-    match (is_permanent, is_spell) {
-        (true, false) => Some(ModeledLineCardKind::Permanent),
-        (false, true) => Some(ModeledLineCardKind::Spell),
-        // Modal/ambiguous type combinations and unsupported permanent types
-        // require a richer face/zone model. Excluding them is safer than
-        // assigning whichever face would make a combo work.
-        _ => None,
-    }
-}
-
 fn unique_card_by_normalized_name<'a>(
     deck: &'a CompiledDeck,
     normalized_name: &str,
@@ -5237,30 +6820,6 @@ fn unique_card_by_normalized_name<'a>(
         .filter(|card| card.normalized_name == normalized_name);
     let card = matches.next()?;
     matches.next().is_none().then_some(card)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TypedConditionalManaSource {
-    ImprintLinkedCardColors,
-    DiscardLandOrFailEntry,
-    ControlledLegendaryColors,
-    MetalcraftAnyColor,
-    FixedWithSourceDamage {
-        output: FixedManaProfile,
-        damage: u16,
-    },
-    ColorlessOrAnyColorWithSourceDamage {
-        damage: u16,
-    },
-}
-
-impl TypedConditionalManaSource {
-    fn is_entry_linked(self) -> bool {
-        matches!(
-            self,
-            Self::ImprintLinkedCardColors | Self::DiscardLandOrFailEntry
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -5551,576 +7110,14 @@ fn resolve_typed_permanent_entry(
 fn compile_typed_conditional_mana_source(
     card: &CompiledCard,
 ) -> Option<TypedConditionalManaSource> {
-    let program = &card.ability_program;
-    if program.atomic_transaction.is_some() {
-        return None;
-    }
-
-    if let Some(permanent) = program.executable_entry_linked_permanent() {
-        if program.unsupported_entry_linked_permanent().is_some()
-            || !program.abilities.is_empty()
-            || !card.effects.card_types.is_artifact
-            || permanent.mana_ability.costs != [AbilityCost::TapSelf]
-            || permanent.mana_ability.preconditions
-                != [
-                    AbilityPrecondition::SourceZone(ProgramZone::Battlefield),
-                    AbilityPrecondition::SourceUntapped,
-                ]
-        {
-            return None;
-        }
-        return match (&permanent.entry, &permanent.mana_ability.output) {
-            (
-                PermanentEntryProcedure::OptionalImprint {
-                    filter: EntryLinkedCardFilter::NonartifactNonlandCard,
-                    from: ProgramZone::Hand,
-                    to: ProgramZone::Exile,
-                    link: LinkedEntryObject::CardExiledByThisEntry,
-                },
-                EntryLinkedManaOutput::AnyColorOfLinkedCard {
-                    linked: LinkedEntryObject::CardExiledByThisEntry,
-                },
-            ) => Some(TypedConditionalManaSource::ImprintLinkedCardColors),
-            (
-                PermanentEntryProcedure::DiscardOrFailToEnter {
-                    filter: EntryLinkedCardFilter::LandCard,
-                    discard_from: ProgramZone::Hand,
-                    discard_to: ProgramZone::Graveyard,
-                    success_destination: ProgramZone::Battlefield,
-                    failure_destination: ProgramZone::Graveyard,
-                },
-                EntryLinkedManaOutput::AnyOneColor,
-            ) => Some(TypedConditionalManaSource::DiscardLandOrFailEntry),
-            _ => None,
-        };
-    }
-    if program.entry_linked_permanent.is_some() || program.unsupported_abilities().next().is_some()
-    {
-        return None;
-    }
-    let base_preconditions = [
-        AbilityPrecondition::SourceZone(ProgramZone::Battlefield),
-        AbilityPrecondition::SourceUntapped,
-    ];
-    if program.abilities.len() == 2 && card.effects.card_types.is_land {
-        let mut has_colorless_mode = false;
-        let mut damaging_any_color_mode = None;
-        for compilation in &program.abilities {
-            let AbilityCompilation::Executable(ability) = compilation else {
-                return None;
-            };
-            if ability.timing
-                != (AbilityTiming::Activated {
-                    window: crate::ability_program::ActivationWindow::NormalPriority,
-                })
-                || ability.costs != [AbilityCost::TapSelf]
-                || ability.preconditions != base_preconditions
-            {
-                return None;
-            }
-            match ability.effects.as_slice() {
-                [AbilityEffect::AddMana(mana)]
-                    if mana.amount == 1
-                        && mana.kind
-                            == ProgramManaKind::Fixed(FixedManaProfile {
-                                colorless: 1,
-                                ..FixedManaProfile::default()
-                            })
-                        && !has_colorless_mode =>
-                {
-                    has_colorless_mode = true;
-                }
-                [AbilityEffect::AddManaAndSourceDamage(linked)]
-                    if linked.mana.amount == 1
-                        && linked.mana.kind == ProgramManaKind::AnyOneColor
-                        && linked.damage.amount == 3
-                        && linked.damage.recipient == ControllerRelation::You
-                        && damaging_any_color_mode.is_none() =>
-                {
-                    damaging_any_color_mode = Some(linked.damage.amount);
-                }
-                _ => return None,
-            }
-        }
-        if has_colorless_mode {
-            return damaging_any_color_mode.map(|damage| {
-                TypedConditionalManaSource::ColorlessOrAnyColorWithSourceDamage { damage }
-            });
-        }
-        return None;
-    }
-    if program.abilities.len() != 1 {
-        return None;
-    }
-    let ability = program.executable_abilities().next()?;
-    if ability.timing
-        != (AbilityTiming::Activated {
-            window: crate::ability_program::ActivationWindow::NormalPriority,
-        })
-        || ability.costs != [AbilityCost::TapSelf]
-    {
-        return None;
-    }
-    match ability.effects.as_slice() {
-        [AbilityEffect::AddMana(mana)]
-            if ability.preconditions == base_preconditions
-                && mana.amount == 1
-                && mana.kind
-                    == ProgramManaKind::AnyColorAmongLegendaryCreaturesAndPlaneswalkersYouControl
-                && card.effects.card_types.is_artifact =>
-        {
-            Some(TypedConditionalManaSource::ControlledLegendaryColors)
-        }
-        [AbilityEffect::AddMana(mana)]
-            if ability.preconditions
-                == [
-                    AbilityPrecondition::SourceZone(ProgramZone::Battlefield),
-                    AbilityPrecondition::SourceUntapped,
-                    AbilityPrecondition::ResourceAtLeast {
-                        resource: ResourceKind::Artifact,
-                        count: 3,
-                    },
-                ]
-                && mana.amount == 1
-                && mana.kind == ProgramManaKind::AnyOneColor
-                && card.effects.card_types.is_artifact =>
-        {
-            Some(TypedConditionalManaSource::MetalcraftAnyColor)
-        }
-        [AbilityEffect::AddManaAndSourceDamage(linked)]
-            if ability.preconditions == base_preconditions
-                && linked.mana.amount == 2
-                && linked.mana.kind
-                    == ProgramManaKind::Fixed(FixedManaProfile {
-                        colorless: 2,
-                        ..FixedManaProfile::default()
-                    })
-                && linked.damage.amount == 2
-                && linked.damage.recipient == ControllerRelation::You
-                && card.effects.card_types.is_land =>
-        {
-            Some(TypedConditionalManaSource::FixedWithSourceDamage {
-                output: FixedManaProfile {
-                    colorless: 2,
-                    ..FixedManaProfile::default()
-                },
-                damage: 2,
-            })
-        }
-        _ => None,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum TypedAtomicTransaction {
-    HandMana {
-        output: FixedManaProfile,
-    },
-    SacrificeRitual {
-        output: FixedManaProfile,
-    },
-    NameLinkedGraveyardRitual {
-        base: FixedManaProfile,
-        per_match: FixedManaProfile,
-        /// Opponent graveyard objects are not present in the bounded local
-        /// state. Zero is therefore an explicit conservative floor, not an
-        /// assertion that opponents have no matching cards.
-        opponent_matching_card_floor: u16,
-    },
-    SacrificeTutor {
-        tutor: ProgramTutorEffect,
-    },
-    ThresholdRitual {
-        default: FixedManaProfile,
-        replacement: FixedManaProfile,
-        threshold: u16,
-    },
-    SearchRandomDiscardShuffle {
-        tutor: ProgramTutorEffect,
-    },
-    TemporaryLandSacrificeManaGrant {
-        output: FixedManaProfile,
-    },
-    BargainSearchCastOrHand {
-        maximum_mana_value: u16,
-    },
-    OpponentChoiceSearchSplit,
-}
-
-impl TypedAtomicTransaction {
-    fn initiation(&self) -> AtomicInitiation {
-        match self {
-            Self::HandMana { .. } => AtomicInitiation::HandManaAbility,
-            Self::SacrificeRitual { .. }
-            | Self::NameLinkedGraveyardRitual { .. }
-            | Self::SacrificeTutor { .. }
-            | Self::ThresholdRitual { .. }
-            | Self::SearchRandomDiscardShuffle { .. }
-            | Self::TemporaryLandSacrificeManaGrant { .. }
-            | Self::BargainSearchCastOrHand { .. }
-            | Self::OpponentChoiceSearchSplit => AtomicInitiation::CastSpell,
-        }
-    }
-
-    fn is_mana_development(&self) -> bool {
-        matches!(
-            self,
-            Self::HandMana { .. }
-                | Self::SacrificeRitual { .. }
-                | Self::NameLinkedGraveyardRitual { .. }
-                | Self::ThresholdRitual { .. }
-                | Self::TemporaryLandSacrificeManaGrant { .. }
-        )
-    }
-
-    fn is_tutor(&self) -> bool {
-        matches!(
-            self,
-            Self::SacrificeTutor { .. }
-                | Self::SearchRandomDiscardShuffle { .. }
-                | Self::BargainSearchCastOrHand { .. }
-                | Self::OpponentChoiceSearchSplit
-        )
-    }
+    classify_conditional_mana_source(card)
 }
 
 /// Runtime revalidation is deliberately as narrow as the compiler. This
 /// prevents a hand-authored or future extended IR shape from inheriting
 /// execution merely because one nearby cost/effect is familiar.
 fn compile_typed_atomic_transaction(card: &CompiledCard) -> Option<TypedAtomicTransaction> {
-    let transaction = card.ability_program.executable_atomic_transaction()?;
-    if card
-        .ability_program
-        .unsupported_atomic_transaction()
-        .is_some()
-        || !card.ability_program.abilities.is_empty()
-        || card.ability_program.necropotence_lifecycle.is_some()
-        || card.ability_program.self_transfer_tutor_permanent.is_some()
-        || card.ability_program.entry_linked_permanent.is_some()
-        || !card.ability_program.face_programs.is_empty()
-        || card
-            .ability_program
-            .unsupported_abilities()
-            .next()
-            .is_some()
-    {
-        return None;
-    }
-
-    match (
-        transaction.initiation,
-        transaction.source_zone,
-        transaction.initiation_costs.as_slice(),
-        transaction.resolution.as_slice(),
-    ) {
-        (
-            AtomicInitiation::CastSpell,
-            ProgramZone::Hand,
-            [AtomicCost::PrintedManaCost],
-            [AtomicEffect::TemporaryLandSacrificeManaGrant(effect)],
-        ) if effect.player == ControllerRelation::You
-            && effect.affected_zone == ProgramZone::Battlefield
-            && effect.affected_filter
-                == (ProgramObjectFilter {
-                    card_type: Some(ProgramCardType::Land),
-                    controller: Some(ControllerRelation::You),
-                    ..ProgramObjectFilter::default()
-                })
-            && effect.applies_to_future_matching_objects
-            && effect.duration == AtomicEffectDuration::UntilEndOfTurn
-            && effect.granted_ability.kind == GrantedAbilityKind::ManaAbility
-            && effect.granted_ability.source_zone == ProgramZone::Battlefield
-            && effect.granted_ability.controller == ControllerRelation::You
-            && effect.granted_ability.cost == GrantedSelfCost::SacrificeSelf
-            && effect.granted_ability.output
-                == (FixedManaProfile {
-                    black: 1,
-                    ..FixedManaProfile::default()
-                })
-            && matches!(
-                modeled_line_card_kind(card),
-                Some(ModeledLineCardKind::Spell)
-            ) =>
-        {
-            Some(TypedAtomicTransaction::TemporaryLandSacrificeManaGrant {
-                output: effect.granted_ability.output,
-            })
-        }
-        (
-            AtomicInitiation::CastSpell,
-            ProgramZone::Hand,
-            [AtomicCost::PrintedManaCost, AtomicCost::Bargain(bargain)],
-            [AtomicEffect::BargainSearchCastOrHand(effect)],
-        ) if exact_bargain_cost(bargain)
-            && exact_bargain_search_cast_or_hand(effect)
-            && matches!(
-                modeled_line_card_kind(card),
-                Some(ModeledLineCardKind::Spell)
-            ) =>
-        {
-            Some(TypedAtomicTransaction::BargainSearchCastOrHand {
-                maximum_mana_value: effect.conditional_cast.mana_value.maximum,
-            })
-        }
-        (
-            AtomicInitiation::CastSpell,
-            ProgramZone::Hand,
-            [AtomicCost::PrintedManaCost],
-            [AtomicEffect::OpponentChoiceSearchSplit(effect)],
-        ) if exact_opponent_choice_search_split(effect)
-            && matches!(
-                modeled_line_card_kind(card),
-                Some(ModeledLineCardKind::Spell)
-            ) =>
-        {
-            Some(TypedAtomicTransaction::OpponentChoiceSearchSplit)
-        }
-        (
-            AtomicInitiation::HandManaAbility,
-            ProgramZone::Hand,
-            [
-                AtomicCost::ExileSelf {
-                    from: ProgramZone::Hand,
-                },
-            ],
-            [AtomicEffect::AddFixedMana(output)],
-        ) if fixed_mana_is_exact_hand_output(*output) => {
-            Some(TypedAtomicTransaction::HandMana { output: *output })
-        }
-        (
-            AtomicInitiation::CastSpell,
-            ProgramZone::Hand,
-            [
-                AtomicCost::PrintedManaCost,
-                AtomicCost::SacrificePermanents {
-                    filter,
-                    count: 1,
-                    commander_eligibility: CommanderEligibility::Exclude,
-                },
-            ],
-            [AtomicEffect::AddFixedMana(output)],
-        ) if exact_noncommander_creature_filter(filter)
-            && *output
-                == (FixedManaProfile {
-                    black: 4,
-                    ..FixedManaProfile::default()
-                })
-            && matches!(
-                modeled_line_card_kind(card),
-                Some(ModeledLineCardKind::Spell)
-            ) =>
-        {
-            Some(TypedAtomicTransaction::SacrificeRitual { output: *output })
-        }
-        (
-            AtomicInitiation::CastSpell,
-            ProgramZone::Hand,
-            [
-                AtomicCost::PrintedManaCost,
-                AtomicCost::SacrificePermanents {
-                    filter,
-                    count: 1,
-                    commander_eligibility: CommanderEligibility::Exclude,
-                },
-            ],
-            [AtomicEffect::SearchToHand(tutor)],
-        ) if exact_noncommander_creature_filter(filter)
-            && exact_any_card_tutor(tutor, true)
-            && matches!(
-                modeled_line_card_kind(card),
-                Some(ModeledLineCardKind::Spell)
-            ) =>
-        {
-            Some(TypedAtomicTransaction::SacrificeTutor {
-                tutor: tutor.clone(),
-            })
-        }
-        (
-            AtomicInitiation::CastSpell,
-            ProgramZone::Hand,
-            [AtomicCost::PrintedManaCost],
-            [
-                AtomicEffect::AddFixedMana(base),
-                AtomicEffect::AddManaPerNamedCardInGraveyards(dynamic),
-            ],
-        ) if *base
-            == (FixedManaProfile {
-                red: 2,
-                ..FixedManaProfile::default()
-            })
-            && dynamic.mana_per_card
-                == (FixedManaProfile {
-                    red: 1,
-                    ..FixedManaProfile::default()
-                })
-            && dynamic.card_name == AtomicCardNameReference::SourceCardName
-            && dynamic.graveyards == AtomicGraveyardScope::EachPlayerGraveyard
-            && matches!(
-                modeled_line_card_kind(card),
-                Some(ModeledLineCardKind::Spell)
-            ) =>
-        {
-            Some(TypedAtomicTransaction::NameLinkedGraveyardRitual {
-                base: *base,
-                per_match: dynamic.mana_per_card,
-                opponent_matching_card_floor: 0,
-            })
-        }
-        (
-            AtomicInitiation::CastSpell,
-            ProgramZone::Hand,
-            [AtomicCost::PrintedManaCost],
-            [AtomicEffect::ConditionalManaReplacement(effect)],
-        ) if effect.default
-            == (FixedManaProfile {
-                black: 3,
-                ..FixedManaProfile::default()
-            })
-            && effect.replacement
-                == (FixedManaProfile {
-                    black: 5,
-                    ..FixedManaProfile::default()
-                })
-            && effect.condition
-                == (AtomicStateCondition::CardsInZoneAtLeast {
-                    player: ControllerRelation::You,
-                    zone: ProgramZone::Graveyard,
-                    count: 7,
-                })
-            && matches!(
-                modeled_line_card_kind(card),
-                Some(ModeledLineCardKind::Spell)
-            ) =>
-        {
-            Some(TypedAtomicTransaction::ThresholdRitual {
-                default: effect.default,
-                replacement: effect.replacement,
-                threshold: 7,
-            })
-        }
-        (
-            AtomicInitiation::CastSpell,
-            ProgramZone::Hand,
-            [AtomicCost::PrintedManaCost],
-            [
-                AtomicEffect::SearchToHand(tutor),
-                AtomicEffect::RandomDiscard(discard),
-                AtomicEffect::ShuffleLibrary(shuffle),
-            ],
-        ) if exact_any_card_tutor(tutor, false)
-            && discard.player == ControllerRelation::You
-            && discard.count == 1
-            && discard.from == ProgramZone::Hand
-            && discard.to == ProgramZone::Graveyard
-            && discard.selection == RandomSelection::UniformAmongObjectsInZone
-            && shuffle.player == ControllerRelation::You
-            && matches!(
-                modeled_line_card_kind(card),
-                Some(ModeledLineCardKind::Spell)
-            ) =>
-        {
-            Some(TypedAtomicTransaction::SearchRandomDiscardShuffle {
-                tutor: tutor.clone(),
-            })
-        }
-        _ => None,
-    }
-}
-
-fn fixed_mana_is_exact_hand_output(output: FixedManaProfile) -> bool {
-    output
-        == (FixedManaProfile {
-            red: 1,
-            ..FixedManaProfile::default()
-        })
-        || output
-            == (FixedManaProfile {
-                green: 1,
-                ..FixedManaProfile::default()
-            })
-}
-
-fn exact_noncommander_creature_filter(filter: &ProgramObjectFilter) -> bool {
-    filter
-        == &(ProgramObjectFilter {
-            card_type: Some(ProgramCardType::Creature),
-            controller: Some(ControllerRelation::You),
-            ..ProgramObjectFilter::default()
-        })
-}
-
-fn exact_any_card_tutor(tutor: &ProgramTutorEffect, shuffle_after: bool) -> bool {
-    tutor.from == ProgramZone::Library
-        && tutor.destination == ProgramZone::Hand
-        && tutor.shuffle_after == shuffle_after
-        && tutor.filter
-            == TutorFilter::AnyOf(vec![ProgramObjectFilter {
-                card_type: Some(ProgramCardType::Card),
-                ..ProgramObjectFilter::default()
-            }])
-}
-
-fn exact_atomic_any_card_search(search: &AtomicLibrarySearch, quantity: u16, reveal: bool) -> bool {
-    search.player == ControllerRelation::You
-        && search.from == ProgramZone::Library
-        && search.minimum == quantity
-        && search.maximum == quantity
-        && search.reveal == reveal
-        && search.filter
-            == TutorFilter::AnyOf(vec![ProgramObjectFilter {
-                card_type: Some(ProgramCardType::Card),
-                ..ProgramObjectFilter::default()
-            }])
-}
-
-fn exact_bargain_cost(cost: &AtomicBargainCost) -> bool {
-    cost.player == ControllerRelation::You
-        && cost.timing == AtomicAdditionalCostTiming::AsThisSpellIsCast
-        && cost.optional
-        && cost.from == ProgramZone::Battlefield
-        && cost.count == 1
-        && cost.eligible_kinds
-            == [
-                BargainSacrificeKind::Artifact,
-                BargainSacrificeKind::Enchantment,
-                BargainSacrificeKind::Token,
-            ]
-        && cost.commander_eligibility == CommanderEligibility::Include
-}
-
-fn exact_bargain_search_cast_or_hand(effect: &BargainSearchCastOrHandEffect) -> bool {
-    exact_atomic_any_card_search(&effect.search, 1, false)
-        && effect.searched_card == AtomicTrackedObject::OnlyCardFoundByThisSearch
-        && effect.initial_destination == ProgramZone::Exile
-        && effect.face_down
-        && effect.shuffle.player == ControllerRelation::You
-        && effect.shuffle.timing
-            == AtomicShuffleTiming::AfterInitialSearchMovementBeforeConditionalCast
-        && effect.conditional_cast.condition == AtomicCastPermissionCondition::ThisSpellWasBargained
-        && effect.conditional_cast.card == AtomicTrackedObject::OnlyCardFoundByThisSearch
-        && effect.conditional_cast.from == ProgramZone::Exile
-        && effect.conditional_cast.optional
-        && effect.conditional_cast.mana_value.subject == AtomicManaValueSubject::SpellAsCast
-        && effect.conditional_cast.mana_value.maximum == 4
-        && effect.conditional_cast.cost_waiver == AtomicCastCostWaiver::ManaCostOnly
-        && effect.if_not_cast.condition == AtomicMovementCondition::NotCastByThisEffect
-        && effect.if_not_cast.object == AtomicTrackedObject::OnlyCardFoundByThisSearch
-        && effect.if_not_cast.from == ProgramZone::Exile
-        && effect.if_not_cast.to == ProgramZone::Hand
-        && effect.if_not_cast.recipient == ControllerRelation::You
-}
-
-fn exact_opponent_choice_search_split(effect: &OpponentChoiceSearchSplitEffect) -> bool {
-    exact_atomic_any_card_search(&effect.search, 3, true)
-        && effect.chooser == AtomicSearchChooser::TargetOpponent
-        && effect.chosen_count == 1
-        && effect.chosen_destination == ProgramZone::Hand
-        && effect.chosen_recipient == ControllerRelation::You
-        && effect.remainder_count == 2
-        && effect.remainder_destination == ProgramZone::Graveyard
-        && effect.remainder_recipient == ControllerRelation::You
-        && effect.shuffle.player == ControllerRelation::You
-        && effect.shuffle.timing == AtomicShuffleTiming::AfterOpponentChoiceMovements
+    classify_atomic_runtime_transaction(card)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6821,6 +7818,9 @@ enum AtomicTransactionChoice {
     OpponentChoice {
         pile: [usize; 3],
     },
+    ShortOpponentChoice {
+        pile: [Option<usize>; 3],
+    },
 }
 
 fn atomic_transaction_choice_for_action(action: TurnAction) -> AtomicTransactionChoice {
@@ -6837,6 +7837,9 @@ fn atomic_transaction_choice_for_action(action: TurnAction) -> AtomicTransaction
         },
         TurnAction::CastOpponentChoiceTutor { pile, .. } => {
             AtomicTransactionChoice::OpponentChoice { pile }
+        }
+        TurnAction::CastShortOpponentChoiceTutor { pile, .. } => {
+            AtomicTransactionChoice::ShortOpponentChoice { pile }
         }
         _ => AtomicTransactionChoice::Default,
     }
@@ -6911,6 +7914,7 @@ fn commit_atomic_spell_initiation_with_choice(
         ) | (
             TypedAtomicTransaction::OpponentChoiceSearchSplit,
             AtomicTransactionChoice::OpponentChoice { .. }
+                | AtomicTransactionChoice::ShortOpponentChoice { .. }
         ) | (
             TypedAtomicTransaction::HandMana { .. }
                 | TypedAtomicTransaction::SacrificeRitual { .. }
@@ -6999,6 +8003,741 @@ struct AtomicSpellResolution {
     free_cast_offer: Option<usize>,
     opponent_chosen_card: Option<usize>,
     opponent_graveyard_cards: [Option<usize>; 2],
+    source_finalized: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IntuitionPlanningModel {
+    routes: Vec<IntuitionRouteTemplate>,
+    identity_ordinal_by_card_index: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct IntuitionRouteTemplate {
+    key: String,
+    kind: IntuitionRouteKind,
+    required: Vec<(usize, u8)>,
+    identities: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IntuitionRouteKind {
+    ReviewedEmptyLibrary { line_index: usize },
+    GraveyardStorm { program: GraveyardStormProgram },
+    General,
+}
+
+impl IntuitionPlanningModel {
+    fn compile(deck: &CompiledDeck) -> Self {
+        let mut canonical_indices = (0..deck.cards.len()).collect::<Vec<_>>();
+        canonical_indices.sort_by(|left, right| {
+            deck.cards[*left]
+                .normalized_name
+                .cmp(&deck.cards[*right].normalized_name)
+                .then_with(|| left.cmp(right))
+        });
+        let mut identity_ordinal_by_card_index = vec![usize::MAX; deck.cards.len()];
+        for (ordinal, card_index) in canonical_indices.into_iter().enumerate() {
+            identity_ordinal_by_card_index[card_index] = ordinal;
+        }
+
+        let unique_index = |normalized_name: &str| {
+            let mut matching = deck
+                .cards
+                .iter()
+                .enumerate()
+                .filter(|(_, card)| card.normalized_name == normalized_name);
+            let (card_index, _) = matching.next()?;
+            matching.next().is_none().then_some(card_index)
+        };
+
+        let mut routes = Vec::new();
+        for (line_index, line) in deck.known_lines.iter().enumerate() {
+            if reviewed_empty_library_sequence(line) {
+                let mut required_by_identity = HashMap::<usize, u8>::new();
+                let mut complete = true;
+                for name in &line.cards {
+                    let normalized = crate::parser::normalize_card_name(name);
+                    let Some(card_index) = unique_index(&normalized) else {
+                        complete = false;
+                        break;
+                    };
+                    let count = required_by_identity.entry(card_index).or_default();
+                    *count = count.saturating_add(1);
+                }
+                let mut required = required_by_identity.into_iter().collect::<Vec<_>>();
+                required.sort_unstable_by_key(|(card_index, _)| {
+                    identity_ordinal_by_card_index[*card_index]
+                });
+                let identities = required
+                    .iter()
+                    .map(|(card_index, _)| *card_index)
+                    .collect::<Vec<_>>();
+                if complete
+                    && !identities.is_empty()
+                    && identities.len() <= MAX_INTUITION_IDENTITIES_PER_ROUTE
+                {
+                    routes.push(IntuitionRouteTemplate {
+                        key: format!(
+                            "reviewed:{}:{}",
+                            crate::parser::normalize_card_name(&line.name),
+                            line_index
+                        ),
+                        kind: IntuitionRouteKind::ReviewedEmptyLibrary { line_index },
+                        required,
+                        identities,
+                    });
+                }
+            }
+            if let Some(program) = compile_graveyard_storm_program(line, deck) {
+                let mut identities = program.members().to_vec();
+                identities
+                    .sort_unstable_by_key(|card_index| identity_ordinal_by_card_index[*card_index]);
+                identities.dedup();
+                if identities.len() <= MAX_INTUITION_IDENTITIES_PER_ROUTE {
+                    routes.push(IntuitionRouteTemplate {
+                        key: format!(
+                            "graveyard:{}:{}",
+                            crate::parser::normalize_card_name(&line.name),
+                            line_index
+                        ),
+                        kind: IntuitionRouteKind::GraveyardStorm { program },
+                        required: identities
+                            .iter()
+                            .copied()
+                            .map(|card_index| (card_index, 1))
+                            .collect(),
+                        identities,
+                    });
+                }
+            }
+        }
+        routes.push(IntuitionRouteTemplate {
+            key: "general".into(),
+            kind: IntuitionRouteKind::General,
+            required: Vec::new(),
+            identities: Vec::new(),
+        });
+        routes.sort_by(|left, right| left.key.cmp(&right.key));
+
+        Self {
+            routes,
+            identity_ordinal_by_card_index,
+        }
+    }
+
+    fn identity_ordinal(&self, card_index: usize) -> usize {
+        self.identity_ordinal_by_card_index
+            .get(card_index)
+            .copied()
+            .unwrap_or(usize::MAX)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IntuitionSelectionContext<'a> {
+    deck: &'a CompiledDeck,
+    source_card_index: usize,
+    hand: &'a [usize],
+    zones: &'a KnownLineZoneState,
+    turn: u8,
+    mana_access: Option<&'a ManaAccessProfile>,
+    mana_pool: &'a TurnManaPool,
+    future_additional_generic_per_cast: u8,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct IntuitionSelectionDiagnostics {
+    maximum_route_identities: usize,
+    maximum_route_multisets: usize,
+    cheap_piles: usize,
+    cheap_outcomes: usize,
+    certificate_finalists: usize,
+    certificate_nodes: usize,
+    returned_actions: usize,
+}
+
+#[derive(Debug, Clone)]
+struct IntuitionPileSelection {
+    piles: Vec<[usize; 3]>,
+    diagnostics: IntuitionSelectionDiagnostics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct IntuitionIdentityRank {
+    reviewed_route: ExactTutorReviewedRouteRank,
+    static_target: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct IntuitionPilePrefilterScore {
+    route_coverage: u8,
+    graveyard_affinity: u8,
+    worst_identity: IntuitionIdentityRank,
+    middle_identity: IntuitionIdentityRank,
+    best_identity: IntuitionIdentityRank,
+    total_static_target: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct IntuitionMaxMinScore {
+    worst: PlannerValue,
+    middle: PlannerValue,
+    best: PlannerValue,
+}
+
+#[derive(Debug, Clone)]
+struct IntuitionOutcomeState {
+    chosen_card: usize,
+    chosen_position: usize,
+    hand: Vec<usize>,
+    zones: KnownLineZoneState,
+    value: PlannerValue,
+}
+
+#[derive(Debug, Clone)]
+struct IntuitionScoredPile {
+    pile: [usize; 3],
+    outcomes: [IntuitionOutcomeState; 3],
+    score: IntuitionMaxMinScore,
+}
+
+fn compare_intuition_card_identities(
+    model: &IntuitionPlanningModel,
+    left: usize,
+    right: usize,
+) -> std::cmp::Ordering {
+    model
+        .identity_ordinal(left)
+        .cmp(&model.identity_ordinal(right))
+        .then_with(|| left.cmp(&right))
+}
+
+fn canonicalize_intuition_pile(model: &IntuitionPlanningModel, mut pile: [usize; 3]) -> [usize; 3] {
+    pile.sort_unstable_by(|left, right| compare_intuition_card_identities(model, *left, *right));
+    pile
+}
+
+fn compare_intuition_piles(
+    model: &IntuitionPlanningModel,
+    left: &[usize; 3],
+    right: &[usize; 3],
+) -> std::cmp::Ordering {
+    left.iter()
+        .copied()
+        .zip(right.iter().copied())
+        .find_map(|(left, right)| {
+            let ordering = compare_intuition_card_identities(model, left, right);
+            (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+        })
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+fn intuition_identity_rank(
+    context: IntuitionSelectionContext<'_>,
+    card_index: usize,
+    available_copies: &dyn Fn(usize) -> usize,
+) -> Option<IntuitionIdentityRank> {
+    let card = context.deck.cards.get(card_index)?;
+    (available_copies(card_index) > 0).then_some(IntuitionIdentityRank {
+        reviewed_route: exact_tutor_reviewed_route_rank_with_library(
+            context.deck,
+            card_index,
+            context.hand,
+            context.zones,
+            context.turn,
+            context.mana_access,
+            context.mana_pool,
+            context.future_additional_generic_per_cast,
+            available_copies,
+        ),
+        static_target: tutor_target_score(
+            context.deck,
+            card,
+            context.hand,
+            context.zones,
+            context.turn,
+        ),
+    })
+}
+
+fn ranked_intuition_available_identities(
+    model: &IntuitionPlanningModel,
+    context: IntuitionSelectionContext<'_>,
+    available_copies: &dyn Fn(usize) -> usize,
+) -> (Vec<usize>, HashMap<usize, IntuitionIdentityRank>) {
+    let mut ranks = HashMap::new();
+    for card_index in 0..context.deck.cards.len() {
+        if let Some(rank) = intuition_identity_rank(context, card_index, available_copies) {
+            ranks.insert(card_index, rank);
+        }
+    }
+    let mut identities = ranks.keys().copied().collect::<Vec<_>>();
+    identities.sort_by(|left, right| {
+        ranks[right]
+            .cmp(&ranks[left])
+            .then_with(|| compare_intuition_card_identities(model, *left, *right))
+    });
+    (identities, ranks)
+}
+
+fn bounded_short_intuition_pile(
+    model: &IntuitionPlanningModel,
+    context: IntuitionSelectionContext<'_>,
+    available_copies: &dyn Fn(usize) -> usize,
+) -> Option<[Option<usize>; 3]> {
+    let (ranked, _) = ranked_intuition_available_identities(model, context, available_copies);
+    let mut cards = Vec::with_capacity(3);
+    for card_index in ranked {
+        for _ in 0..available_copies(card_index) {
+            cards.push(card_index);
+            if cards.len() == 3 {
+                return None;
+            }
+        }
+    }
+    if cards.is_empty() {
+        return None;
+    }
+    cards.sort_unstable_by(|left, right| compare_intuition_card_identities(model, *left, *right));
+    let mut pile = [None; 3];
+    for (position, card_index) in cards.into_iter().enumerate() {
+        pile[position] = Some(card_index);
+    }
+    Some(pile)
+}
+
+fn short_intuition_pile_cards(pile: [Option<usize>; 3]) -> Option<Vec<usize>> {
+    let mut cards = Vec::with_capacity(2);
+    let mut reached_end = false;
+    for card_index in pile {
+        match card_index {
+            Some(card_index) if !reached_end => cards.push(card_index),
+            Some(_) => return None,
+            None => reached_end = true,
+        }
+    }
+    (!cards.is_empty() && cards.len() < 3).then_some(cards)
+}
+
+fn intuition_route_candidates(
+    model: &IntuitionPlanningModel,
+    route: &IntuitionRouteTemplate,
+    globally_ranked: &[usize],
+    ranks: &HashMap<usize, IntuitionIdentityRank>,
+) -> Vec<usize> {
+    let mut identities = route
+        .identities
+        .iter()
+        .copied()
+        .filter(|card_index| ranks.contains_key(card_index))
+        .collect::<Vec<_>>();
+    identities.sort_by(|left, right| {
+        ranks[right]
+            .cmp(&ranks[left])
+            .then_with(|| compare_intuition_card_identities(model, *left, *right))
+    });
+    for card_index in globally_ranked {
+        if identities.len() == MAX_INTUITION_IDENTITIES_PER_ROUTE {
+            break;
+        }
+        if !identities.contains(card_index) {
+            identities.push(*card_index);
+        }
+    }
+    identities.truncate(MAX_INTUITION_IDENTITIES_PER_ROUTE);
+    identities
+}
+
+fn intuition_pile_copy_counts(pile: &[usize; 3]) -> HashMap<usize, usize> {
+    let mut counts = HashMap::new();
+    for card_index in pile {
+        *counts.entry(*card_index).or_default() += 1;
+    }
+    counts
+}
+
+fn intuition_pile_prefilter_score(
+    route: &IntuitionRouteTemplate,
+    pile: &[usize; 3],
+    ranks: &HashMap<usize, IntuitionIdentityRank>,
+) -> Option<IntuitionPilePrefilterScore> {
+    let pile_counts = intuition_pile_copy_counts(pile);
+    let route_coverage = route
+        .required
+        .iter()
+        .map(|(card_index, required)| {
+            pile_counts
+                .get(card_index)
+                .copied()
+                .unwrap_or_default()
+                .min(usize::from(*required))
+        })
+        .sum::<usize>()
+        .min(usize::from(u8::MAX)) as u8;
+    let graveyard_affinity = match route.kind {
+        IntuitionRouteKind::GraveyardStorm { program, .. } => {
+            pile.iter()
+                .filter(|card_index| program.members().contains(card_index))
+                .count()
+                .min(usize::from(u8::MAX)) as u8
+        }
+        IntuitionRouteKind::ReviewedEmptyLibrary { .. } | IntuitionRouteKind::General => 0,
+    };
+    let mut identity_ranks = pile
+        .iter()
+        .map(|card_index| ranks.get(card_index).copied())
+        .collect::<Option<Vec<_>>>()?;
+    identity_ranks.sort_unstable();
+    Some(IntuitionPilePrefilterScore {
+        route_coverage,
+        graveyard_affinity,
+        worst_identity: identity_ranks[0],
+        middle_identity: identity_ranks[1],
+        best_identity: identity_ranks[2],
+        total_static_target: identity_ranks
+            .iter()
+            .map(|rank| i64::from(rank.static_target))
+            .sum(),
+    })
+}
+
+fn materialize_intuition_post_resolution_outcome(
+    context: IntuitionSelectionContext<'_>,
+    pile: &[usize],
+    chosen_position: usize,
+) -> Option<IntuitionOutcomeState> {
+    let chosen_card = *pile.get(chosen_position)?;
+    let mut hand = context.hand.to_vec();
+    hand.push(chosen_card);
+    let mut zones = context.zones.clone();
+    for (position, card_index) in pile.iter().copied().enumerate() {
+        if position != chosen_position {
+            zones.push_graveyard_card(card_index);
+            zones.advance_sequence();
+        }
+    }
+    zones.record_cast(context.deck, context.source_card_index, context.turn);
+    let value = planner_value_with_development(
+        context.deck,
+        context.mana_access,
+        &hand,
+        &zones,
+        context.turn,
+        context.mana_pool,
+        context.future_additional_generic_per_cast,
+        &[],
+        0,
+    )
+    .0;
+    Some(IntuitionOutcomeState {
+        chosen_card,
+        chosen_position,
+        hand,
+        zones,
+        value,
+    })
+}
+
+fn compare_intuition_opponent_outcomes(
+    model: &IntuitionPlanningModel,
+    left: &IntuitionOutcomeState,
+    right: &IntuitionOutcomeState,
+) -> std::cmp::Ordering {
+    left.value
+        .cmp(&right.value)
+        .then_with(|| compare_intuition_card_identities(model, left.chosen_card, right.chosen_card))
+        .then_with(|| left.chosen_position.cmp(&right.chosen_position))
+}
+
+fn score_intuition_pile(
+    model: &IntuitionPlanningModel,
+    context: IntuitionSelectionContext<'_>,
+    pile: [usize; 3],
+) -> Option<IntuitionScoredPile> {
+    let mut outcomes = (0..3)
+        .map(|chosen_position| {
+            materialize_intuition_post_resolution_outcome(context, &pile, chosen_position)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    outcomes.sort_by(|left, right| compare_intuition_opponent_outcomes(model, left, right));
+    let score = IntuitionMaxMinScore {
+        worst: outcomes[0].value,
+        middle: outcomes[1].value,
+        best: outcomes[2].value,
+    };
+    Some(IntuitionScoredPile {
+        pile,
+        outcomes: outcomes
+            .try_into()
+            .expect("an Intuition pile always has three opponent outcomes"),
+        score,
+    })
+}
+
+fn intuition_route_affinity(
+    route: &IntuitionRouteTemplate,
+    outcome: &IntuitionOutcomeState,
+) -> usize {
+    route
+        .identities
+        .iter()
+        .map(|card_index| {
+            outcome
+                .hand
+                .iter()
+                .filter(|candidate| **candidate == *card_index)
+                .count()
+                .saturating_add(
+                    outcome
+                        .zones
+                        .graveyard
+                        .iter()
+                        .filter(|candidate| **candidate == *card_index)
+                        .count(),
+                )
+                .saturating_add(
+                    outcome
+                        .zones
+                        .battlefield
+                        .iter()
+                        .filter(|presence| presence.card_index == *card_index)
+                        .count(),
+                )
+        })
+        .sum()
+}
+
+fn certify_intuition_outcome_for_route(
+    context: IntuitionSelectionContext<'_>,
+    route: &IntuitionRouteTemplate,
+    outcome: &IntuitionOutcomeState,
+    available_copies_after_search: &dyn Fn(usize) -> usize,
+) -> PlannerValue {
+    let mut value = outcome.value;
+    match route.kind {
+        IntuitionRouteKind::ReviewedEmptyLibrary { line_index } => {
+            let Some(line) = context.deck.known_lines.get(line_index) else {
+                return value;
+            };
+            if !reviewed_sequence_zone_order_is_still_credible(
+                line,
+                context.deck,
+                &outcome.zones,
+                context.turn,
+            ) {
+                return value;
+            }
+            let total = line.cards.len().max(1);
+            let accessible = named_line_piece_access_count(
+                line,
+                context.deck,
+                &outcome.hand,
+                &outcome.zones,
+                context.turn,
+            )
+            .min(total);
+            let progress = accessible as i64 * 10_000 / total as i64;
+            value.route_deficit_reduction = value.route_deficit_reduction.max(progress);
+            if accessible == total
+                && reviewed_sequence_package_is_jointly_payable(
+                    line,
+                    context.deck,
+                    &outcome.hand,
+                    &outcome.zones,
+                    context.turn,
+                    context.mana_pool,
+                    context.mana_access,
+                    context.future_additional_generic_per_cast,
+                )
+            {
+                value.route_deficit_reduction = value.route_deficit_reduction.max(60_000);
+            }
+        }
+        IntuitionRouteKind::GraveyardStorm { program, .. } => {
+            let hand_contains = |card_index| outcome.hand.contains(&card_index);
+            let battlefield_contains_index = |card_index| {
+                outcome
+                    .zones
+                    .battlefield
+                    .iter()
+                    .any(|presence| presence.card_index == card_index)
+            };
+            let graveyard_contains = |card_index| outcome.zones.graveyard.contains(&card_index);
+            let supported = [
+                battlefield_contains_index(program.permission_source)
+                    || hand_contains(program.permission_source),
+                battlefield_contains_index(program.mana_source)
+                    || hand_contains(program.mana_source)
+                    || graveyard_contains(program.mana_source),
+                graveyard_contains(program.mill_spell)
+                    || hand_contains(program.mill_spell)
+                        && !active_necropotence_lifecycle(context.deck, &outcome.zones),
+            ];
+            let live =
+                program
+                    .members()
+                    .into_iter()
+                    .zip(supported)
+                    .all(|(card_index, supported)| {
+                        supported || available_copies_after_search(card_index) > 0
+                    });
+            if live {
+                let progress = supported.into_iter().filter(|supported| *supported).count() as i64
+                    * 10_000
+                    / 3;
+                value.route_deficit_reduction = value.route_deficit_reduction.max(progress);
+            }
+        }
+        IntuitionRouteKind::General => {}
+    }
+    value
+}
+
+fn bounded_intuition_piles(
+    model: &IntuitionPlanningModel,
+    context: IntuitionSelectionContext<'_>,
+    available_copies: &dyn Fn(usize) -> usize,
+) -> IntuitionPileSelection {
+    let (globally_ranked, ranks) =
+        ranked_intuition_available_identities(model, context, available_copies);
+    let mut diagnostics = IntuitionSelectionDiagnostics::default();
+    let mut prefiltered = HashMap::<[usize; 3], IntuitionPilePrefilterScore>::new();
+
+    for route in &model.routes {
+        let candidates = intuition_route_candidates(model, route, &globally_ranked, &ranks);
+        diagnostics.maximum_route_identities =
+            diagnostics.maximum_route_identities.max(candidates.len());
+        let mut generated_for_route = 0usize;
+        for first in 0..candidates.len() {
+            for second in first..candidates.len() {
+                for third in second..candidates.len() {
+                    generated_for_route = generated_for_route.saturating_add(1);
+                    let pile = canonicalize_intuition_pile(
+                        model,
+                        [candidates[first], candidates[second], candidates[third]],
+                    );
+                    if intuition_pile_copy_counts(&pile)
+                        .into_iter()
+                        .any(|(card_index, required)| available_copies(card_index) < required)
+                    {
+                        continue;
+                    }
+                    let Some(score) = intuition_pile_prefilter_score(route, &pile, &ranks) else {
+                        continue;
+                    };
+                    prefiltered
+                        .entry(pile)
+                        .and_modify(|current| *current = (*current).max(score))
+                        .or_insert(score);
+                }
+            }
+        }
+        debug_assert!(generated_for_route <= MAX_INTUITION_MULTISETS_PER_ROUTE);
+        diagnostics.maximum_route_multisets =
+            diagnostics.maximum_route_multisets.max(generated_for_route);
+    }
+
+    let mut cheap_candidates = prefiltered.into_iter().collect::<Vec<_>>();
+    cheap_candidates.sort_by(|(left_pile, left_score), (right_pile, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| compare_intuition_piles(model, left_pile, right_pile))
+    });
+    cheap_candidates.truncate(MAX_INTUITION_CHEAP_PILES);
+    diagnostics.cheap_piles = cheap_candidates.len();
+
+    let mut scored = cheap_candidates
+        .into_iter()
+        .filter_map(|(pile, _)| score_intuition_pile(model, context, pile))
+        .collect::<Vec<_>>();
+    diagnostics.cheap_outcomes = scored.len().saturating_mul(3);
+    debug_assert!(diagnostics.cheap_outcomes <= MAX_INTUITION_CHEAP_OUTCOMES);
+    scored.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| compare_intuition_piles(model, &left.pile, &right.pile))
+    });
+
+    let finalist_count = scored.len().min(MAX_INTUITION_CERTIFICATE_FINALISTS);
+    diagnostics.certificate_finalists = finalist_count;
+    let mut certified = scored[..finalist_count].to_vec();
+    for finalist in &mut certified {
+        let pile_counts = intuition_pile_copy_counts(&finalist.pile);
+        let available_after_search = |card_index| {
+            available_copies(card_index)
+                .saturating_sub(pile_counts.get(&card_index).copied().unwrap_or_default())
+        };
+        for outcome in &mut finalist.outcomes {
+            let mut routes = model
+                .routes
+                .iter()
+                .filter(|route| !matches!(route.kind, IntuitionRouteKind::General))
+                .map(|route| (intuition_route_affinity(route, outcome), route))
+                .filter(|(affinity, _)| *affinity > 0)
+                .collect::<Vec<_>>();
+            routes.sort_by(|(left_affinity, left), (right_affinity, right)| {
+                right_affinity
+                    .cmp(left_affinity)
+                    .then_with(|| left.key.cmp(&right.key))
+            });
+            for (_, route) in routes.into_iter().take(2) {
+                if diagnostics.certificate_nodes == MAX_INTUITION_CERTIFICATE_NODES {
+                    break;
+                }
+                outcome.value = outcome.value.max(certify_intuition_outcome_for_route(
+                    context,
+                    route,
+                    outcome,
+                    &available_after_search,
+                ));
+                diagnostics.certificate_nodes = diagnostics.certificate_nodes.saturating_add(1);
+            }
+        }
+        finalist
+            .outcomes
+            .sort_by(|left, right| compare_intuition_opponent_outcomes(model, left, right));
+        finalist.score = IntuitionMaxMinScore {
+            worst: finalist.outcomes[0].value,
+            middle: finalist.outcomes[1].value,
+            best: finalist.outcomes[2].value,
+        };
+    }
+    certified.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| compare_intuition_piles(model, &left.pile, &right.pile))
+    });
+
+    let mut piles = certified
+        .iter()
+        .map(|candidate| candidate.pile)
+        .collect::<Vec<_>>();
+    for candidate in scored {
+        if piles.len() == MAX_INTUITION_RETURNED_ACTIONS {
+            break;
+        }
+        if !piles.contains(&candidate.pile) {
+            piles.push(candidate.pile);
+        }
+    }
+    piles.truncate(MAX_INTUITION_RETURNED_ACTIONS);
+    diagnostics.returned_actions = piles.len();
+    IntuitionPileSelection { piles, diagnostics }
+}
+
+fn adversarial_intuition_outcome(
+    model: &IntuitionPlanningModel,
+    context: IntuitionSelectionContext<'_>,
+    pile: &[usize],
+) -> Option<IntuitionOutcomeState> {
+    (0..pile.len())
+        .filter_map(|chosen_position| {
+            materialize_intuition_post_resolution_outcome(context, pile, chosen_position)
+        })
+        .min_by(|left, right| compare_intuition_opponent_outcomes(model, left, right))
 }
 
 /// Rank observable library identities without consulting their hidden order,
@@ -7071,11 +8810,13 @@ fn ranked_actual_any_card_search_identities(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_atomic_spell_resolution_with_choice(
+fn execute_atomic_spell_resolution_with_choice_and_intuition_model(
     transaction: &TypedAtomicTransaction,
+    source_card_index: usize,
     pre_resolution_graveyard_count: usize,
     pre_resolution_source_name_matches: usize,
     choice: AtomicTransactionChoice,
+    intuition_model: &IntuitionPlanningModel,
     deck: &CompiledDeck,
     mana_access: Option<&ManaAccessProfile>,
     library_order: &mut Vec<usize>,
@@ -7217,39 +8958,79 @@ fn execute_atomic_spell_resolution_with_choice(
             }
         }
         TypedAtomicTransaction::OpponentChoiceSearchSplit => {
-            if let AtomicTransactionChoice::OpponentChoice { pile } = choice {
+            let requested = match choice {
+                AtomicTransactionChoice::OpponentChoice { pile } => Some((Vec::from(pile), false)),
+                AtomicTransactionChoice::ShortOpponentChoice { pile } => {
+                    Some((short_intuition_pile_cards(pile).unwrap_or_default(), true))
+                }
+                _ => None,
+            };
+            if let Some((requested_pile, requested_is_short)) = requested {
+                let unseen_start = next_draw_position.min(library_order.len());
+                let searchable_count = library_order.len().saturating_sub(unseen_start);
                 let mut staged_library = library_order.clone();
                 let mut found = Vec::with_capacity(3);
-                for target in pile {
-                    let Some(position) = staged_library
+                let requested_is_valid = if requested_is_short {
+                    !requested_pile.is_empty()
+                        && searchable_count < 3
+                        && requested_pile.len() == searchable_count
+                } else {
+                    requested_pile.len() == 3
+                } && requested_pile.iter().all(|target| {
+                    library_order[unseen_start..]
                         .iter()
-                        .copied()
-                        .enumerate()
-                        .skip(next_draw_position)
-                        .find_map(|(position, candidate)| {
-                            (candidate == target).then_some(position)
-                        })
-                    else {
-                        found.clear();
-                        break;
-                    };
-                    found.push(staged_library.remove(position));
+                        .any(|candidate| candidate == target)
+                });
+                if requested_is_valid {
+                    for target in requested_pile.iter().copied() {
+                        let Some(position) = staged_library
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .skip(next_draw_position)
+                            .find_map(|(position, candidate)| {
+                                (candidate == target).then_some(position)
+                            })
+                        else {
+                            found.clear();
+                            break;
+                        };
+                        found.push(staged_library.remove(position));
+                    }
                 }
-                if found.len() != 3 {
+                if !requested_is_valid || found.len() != requested_pile.len() {
                     staged_library = library_order.clone();
                     found.clear();
-                    for target in ranked_actual_any_card_search_identities(
+                    let available_library_copies =
+                        exact_card_multiset(&library_order[unseen_start..]);
+                    let available_copies = |card_index| {
+                        available_library_copies
+                            .get(&card_index)
+                            .copied()
+                            .map(usize::from)
+                            .unwrap_or_default()
+                    };
+                    let context = IntuitionSelectionContext {
                         deck,
-                        library_order,
-                        next_draw_position,
+                        source_card_index,
                         hand,
                         zones,
                         turn,
                         mana_access,
                         mana_pool,
                         future_additional_generic_per_cast,
-                        3,
-                    ) {
+                    };
+                    let selected_pile = if library_order.len().saturating_sub(unseen_start) >= 3 {
+                        bounded_intuition_piles(intuition_model, context, &available_copies)
+                            .piles
+                            .into_iter()
+                            .next()
+                            .map(Vec::from)
+                    } else {
+                        bounded_short_intuition_pile(intuition_model, context, &available_copies)
+                            .and_then(short_intuition_pile_cards)
+                    };
+                    for target in selected_pile.unwrap_or_default() {
                         let Some(position) = staged_library
                             .iter()
                             .copied()
@@ -7266,68 +9047,28 @@ fn execute_atomic_spell_resolution_with_choice(
                     }
                 }
                 if !found.is_empty() {
-                    let mut worst: Option<(
-                        PlannerValue,
-                        String,
-                        usize,
-                        usize,
-                        Vec<usize>,
-                        KnownLineZoneState,
-                    )> = None;
-                    for chosen_position in 0..found.len() {
-                        let mut outcome_hand = hand.clone();
-                        let chosen = found[chosen_position];
-                        outcome_hand.push(chosen);
-                        let mut outcome_zones = zones.clone();
-                        for (position, card_index) in found.iter().copied().enumerate() {
-                            if position != chosen_position {
-                                outcome_zones.graveyard.push(card_index);
-                                outcome_zones.advance_sequence();
-                            }
-                        }
-                        let value = planner_value_with_development(
-                            deck,
-                            mana_access,
-                            &outcome_hand,
-                            &outcome_zones,
-                            turn,
-                            mana_pool,
-                            future_additional_generic_per_cast,
-                            &[],
-                            0,
-                        )
-                        .0;
-                        let name = deck
-                            .cards
-                            .get(chosen)
-                            .map_or_else(String::new, |card| card.normalized_name.clone());
-                        let candidate = (
-                            value,
-                            name,
-                            chosen,
-                            chosen_position,
-                            outcome_hand,
-                            outcome_zones,
-                        );
-                        if worst.as_ref().is_none_or(|current| {
-                            (candidate.0, &candidate.1, candidate.2)
-                                < (current.0, &current.1, current.2)
-                        }) {
-                            worst = Some(candidate);
-                        }
-                    }
-                    if let Some((_, _, chosen, chosen_position, outcome_hand, outcome_zones)) =
-                        worst
+                    let context = IntuitionSelectionContext {
+                        deck,
+                        source_card_index,
+                        hand,
+                        zones,
+                        turn,
+                        mana_access,
+                        mana_pool,
+                        future_additional_generic_per_cast,
+                    };
+                    if let Some(outcome) =
+                        adversarial_intuition_outcome(intuition_model, context, &found)
                     {
                         *library_order = staged_library;
-                        *hand = outcome_hand;
-                        *zones = outcome_zones;
-                        resolution.searched_card = Some(chosen);
-                        resolution.opponent_chosen_card = Some(chosen);
+                        *hand = outcome.hand;
+                        *zones = outcome.zones;
+                        resolution.searched_card = Some(outcome.chosen_card);
+                        resolution.opponent_chosen_card = Some(outcome.chosen_card);
                         let mut graveyard_cards = found
                             .into_iter()
                             .enumerate()
-                            .filter(|(position, _)| *position != chosen_position)
+                            .filter(|(position, _)| *position != outcome.chosen_position)
                             .map(|(_, card_index)| card_index)
                             .map(Some)
                             .collect::<Vec<_>>();
@@ -7336,6 +9077,7 @@ fn execute_atomic_spell_resolution_with_choice(
                         }
                         resolution.opponent_graveyard_cards =
                             [graveyard_cards[0], graveyard_cards[1]];
+                        resolution.source_finalized = true;
                     }
                 }
                 shuffle_unseen_library(library_order, next_draw_position, rng);
@@ -7500,9 +9242,26 @@ impl FiveColorManaChoice {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GraveyardReclamationCastOrigin {
+    Hand,
+    Flashback { source_object_id: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GraveyardReclamationCopyChoice {
+    Decline,
+    KeepInheritedTarget,
+    Retarget { target_object_id: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TurnAction {
     Cast(usize),
     CastAlternativeCost(usize),
+    CastModalFace {
+        card_index: usize,
+        face_index: usize,
+    },
     CastBargainTutor {
         source_card_index: usize,
         bargain: BargainPayment,
@@ -7512,6 +9271,16 @@ enum TurnAction {
     CastOpponentChoiceTutor {
         source_card_index: usize,
         pile: [usize; 3],
+    },
+    CastShortOpponentChoiceTutor {
+        source_card_index: usize,
+        pile: [Option<usize>; 3],
+    },
+    CastGraveyardReclamation {
+        source_card_index: usize,
+        origin: GraveyardReclamationCastOrigin,
+        source_target_object_id: u32,
+        copy_choice: GraveyardReclamationCopyChoice,
     },
     CastReviewedRandomDiscardWithManaResponse {
         source_card_index: usize,
@@ -7552,10 +9321,17 @@ impl TurnAction {
             Self::Cast(card_index)
             | Self::CastAlternativeCost(card_index)
             | Self::ActivateHandMana(card_index) => card_index,
+            Self::CastModalFace { card_index, .. } => card_index,
             Self::CastBargainTutor {
                 source_card_index, ..
             }
             | Self::CastOpponentChoiceTutor {
+                source_card_index, ..
+            }
+            | Self::CastShortOpponentChoiceTutor {
+                source_card_index, ..
+            }
+            | Self::CastGraveyardReclamation {
                 source_card_index, ..
             }
             | Self::CastReviewedRandomDiscardWithManaResponse {
@@ -7576,6 +9352,7 @@ impl TurnAction {
     fn spell_payment_choice(self) -> Option<SpellPaymentChoice> {
         match self {
             Self::Cast(_) => Some(SpellPaymentChoice::Printed),
+            Self::CastModalFace { .. } => Some(SpellPaymentChoice::Printed),
             Self::CastAlternativeCost(_) => Some(SpellPaymentChoice::Alternative),
             _ => None,
         }
@@ -7587,13 +9364,578 @@ fn action_is_spell_cast(action: TurnAction) -> bool {
         action,
         TurnAction::Cast(_)
             | TurnAction::CastAlternativeCost(_)
+            | TurnAction::CastModalFace { .. }
             | TurnAction::CastBargainTutor { .. }
             | TurnAction::CastOpponentChoiceTutor { .. }
+            | TurnAction::CastShortOpponentChoiceTutor { .. }
+            | TurnAction::CastGraveyardReclamation { .. }
             | TurnAction::CastReviewedRandomDiscardWithManaResponse { .. }
     )
 }
 
-fn nested_free_cast_is_supported(card: &CompiledCard) -> bool {
+fn exact_graveyard_reclamation_target_card(card: &CompiledCard) -> bool {
+    let characteristics = card.hand_zone_characteristics();
+    if !characteristics.exact {
+        return false;
+    }
+    let card_type_words = characteristics
+        .type_line
+        .split_once('-')
+        .map_or(characteristics.type_line.as_str(), |(types, _)| types)
+        .split_whitespace()
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    let permanent_types = [
+        "artifact",
+        "battle",
+        "creature",
+        "enchantment",
+        "land",
+        "planeswalker",
+    ];
+    let exact_type_envelope = card_type_words.iter().all(|word| {
+        permanent_types.contains(&word.as_str())
+            || matches!(
+                word.as_str(),
+                "basic" | "kindred" | "legendary" | "snow" | "world"
+            )
+    });
+    exact_type_envelope
+        && card_type_words
+            .iter()
+            .any(|word| permanent_types.contains(&word.as_str()))
+        && actual_card_mana_value(card).is_some_and(|mana_value| mana_value <= 3.0)
+}
+
+fn ranked_graveyard_reclamation_targets(
+    domain: &CastPlanningDomain<'_>,
+    state: &CastPlanningState,
+    excluded_object_ids: &[u32],
+) -> Vec<KnownZoneCard> {
+    let mut candidates = state
+        .zones
+        .graveyard
+        .iter_objects()
+        .copied()
+        .filter(|object| !excluded_object_ids.contains(&object.object_id))
+        .filter(|object| {
+            domain
+                .deck
+                .cards
+                .get(object.card_index)
+                .is_some_and(exact_graveyard_reclamation_target_card)
+        })
+        .filter_map(|object| {
+            let card = domain.deck.cards.get(object.card_index)?;
+            let mut staged = state.clone();
+            staged.zones.remove_graveyard_object(object.object_id)?;
+            let sequence = staged.zones.advance_sequence();
+            let pending = staged.zones.stage_permanent_entry(
+                domain.deck,
+                object.card_index,
+                domain.turn,
+                sequence,
+            );
+            staged
+                .zones
+                .resolve_pending_permanent_entry_triggers(domain.deck, pending);
+            let _ = apply_conservative_planning_mana_effects(
+                domain.deck,
+                object.card_index,
+                card,
+                domain.mana_access,
+                domain.turn,
+                &staged.zones,
+                &mut staged.mana_pool,
+            );
+            staged.mana_pool.refresh_battlefield_sources(
+                domain.deck,
+                &staged.zones,
+                active_ability_context(domain.deck, &staged.zones),
+            );
+            let value = deterministic_planner_state_value(domain, &staged).0;
+            let development = planning_card_development_value(
+                object.card_index,
+                card,
+                domain.policy,
+                domain.mana_access,
+                active_ability_context(domain.deck, &staged.zones),
+            );
+            Some((object, value, development, card.normalized_name.as_str()))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(
+        |(left, left_value, left_development, left_name),
+         (right, right_value, right_development, right_name)| {
+            right_value
+                .cmp(left_value)
+                .then_with(|| right_development.cmp(left_development))
+                .then_with(|| left_name.cmp(right_name))
+                .then_with(|| left.card_index.cmp(&right.card_index))
+                .then_with(|| left.object_id.cmp(&right.object_id))
+        },
+    );
+    candidates.truncate(MAX_RECLAMATION_TARGET_CANDIDATES);
+    candidates
+        .into_iter()
+        .map(|(object, _, _, _)| object)
+        .collect()
+}
+
+fn planning_graveyard_reclamation_actions(
+    domain: &CastPlanningDomain<'_>,
+    state: &CastPlanningState,
+) -> Vec<TurnAction> {
+    if domain.rule_of_law_cap_active() && state.spells_cast_this_turn >= 1 {
+        return Vec::new();
+    }
+
+    let mut actions = Vec::new();
+    let mut hand_sources = state
+        .hand
+        .iter()
+        .copied()
+        .filter(|card_index| {
+            domain
+                .deck
+                .cards
+                .get(*card_index)
+                .and_then(classify_graveyard_reclamation)
+                .is_some()
+        })
+        .collect::<Vec<_>>();
+    hand_sources.sort_unstable();
+    hand_sources.dedup();
+    for source_card_index in hand_sources {
+        for target in ranked_graveyard_reclamation_targets(domain, state, &[]) {
+            actions.push(TurnAction::CastGraveyardReclamation {
+                source_card_index,
+                origin: GraveyardReclamationCastOrigin::Hand,
+                source_target_object_id: target.object_id,
+                copy_choice: GraveyardReclamationCopyChoice::Decline,
+            });
+        }
+    }
+
+    let flashback_sources = state
+        .zones
+        .graveyard
+        .iter_objects()
+        .copied()
+        .filter(|object| {
+            domain
+                .deck
+                .cards
+                .get(object.card_index)
+                .and_then(classify_graveyard_reclamation)
+                .is_some()
+        })
+        .collect::<Vec<_>>();
+    for source in flashback_sources {
+        for target in ranked_graveyard_reclamation_targets(domain, state, &[source.object_id]) {
+            let origin = GraveyardReclamationCastOrigin::Flashback {
+                source_object_id: source.object_id,
+            };
+            actions.push(TurnAction::CastGraveyardReclamation {
+                source_card_index: source.card_index,
+                origin,
+                source_target_object_id: target.object_id,
+                copy_choice: GraveyardReclamationCopyChoice::Decline,
+            });
+            actions.push(TurnAction::CastGraveyardReclamation {
+                source_card_index: source.card_index,
+                origin,
+                source_target_object_id: target.object_id,
+                copy_choice: GraveyardReclamationCopyChoice::KeepInheritedTarget,
+            });
+            for retarget in ranked_graveyard_reclamation_targets(
+                domain,
+                state,
+                &[source.object_id, target.object_id],
+            ) {
+                actions.push(TurnAction::CastGraveyardReclamation {
+                    source_card_index: source.card_index,
+                    origin,
+                    source_target_object_id: target.object_id,
+                    copy_choice: GraveyardReclamationCopyChoice::Retarget {
+                        target_object_id: retarget.object_id,
+                    },
+                });
+            }
+        }
+    }
+    let mut retained = Vec::with_capacity(actions.len().min(MAX_RECLAMATION_ACTIONS));
+    let mut seen = BTreeSet::new();
+    for action in actions {
+        if seen.insert(action) {
+            retained.push(action);
+            if retained.len() == MAX_RECLAMATION_ACTIONS {
+                break;
+            }
+        }
+    }
+    retained
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraveyardReclamationRuntimeEvent {
+    SourceCast,
+    SourceCountered,
+    SourceTargetReturned(u32),
+    CopyCreated,
+    SourceLeftStackForGraveyard,
+    SourceLeftStackForExile(u32),
+    SourceReturnTriggersResolved,
+    CopyResolutionStarted,
+    CopyCountered,
+    CopyTargetIllegal,
+    CopyTargetReturned(u32),
+    CopyReturnTriggersResolved,
+}
+
+#[derive(Debug, Clone)]
+struct PendingGraveyardReclamationSpell {
+    source_card_index: usize,
+    origin: GraveyardReclamationCastOrigin,
+    physical_source: Option<KnownZoneCard>,
+    source_target_object_id: u32,
+    copy_choice: GraveyardReclamationCopyChoice,
+    events: Vec<GraveyardReclamationRuntimeEvent>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct GraveyardReclamationResolution {
+    returned_card_indices: Vec<usize>,
+    source_countered: bool,
+    copy_created: bool,
+    copy_countered: bool,
+    events: Vec<GraveyardReclamationRuntimeEvent>,
+}
+
+fn stage_graveyard_reclamation_spell(
+    deck: &CompiledDeck,
+    action: TurnAction,
+    hand: &mut Vec<usize>,
+    zones: &mut KnownLineZoneState,
+    turn: u8,
+) -> Option<PendingGraveyardReclamationSpell> {
+    let TurnAction::CastGraveyardReclamation {
+        source_card_index,
+        origin,
+        source_target_object_id,
+        copy_choice,
+    } = action
+    else {
+        return None;
+    };
+    deck.cards
+        .get(source_card_index)
+        .and_then(classify_graveyard_reclamation)?;
+    let target = zones.graveyard_object(source_target_object_id)?;
+    if !deck
+        .cards
+        .get(target.card_index)
+        .is_some_and(exact_graveyard_reclamation_target_card)
+    {
+        return None;
+    }
+    if let GraveyardReclamationCopyChoice::Retarget { target_object_id } = copy_choice {
+        let retarget = zones.graveyard_object(target_object_id)?;
+        if target_object_id == source_target_object_id
+            || !deck
+                .cards
+                .get(retarget.card_index)
+                .is_some_and(exact_graveyard_reclamation_target_card)
+        {
+            return None;
+        }
+    }
+
+    let physical_source = match origin {
+        GraveyardReclamationCastOrigin::Hand => {
+            if copy_choice != GraveyardReclamationCopyChoice::Decline {
+                return None;
+            }
+            let position = hand
+                .iter()
+                .position(|candidate| *candidate == source_card_index)?;
+            hand.swap_remove(position);
+            None
+        }
+        GraveyardReclamationCastOrigin::Flashback { source_object_id } => {
+            if source_object_id == source_target_object_id
+                || matches!(
+                    copy_choice,
+                    GraveyardReclamationCopyChoice::Retarget { target_object_id }
+                        if target_object_id == source_object_id
+                )
+            {
+                return None;
+            }
+            let source = zones.graveyard_object(source_object_id)?;
+            if source.card_index != source_card_index {
+                return None;
+            }
+            Some(zones.remove_graveyard_object(source_object_id)?)
+        }
+    };
+    zones.record_spell_cast_event(source_card_index, turn);
+    Some(PendingGraveyardReclamationSpell {
+        source_card_index,
+        origin,
+        physical_source,
+        source_target_object_id,
+        copy_choice,
+        events: vec![GraveyardReclamationRuntimeEvent::SourceCast],
+    })
+}
+
+fn reclamation_target_is_still_legal(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+    object_id: u32,
+) -> Option<KnownZoneCard> {
+    let object = zones.graveyard_object(object_id)?;
+    deck.cards
+        .get(object.card_index)
+        .is_some_and(exact_graveyard_reclamation_target_card)
+        .then_some(object)
+}
+
+fn stage_reclamation_target_return(
+    deck: &CompiledDeck,
+    zones: &mut KnownLineZoneState,
+    object_id: u32,
+    turn: u8,
+) -> Option<(usize, PendingPermanentEntryTriggerBatch)> {
+    let object = reclamation_target_is_still_legal(deck, zones, object_id)?;
+    let removed = zones.remove_graveyard_object(object_id)?;
+    if removed != object {
+        return None;
+    }
+    let sequence = zones.advance_sequence();
+    let pending = zones.stage_permanent_entry(deck, object.card_index, turn, sequence);
+    Some((object.card_index, pending))
+}
+
+fn finish_graveyard_reclamation_source(
+    pending: &PendingGraveyardReclamationSpell,
+    zones: &mut KnownLineZoneState,
+) -> GraveyardReclamationRuntimeEvent {
+    zones.advance_sequence();
+    match pending.origin {
+        GraveyardReclamationCastOrigin::Hand => {
+            zones.push_graveyard_card(pending.source_card_index);
+            GraveyardReclamationRuntimeEvent::SourceLeftStackForGraveyard
+        }
+        GraveyardReclamationCastOrigin::Flashback { source_object_id } => {
+            let physical_source = pending
+                .physical_source
+                .expect("a validated Flashback cast retains its physical source");
+            debug_assert_eq!(physical_source.object_id, source_object_id);
+            zones.push_existing_exile_card(physical_source);
+            GraveyardReclamationRuntimeEvent::SourceLeftStackForExile(source_object_id)
+        }
+    }
+}
+
+fn resolve_pending_graveyard_reclamation_spell(
+    deck: &CompiledDeck,
+    mut pending: PendingGraveyardReclamationSpell,
+    zones: &mut KnownLineZoneState,
+    turn: u8,
+    counter_source: bool,
+    counter_copy: bool,
+) -> GraveyardReclamationResolution {
+    let mut resolution = GraveyardReclamationResolution::default();
+    if counter_source {
+        resolution.source_countered = true;
+        pending
+            .events
+            .push(GraveyardReclamationRuntimeEvent::SourceCountered);
+        let source_exit = finish_graveyard_reclamation_source(&pending, zones);
+        pending.events.push(source_exit);
+        resolution.events = pending.events;
+        return resolution;
+    }
+
+    let Some((source_target_card_index, source_entry_triggers)) =
+        stage_reclamation_target_return(deck, zones, pending.source_target_object_id, turn)
+    else {
+        // A spell with its only target illegal performs no instructions. In
+        // particular it cannot create the conditional copy.
+        let source_exit = finish_graveyard_reclamation_source(&pending, zones);
+        pending.events.push(source_exit);
+        resolution.events = pending.events;
+        return resolution;
+    };
+    pending
+        .events
+        .push(GraveyardReclamationRuntimeEvent::SourceTargetReturned(
+            pending.source_target_object_id,
+        ));
+    resolution
+        .returned_card_indices
+        .push(source_target_card_index);
+
+    let copy_target = match (pending.origin, pending.copy_choice) {
+        (
+            GraveyardReclamationCastOrigin::Flashback { .. },
+            GraveyardReclamationCopyChoice::KeepInheritedTarget,
+        ) => {
+            pending
+                .events
+                .push(GraveyardReclamationRuntimeEvent::CopyCreated);
+            resolution.copy_created = true;
+            Some(pending.source_target_object_id)
+        }
+        (
+            GraveyardReclamationCastOrigin::Flashback { .. },
+            GraveyardReclamationCopyChoice::Retarget { target_object_id },
+        ) if reclamation_target_is_still_legal(deck, zones, target_object_id).is_some() => {
+            pending
+                .events
+                .push(GraveyardReclamationRuntimeEvent::CopyCreated);
+            resolution.copy_created = true;
+            Some(target_object_id)
+        }
+        _ => None,
+    };
+
+    let source_exit = finish_graveyard_reclamation_source(&pending, zones);
+    pending.events.push(source_exit);
+    zones.resolve_pending_permanent_entry_triggers(deck, source_entry_triggers);
+    pending
+        .events
+        .push(GraveyardReclamationRuntimeEvent::SourceReturnTriggersResolved);
+
+    let Some(copy_target_object_id) = copy_target else {
+        resolution.events = pending.events;
+        return resolution;
+    };
+    pending
+        .events
+        .push(GraveyardReclamationRuntimeEvent::CopyResolutionStarted);
+    if counter_copy {
+        resolution.copy_countered = true;
+        pending
+            .events
+            .push(GraveyardReclamationRuntimeEvent::CopyCountered);
+        resolution.events = pending.events;
+        return resolution;
+    }
+    let Some((copy_target_card_index, copy_entry_triggers)) =
+        stage_reclamation_target_return(deck, zones, copy_target_object_id, turn)
+    else {
+        pending
+            .events
+            .push(GraveyardReclamationRuntimeEvent::CopyTargetIllegal);
+        resolution.events = pending.events;
+        return resolution;
+    };
+    pending
+        .events
+        .push(GraveyardReclamationRuntimeEvent::CopyTargetReturned(
+            copy_target_object_id,
+        ));
+    resolution
+        .returned_card_indices
+        .push(copy_target_card_index);
+    // The copy ceases to exist after finishing. Its entry triggers then
+    // resolve from the concrete batch captured at the return boundary.
+    zones.advance_sequence();
+    zones.resolve_pending_permanent_entry_triggers(deck, copy_entry_triggers);
+    pending
+        .events
+        .push(GraveyardReclamationRuntimeEvent::CopyReturnTriggersResolved);
+    resolution.events = pending.events;
+    resolution
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pay_graveyard_reclamation_cost(
+    deck: &CompiledDeck,
+    zones: &mut KnownLineZoneState,
+    mana_pool: &mut TurnManaPool,
+    source_card_index: usize,
+    origin: GraveyardReclamationCastOrigin,
+    printed_cost: Option<&ManaCostProfile>,
+    fallback_mana_value: u8,
+    additional_generic: u8,
+    turn: u8,
+    combat_state: Option<&CommanderCombatState>,
+) -> bool {
+    match origin {
+        GraveyardReclamationCastOrigin::Hand => pay_spell_cost_choice(
+            deck,
+            zones,
+            mana_pool,
+            source_card_index,
+            printed_cost,
+            fallback_mana_value,
+            additional_generic,
+            0,
+            turn,
+            SpellPaymentChoice::Printed,
+            combat_state,
+        ),
+        GraveyardReclamationCastOrigin::Flashback { .. } => {
+            let Some(program) = deck
+                .cards
+                .get(source_card_index)
+                .and_then(classify_graveyard_reclamation)
+            else {
+                return false;
+            };
+            let ProgramManaCost::PrintedSymbols { oracle, .. } =
+                &program.flashback.alternative_cost
+            else {
+                return false;
+            };
+            let alternative_cost = parse_mana_cost(Some(oracle));
+            alternative_cost.confidence >= 0.999
+                && alternative_cost.faces.len() == 1
+                && alternative_cost.faces[0].confidence >= 0.999
+                && mana_pool.pay_with_generic_adjustment(
+                    Some(&alternative_cost),
+                    0,
+                    additional_generic,
+                    generic_spell_cost_reduction(deck, zones, source_card_index),
+                    0,
+                )
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NestedFreeCastCapability {
+    Inert,
+    ReviewedOraclePermanent,
+    GraveyardPermissionPermanent,
+    DiscardHandSacrificeManaPermanent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingNestedFreeCast {
+    card_index: usize,
+    capability: NestedFreeCastCapability,
+}
+
+fn exact_nested_free_cast_type_envelope(card: &CompiledCard, expected_type: &str) -> bool {
+    let card_type_segment = card
+        .type_line
+        .split_once('-')
+        .map(|(types, _)| types)
+        .or_else(|| card.type_line.split_once(" - ").map(|(types, _)| types))
+        .unwrap_or(card.type_line.as_str());
+    let mut type_words = card_type_segment.split_whitespace();
+    matches!(
+        (type_words.next(), type_words.next(), type_words.next()),
+        (Some(card_type), None, None) if card_type.eq_ignore_ascii_case(expected_type)
+    )
+}
+
+fn inert_nested_free_cast_is_supported(card: &CompiledCard) -> bool {
     let inert_oracle_root = match card.ability_program.abilities.as_slice() {
         [] => true,
         [AbilityCompilation::Unsupported(ability)] => {
@@ -7616,11 +9958,194 @@ fn nested_free_cast_is_supported(card: &CompiledCard) -> bool {
         && card.ability_program.entry_linked_permanent.is_none()
         && card.ability_program.self_transfer_tutor_permanent.is_none()
         && card.ability_program.necropotence_lifecycle.is_none()
+        && card.ability_program.graveyard_reclamation.is_none()
         && card.ability_program.face_programs.is_empty()
         && card.effects.unsupported_clauses.is_empty()
         && compile_typed_burst_card_access_program(card).is_none()
         && !card.effects.tutor.is_executable_on_spell_resolution()
         && immediate_cards_drawn(card) == 0
+}
+
+fn nested_free_cast_capability(
+    deck: &CompiledDeck,
+    card_index: usize,
+) -> Option<NestedFreeCastCapability> {
+    let card = deck.cards.get(card_index)?;
+    if card.ability_program.version != EXECUTABLE_ABILITY_PROGRAM_VERSION
+        || !card.ability_program.face_programs.is_empty()
+    {
+        return None;
+    }
+    if inert_nested_free_cast_is_supported(card) {
+        return Some(NestedFreeCastCapability::Inert);
+    }
+    if exact_nested_free_cast_type_envelope(card, "Creature")
+        && card.ability_program.graveyard_reclamation.is_none()
+        && deck
+            .known_lines
+            .iter()
+            .enumerate()
+            .filter_map(|(line_index, line)| {
+                compile_reviewed_empty_library_win_program(line_index, line, deck)
+            })
+            .any(|program| program.oracle_card_index == card_index)
+    {
+        return Some(NestedFreeCastCapability::ReviewedOraclePermanent);
+    }
+    if exact_nested_free_cast_type_envelope(card, "Enchantment")
+        && exact_escape_permission_and_lifetime(card) == Some(3)
+    {
+        return Some(NestedFreeCastCapability::GraveyardPermissionPermanent);
+    }
+    if exact_nested_free_cast_type_envelope(card, "Artifact")
+        && exact_discard_sacrifice_mana_ability(card) == Some(3)
+    {
+        return Some(NestedFreeCastCapability::DiscardHandSacrificeManaPermanent);
+    }
+    None
+}
+
+fn nested_free_cast_is_supported(deck: &CompiledDeck, card_index: usize) -> bool {
+    nested_free_cast_capability(deck, card_index).is_some()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_pending_nested_free_cast(
+    deck: &CompiledDeck,
+    card_index: usize,
+    turn: u8,
+    additional_generic_per_cast: u8,
+    zones: &mut KnownLineZoneState,
+    mana_pool: &mut TurnManaPool,
+    spells_cast_this_turn: &mut u8,
+    player_life: &mut f32,
+) -> Option<PendingNestedFreeCast> {
+    let capability = nested_free_cast_capability(deck, card_index)?;
+    let mut staged_zones = zones.clone();
+    let mut staged_pool = mana_pool.clone();
+    let mut staged_life = *player_life;
+    if !staged_pool.pay_with_generic_adjustment(
+        None,
+        0,
+        additional_generic_per_cast,
+        generic_spell_cost_reduction(deck, &staged_zones, card_index),
+        0,
+    ) || !staged_pool.settle_pending_source_damage(&mut staged_life)
+    {
+        return None;
+    }
+    let staged_spell_count = spells_cast_this_turn.saturating_add(1);
+    if !apply_controller_spell_cast_triggers(
+        deck,
+        &mut staged_zones,
+        card_index,
+        turn,
+        staged_spell_count,
+        &mut staged_pool,
+        &mut staged_life,
+    ) {
+        return None;
+    }
+
+    *zones = staged_zones;
+    *mana_pool = staged_pool;
+    *spells_cast_this_turn = staged_spell_count;
+    *player_life = staged_life;
+    Some(PendingNestedFreeCast {
+        card_index,
+        capability,
+    })
+}
+
+fn counter_pending_nested_free_cast(
+    deck: &CompiledDeck,
+    pending: PendingNestedFreeCast,
+    zones: &mut KnownLineZoneState,
+) -> bool {
+    if nested_free_cast_capability(deck, pending.card_index) != Some(pending.capability) {
+        return false;
+    }
+    let mut staged = zones.clone();
+    staged.advance_sequence();
+    staged.graveyard.push(pending.card_index);
+    *zones = staged;
+    true
+}
+
+fn resolve_pending_nested_free_cast(
+    deck: &CompiledDeck,
+    pending: PendingNestedFreeCast,
+    turn: u8,
+    zones: &mut KnownLineZoneState,
+) -> Option<ModeledLineCardKind> {
+    if nested_free_cast_capability(deck, pending.card_index) != Some(pending.capability) {
+        return None;
+    }
+    let kind = match pending.capability {
+        NestedFreeCastCapability::Inert => {
+            modeled_line_card_kind(deck.cards.get(pending.card_index)?)?
+        }
+        NestedFreeCastCapability::ReviewedOraclePermanent
+        | NestedFreeCastCapability::GraveyardPermissionPermanent
+        | NestedFreeCastCapability::DiscardHandSacrificeManaPermanent => {
+            ModeledLineCardKind::Permanent
+        }
+    };
+    let mut staged = zones.clone();
+    let battlefield_before = staged.battlefield.len();
+    let graveyard_before = staged.graveyard.len();
+    let spells_before = staged.spells_cast_this_turn.len();
+    match pending.capability {
+        NestedFreeCastCapability::Inert => staged.record_cast(deck, pending.card_index, turn),
+        NestedFreeCastCapability::ReviewedOraclePermanent
+        | NestedFreeCastCapability::GraveyardPermissionPermanent
+        | NestedFreeCastCapability::DiscardHandSacrificeManaPermanent => {
+            if !staged.record_typed_permanent_cast(deck, pending.card_index, turn) {
+                return None;
+            }
+        }
+    }
+    let moved_to_expected_zone = match kind {
+        ModeledLineCardKind::Permanent => {
+            staged.battlefield.len() == battlefield_before.saturating_add(1)
+                && staged.graveyard.len() == graveyard_before
+                && staged.battlefield.last().is_some_and(|presence| {
+                    presence.card_index == pending.card_index && presence.entered_turn == turn
+                })
+        }
+        ModeledLineCardKind::Spell => {
+            staged.battlefield.len() == battlefield_before
+                && staged.graveyard.len() == graveyard_before.saturating_add(1)
+                && staged.graveyard.last() == Some(&pending.card_index)
+                && staged.spells_cast_this_turn.len() == spells_before.saturating_add(1)
+        }
+    };
+    if !moved_to_expected_zone {
+        return None;
+    }
+    *zones = staged;
+    Some(kind)
+}
+
+fn pending_nested_free_cast_is_countered(
+    deck: &CompiledDeck,
+    pending: PendingNestedFreeCast,
+    turn: u8,
+    zones: &mut KnownLineZoneState,
+    isolated: &mut IsolatedScenarioRuntime,
+) -> bool {
+    isolated.observe_opportunity(InteractionScenario::FirstRelevantSpellCountered);
+    if !isolated.is(InteractionScenario::FirstRelevantSpellCountered) || isolated.applied() {
+        return false;
+    }
+    let mut staged_zones = zones.clone();
+    if !counter_pending_nested_free_cast(deck, pending, &mut staged_zones)
+        || !isolated.activate(turn, 1)
+    {
+        return false;
+    }
+    *zones = staged_zones;
+    true
 }
 
 fn planning_spell_printed_cost_is_payable(
@@ -7646,11 +10171,68 @@ fn planning_spell_printed_cost_is_payable(
     )
 }
 
+fn exact_modal_face_mana_cost(card: &CompiledCard, face_index: usize) -> Option<ManaCostProfile> {
+    let (face, characteristics) = exact_modal_cast_face(card, face_index)?;
+    let types = compile_card_types(&face.type_line);
+    if types.is_land
+        || !(types.is_creature
+            || types.is_artifact
+            || types.is_enchantment
+            || types.is_planeswalker
+            || types.is_battle
+            || types.is_instant
+            || types.is_sorcery)
+    {
+        return None;
+    }
+    let raw_cost = characteristics.mana_cost.as_deref()?;
+    if !printed_mana_cost_has_only_braced_symbols(raw_cost) {
+        return None;
+    }
+    let cost = parse_mana_cost(Some(raw_cost));
+    (cost.confidence >= 0.999 && cost.faces.len() == 1 && cost.faces[0].confidence >= 0.999)
+        .then_some(cost)
+}
+
+fn printed_mana_cost_has_only_braced_symbols(cost: &str) -> bool {
+    let mut remaining = cost.trim();
+    if remaining.is_empty() {
+        return false;
+    }
+    while !remaining.is_empty() {
+        let Some(after_open) = remaining.strip_prefix('{') else {
+            return false;
+        };
+        let Some(close) = after_open.find('}') else {
+            return false;
+        };
+        if after_open[..close].trim().is_empty() {
+            return false;
+        }
+        remaining = after_open[close + 1..].trim_start();
+    }
+    true
+}
+
 fn ordinary_planning_cast_actions(
     domain: &CastPlanningDomain<'_>,
     card_index: usize,
     card: &CompiledCard,
 ) -> Vec<TurnAction> {
+    let modal_actions = card
+        .ability_program
+        .face_programs
+        .iter()
+        .filter_map(|face| {
+            exact_modal_face_mana_cost(card, face.face_index).map(|_| TurnAction::CastModalFace {
+                card_index,
+                face_index: face.face_index,
+            })
+        })
+        .collect::<Vec<_>>();
+    if !modal_actions.is_empty() {
+        return modal_actions;
+    }
     if exact_self_alternative_spell_cost(card).is_none() {
         return vec![TurnAction::Cast(card_index)];
     }
@@ -7757,7 +10339,7 @@ fn planning_bargain_tutor_actions(
                     .get(target_card_index)
                     .is_some_and(|card| {
                         card.mana_value.ceil().max(0.0) as u16 <= maximum_mana_value
-                            && nested_free_cast_is_supported(card)
+                            && nested_free_cast_is_supported(domain.deck, target_card_index)
                     });
             if !domain.rule_of_law_cap_active() || !can_request_nested_cast {
                 actions.push(TurnAction::CastBargainTutor {
@@ -7784,39 +10366,87 @@ fn planning_opponent_choice_tutor_actions(
     domain: &CastPlanningDomain<'_>,
     state: &CastPlanningState,
     source_card_index: usize,
+    model: &IntuitionPlanningModel,
 ) -> Vec<TurnAction> {
-    let mut physical_candidates = Vec::new();
-    for card_index in ranked_planning_any_card_targets(domain, state, 7) {
-        for _ in 0..planner_library_copy_count(domain.deck, state, card_index).min(3) {
-            physical_candidates.push(card_index);
-            if physical_candidates.len() == 7 {
-                break;
-            }
-        }
-        if physical_candidates.len() == 7 {
-            break;
-        }
+    let Some(source) = domain.deck.cards.get(source_card_index) else {
+        return Vec::new();
+    };
+    let Some(hand_position) = state
+        .hand
+        .iter()
+        .position(|card_index| *card_index == source_card_index)
+    else {
+        return Vec::new();
+    };
+    let mut staged = state.clone();
+    if pay_planning_cost_and_reconcile(
+        domain,
+        &mut staged,
+        source_card_index,
+        domain
+            .mana_access
+            .and_then(|access| access.cost(source_card_index)),
+        source.mana_value.ceil().max(0.0) as u8,
+        domain.additional_generic_per_cast,
+        0,
+    )
+    .is_err()
+    {
+        return Vec::new();
     }
-    let mut actions = Vec::new();
-    for first in 0..physical_candidates.len() {
-        for second in first + 1..physical_candidates.len() {
-            for third in second + 1..physical_candidates.len() {
-                let mut pile = [
-                    physical_candidates[first],
-                    physical_candidates[second],
-                    physical_candidates[third],
-                ];
-                pile.sort_unstable();
-                actions.push(TurnAction::CastOpponentChoiceTutor {
+    staged.hand.swap_remove(hand_position);
+    if apply_planning_controller_spell_cast_triggers(domain, &mut staged, source_card_index)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    staged.planned_casts.push(source_card_index);
+    let context = IntuitionSelectionContext {
+        deck: domain.deck,
+        source_card_index,
+        hand: &staged.hand,
+        zones: &staged.zones,
+        turn: domain.turn,
+        mana_access: domain.mana_access,
+        mana_pool: &staged.mana_pool,
+        future_additional_generic_per_cast: domain.additional_generic_per_cast,
+    };
+    let available_copies = |card_index| planner_library_copy_count(domain.deck, state, card_index);
+    let available_total = (0..domain.deck.cards.len())
+        .map(&available_copies)
+        .sum::<usize>();
+    if available_total < 3 {
+        return bounded_short_intuition_pile(model, context, &available_copies)
+            .map(|pile| {
+                vec![TurnAction::CastShortOpponentChoiceTutor {
                     source_card_index,
                     pile,
-                });
-            }
-        }
+                }]
+            })
+            .unwrap_or_default();
     }
-    actions.sort_unstable();
-    actions.dedup();
-    actions
+    let selection = bounded_intuition_piles(model, context, &available_copies);
+    debug_assert!(
+        selection.diagnostics.maximum_route_identities <= MAX_INTUITION_IDENTITIES_PER_ROUTE
+    );
+    debug_assert!(
+        selection.diagnostics.maximum_route_multisets <= MAX_INTUITION_MULTISETS_PER_ROUTE
+    );
+    debug_assert!(selection.diagnostics.cheap_piles <= MAX_INTUITION_CHEAP_PILES);
+    debug_assert!(selection.diagnostics.cheap_outcomes <= MAX_INTUITION_CHEAP_OUTCOMES);
+    debug_assert!(
+        selection.diagnostics.certificate_finalists <= MAX_INTUITION_CERTIFICATE_FINALISTS
+    );
+    debug_assert!(selection.diagnostics.certificate_nodes <= MAX_INTUITION_CERTIFICATE_NODES);
+    debug_assert!(selection.diagnostics.returned_actions <= MAX_INTUITION_RETURNED_ACTIONS);
+    selection
+        .piles
+        .into_iter()
+        .map(|pile| TurnAction::CastOpponentChoiceTutor {
+            source_card_index,
+            pile,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -8176,6 +10806,7 @@ struct CanonicalCastPlanningState {
     pending_triggered_treasures: u8,
     pending_source_damage: u8,
     battlefield: Vec<CanonicalBattlefieldLineCard>,
+    battlefield_faces: Vec<(u16, usize)>,
     creature_tokens: Vec<BattlefieldCreatureToken>,
     attachments: Vec<(u16, BattlefieldAttachment)>,
     chosen_creature_types: Vec<(u16, String)>,
@@ -8186,10 +10817,12 @@ struct CanonicalCastPlanningState {
     turn_events: RuntimeTurnEvents,
     spells_cast_this_turn: Vec<CanonicalTurnLineSpell>,
     typed_overrun_casts_this_turn: Vec<usize>,
-    graveyard: Vec<usize>,
-    exile: Vec<usize>,
+    graveyard: Vec<KnownZoneCard>,
+    exile: Vec<KnownZoneCard>,
     graveyard_cards_at_turn_start: u16,
     next_sequence: u16,
+    graveyard_allocator: (u32, u32),
+    exile_allocator: (u32, u32),
     land_sacrifice_mana_grant_turn: Option<u8>,
     player_life_bits: u32,
     spells_cast_this_turn_count: u8,
@@ -8336,6 +10969,13 @@ fn canonical_cast_planning_state(state: &CastPlanningState) -> CanonicalCastPlan
             sequence: cast.sequence,
         })
         .collect::<Vec<_>>();
+    let mut battlefield_faces = state
+        .zones
+        .battlefield_faces
+        .iter()
+        .map(|(sequence, face_index)| (*sequence, *face_index))
+        .collect::<Vec<_>>();
+    battlefield_faces.sort_unstable();
     let typed_overrun_casts_this_turn = state.zones.typed_overrun_casts_this_turn.clone();
     let mut attachments = state
         .zones
@@ -8365,16 +11005,15 @@ fn canonical_cast_planning_state(state: &CastPlanningState) -> CanonicalCastPlan
         .map(|(sequence, adjustment)| (*sequence, *adjustment))
         .collect::<Vec<_>>();
     temporary_power_toughness_adjustments.sort_unstable();
-    let mut graveyard = state.zones.graveyard.clone();
-    graveyard.sort_unstable();
-    let mut exile = state.zones.exile.clone();
-    exile.sort_unstable();
+    let graveyard = state.zones.graveyard.canonical_objects();
+    let exile = state.zones.exile.canonical_objects();
     CanonicalCastPlanningState {
         hand,
         mana_sources,
         pending_triggered_treasures: state.mana_pool.pending_triggered_treasures,
         pending_source_damage: state.mana_pool.pending_source_damage,
         battlefield,
+        battlefield_faces,
         creature_tokens: state.zones.creature_tokens.clone(),
         attachments,
         chosen_creature_types,
@@ -8394,6 +11033,8 @@ fn canonical_cast_planning_state(state: &CastPlanningState) -> CanonicalCastPlan
         exile,
         graveyard_cards_at_turn_start: state.zones.graveyard_cards_at_turn_start,
         next_sequence: state.zones.next_sequence,
+        graveyard_allocator: state.zones.graveyard.allocator_fingerprint(),
+        exile_allocator: state.zones.exile.allocator_fingerprint(),
         land_sacrifice_mana_grant_turn: state.zones.land_sacrifice_mana_grant_turn,
         player_life_bits: state.player_life.to_bits(),
         spells_cast_this_turn_count: state.spells_cast_this_turn,
@@ -8455,6 +11096,11 @@ fn cast_planning_state_fingerprint(exact: &CanonicalCastPlanningState) -> [u64; 
         fingerprint.push(21, u64::from(presence.entered_turn));
         fingerprint.push(22, u64::from(presence.sequence));
         fingerprint.push(23, u64::from(presence.age_counters));
+    }
+    fingerprint.push(146, exact.battlefield_faces.len() as u64);
+    for (sequence, face_index) in &exact.battlefield_faces {
+        fingerprint.push(147, u64::from(*sequence));
+        fingerprint.push(148, *face_index as u64);
     }
     fingerprint.push(100, exact.creature_tokens.len() as u64);
     for token in &exact.creature_tokens {
@@ -8528,15 +11174,21 @@ fn cast_planning_state_fingerprint(exact: &CanonicalCastPlanningState) -> [u64; 
         fingerprint.push(29, *card_index as u64);
     }
     fingerprint.push(30, exact.graveyard.len() as u64);
-    for card_index in &exact.graveyard {
-        fingerprint.push(31, *card_index as u64);
+    for object in &exact.graveyard {
+        fingerprint.push(31, object.card_index as u64);
+        fingerprint.push(132, u64::from(object.object_id));
     }
     fingerprint.push(32, exact.exile.len() as u64);
-    for card_index in &exact.exile {
-        fingerprint.push(33, *card_index as u64);
+    for object in &exact.exile {
+        fingerprint.push(33, object.card_index as u64);
+        fingerprint.push(133, u64::from(object.object_id));
     }
     fingerprint.push(34, u64::from(exact.graveyard_cards_at_turn_start));
     fingerprint.push(35, u64::from(exact.next_sequence));
+    fingerprint.push(134, u64::from(exact.graveyard_allocator.0));
+    fingerprint.push(135, u64::from(exact.graveyard_allocator.1));
+    fingerprint.push(136, u64::from(exact.exile_allocator.0));
+    fingerprint.push(137, u64::from(exact.exile_allocator.1));
     fingerprint.push(
         57,
         exact
@@ -8554,6 +11206,13 @@ fn cast_planning_state_fingerprint(exact: &CanonicalCastPlanningState) -> [u64; 
         match action {
             TurnAction::Cast(card_index) => fingerprint.push(39, *card_index as u64),
             TurnAction::CastAlternativeCost(card_index) => fingerprint.push(79, *card_index as u64),
+            TurnAction::CastModalFace {
+                card_index,
+                face_index,
+            } => {
+                fingerprint.push(149, *card_index as u64);
+                fingerprint.push(150, *face_index as u64);
+            }
             TurnAction::CastBargainTutor {
                 source_card_index,
                 bargain,
@@ -8583,6 +11242,44 @@ fn cast_planning_state_fingerprint(exact: &CanonicalCastPlanningState) -> [u64; 
                 fingerprint.push(64, *source_card_index as u64);
                 for card_index in pile {
                     fingerprint.push(65, *card_index as u64);
+                }
+            }
+            TurnAction::CastShortOpponentChoiceTutor {
+                source_card_index,
+                pile,
+            } => {
+                fingerprint.push(144, *source_card_index as u64);
+                for card_index in pile {
+                    fingerprint.push(
+                        145,
+                        card_index.map_or(0, |card_index| card_index as u64 + 1),
+                    );
+                }
+            }
+            TurnAction::CastGraveyardReclamation {
+                source_card_index,
+                origin,
+                source_target_object_id,
+                copy_choice,
+            } => {
+                fingerprint.push(138, *source_card_index as u64);
+                match origin {
+                    GraveyardReclamationCastOrigin::Hand => fingerprint.push(139, 0),
+                    GraveyardReclamationCastOrigin::Flashback { source_object_id } => {
+                        fingerprint.push(139, 1);
+                        fingerprint.push(140, u64::from(*source_object_id));
+                    }
+                }
+                fingerprint.push(141, u64::from(*source_target_object_id));
+                match copy_choice {
+                    GraveyardReclamationCopyChoice::Decline => fingerprint.push(142, 0),
+                    GraveyardReclamationCopyChoice::KeepInheritedTarget => {
+                        fingerprint.push(142, 1);
+                    }
+                    GraveyardReclamationCopyChoice::Retarget { target_object_id } => {
+                        fingerprint.push(142, 2);
+                        fingerprint.push(143, u64::from(*target_object_id));
+                    }
                 }
             }
             TurnAction::CastReviewedRandomDiscardWithManaResponse {
@@ -8717,6 +11414,13 @@ fn reconcile_spent_planning_permanent_mana(
     spent_bindings.dedup();
 
     for binding in spent_bindings {
+        if !state.mana_pool.sources.iter().any(|source| {
+            source.sacrifice_on_first_spend == Some(binding)
+                && source.first_spend_recorded
+                && source.physically_tapped
+        }) {
+            return Err(CastPlanningError::PaymentChanged);
+        }
         if !state.zones.battlefield.iter().any(|presence| {
             presence.card_index == binding.card_index && presence.sequence == binding.sequence
         }) {
@@ -8831,12 +11535,22 @@ fn apply_planning_controller_spell_cast_triggers(
     state: &mut CastPlanningState,
     card_index: usize,
 ) -> Result<(), CastPlanningError> {
+    apply_planning_controller_spell_cast_triggers_for_face(domain, state, card_index, None)
+}
+
+fn apply_planning_controller_spell_cast_triggers_for_face(
+    domain: &CastPlanningDomain<'_>,
+    state: &mut CastPlanningState,
+    card_index: usize,
+    face_index: Option<usize>,
+) -> Result<(), CastPlanningError> {
     settle_planning_payment(state)?;
     let spell_ordinal = state.spells_cast_this_turn.saturating_add(1);
-    if !apply_controller_spell_cast_triggers(
+    if !apply_controller_spell_cast_triggers_for_face(
         domain.deck,
         &mut state.zones,
         card_index,
+        face_index,
         domain.turn,
         spell_ordinal,
         &mut state.mana_pool,
@@ -9093,15 +11807,12 @@ fn reviewed_primer_window_actions_after_mana_source_cast(
     reviewed_primer_window_actions_for_planning(domain, &staged)
 }
 
-impl TurnPlanningDomain for CastPlanningDomain<'_> {
-    type ObservableState = CastPlanningState;
-    type Action = TurnAction;
-    type StateKey = CastPlanningStateKey;
-    type ActionKey = TurnAction;
-    type Endpoint = bool;
-    type Error = CastPlanningError;
-
-    fn legal_actions(&self, state: &Self::ObservableState) -> Vec<Self::Action> {
+impl CastPlanningDomain<'_> {
+    fn legal_actions_with_intuition_model(
+        &self,
+        state: &CastPlanningState,
+        intuition_model: &IntuitionPlanningModel,
+    ) -> Vec<TurnAction> {
         let mut card_indices = state.hand.clone();
         card_indices.sort_unstable();
         card_indices.dedup();
@@ -9110,6 +11821,9 @@ impl TurnPlanningDomain for CastPlanningDomain<'_> {
             let Some(card) = self.deck.cards.get(card_index) else {
                 continue;
             };
+            if card.ability_program.graveyard_reclamation.is_some() {
+                continue;
+            }
             let transaction = compile_typed_atomic_transaction(card);
             let first_use_self_transfer_tutor = compile_typed_first_use_self_transfer_tutor(card);
             let necropotence_lifecycle = compile_typed_necropotence_lifecycle(card);
@@ -9144,7 +11858,7 @@ impl TurnPlanningDomain for CastPlanningDomain<'_> {
                     planning_bargain_tutor_actions(self, state, card_index, *maximum_mana_value)
                 }
                 Some(TypedAtomicTransaction::OpponentChoiceSearchSplit) => {
-                    planning_opponent_choice_tutor_actions(self, state, card_index)
+                    planning_opponent_choice_tutor_actions(self, state, card_index, intuition_model)
                 }
                 Some(transaction) if transaction.initiation() == AtomicInitiation::CastSpell => {
                     vec![TurnAction::Cast(card_index)]
@@ -9154,22 +11868,24 @@ impl TurnPlanningDomain for CastPlanningDomain<'_> {
                 None => ordinary_planning_cast_actions(self, card_index, card),
             };
             for action in candidate_actions {
+                let is_modal_face_cast = matches!(action, TurnAction::CastModalFace { .. });
                 // The real executor rechecks reviewed sequence holds after
                 // every committed action. The speculative planner carries its
                 // own cast history and sacrificed battlefield objects.
                 if (self.rule_of_law_cap_active()
                     && state.spells_cast_this_turn >= 1
                     && action_is_spell_cast(action))
-                    || card.has(role::LAND)
-                    || should_hold_reactive_card(card)
-                    || functional_role_card_is_only_noop(
-                        self.deck,
-                        &state.zones,
-                        self.turn,
-                        &state.planned_casts,
-                        card_index,
-                        card,
-                    )
+                    || !is_modal_face_cast && card.has(role::LAND)
+                    || !is_modal_face_cast && should_hold_reactive_card(card)
+                    || !is_modal_face_cast
+                        && functional_role_card_is_only_noop(
+                            self.deck,
+                            &state.zones,
+                            self.turn,
+                            &state.planned_casts,
+                            card_index,
+                            card,
+                        )
                     || action_is_spell_cast(action)
                         && state.planned_casts.is_empty()
                         && should_hold_reviewed_sequence_piece(
@@ -9291,9 +12007,31 @@ impl TurnPlanningDomain for CastPlanningDomain<'_> {
                 source_sequence: presence.sequence,
             })
         }));
+        actions.extend(planning_graveyard_reclamation_actions(self, state));
+        if !(self.rule_of_law_cap_active() && state.spells_cast_this_turn >= 1) {
+            actions.extend(state.zones.graveyard.iter_objects().filter_map(|object| {
+                reviewed_escape_source_object(self.deck, &state.zones, object.card_index)
+                    .filter(|source| source.object_id == object.object_id)
+                    .map(|_| TurnAction::CastAlternativeCost(object.card_index))
+            }));
+        }
         actions.sort_unstable();
         actions.dedup();
         actions
+    }
+}
+
+impl TurnPlanningDomain for CastPlanningDomain<'_> {
+    type ObservableState = CastPlanningState;
+    type Action = TurnAction;
+    type StateKey = CastPlanningStateKey;
+    type ActionKey = TurnAction;
+    type Endpoint = bool;
+    type Error = CastPlanningError;
+
+    fn legal_actions(&self, state: &Self::ObservableState) -> Vec<Self::Action> {
+        let intuition_model = IntuitionPlanningModel::compile(self.deck);
+        self.legal_actions_with_intuition_model(state, &intuition_model)
     }
 
     fn apply_action(
@@ -9354,12 +12092,76 @@ impl TurnPlanningDomain for CastPlanningDomain<'_> {
     }
 }
 
+struct ModelAwareCastPlanningDomain<'domain, 'deck, 'model> {
+    base: &'domain CastPlanningDomain<'deck>,
+    intuition_model: &'model IntuitionPlanningModel,
+}
+
+impl TurnPlanningDomain for ModelAwareCastPlanningDomain<'_, '_, '_> {
+    type ObservableState = CastPlanningState;
+    type Action = TurnAction;
+    type StateKey = CastPlanningStateKey;
+    type ActionKey = TurnAction;
+    type Endpoint = bool;
+    type Error = CastPlanningError;
+
+    fn legal_actions(&self, state: &Self::ObservableState) -> Vec<Self::Action> {
+        self.base
+            .legal_actions_with_intuition_model(state, self.intuition_model)
+    }
+
+    fn apply_action(
+        &self,
+        state: &mut Self::ObservableState,
+        action: &Self::Action,
+    ) -> Result<(), Self::Error> {
+        apply_planning_action_with_intuition_model(
+            self.base,
+            state,
+            *action,
+            self.intuition_model,
+            None,
+        )
+    }
+
+    fn action_error_is_recoverable(&self, error: &Self::Error) -> bool {
+        matches!(error, CastPlanningError::PaymentChanged)
+    }
+
+    fn canonical_state_key(&self, state: &Self::ObservableState) -> Self::StateKey {
+        cast_planning_state_key(state)
+    }
+
+    fn action_tie_break_key(&self, action: &Self::Action) -> Self::ActionKey {
+        *action
+    }
+
+    fn value_vector(&self, state: &Self::ObservableState) -> PlannerValue {
+        self.base.planner_state_evaluation(state).value
+    }
+
+    fn terminal_endpoint(&self, state: &Self::ObservableState) -> Option<Self::Endpoint> {
+        self.base.planner_state_evaluation(state).endpoint
+    }
+
+    fn evaluate_state(
+        &self,
+        state: &Self::ObservableState,
+    ) -> crate::turn_planner::PlannerStateEvaluation<Self::Endpoint> {
+        self.base.planner_state_evaluation(state)
+    }
+
+    fn current_turn_complete(&self, state: &Self::ObservableState) -> bool {
+        self.base.current_turn_complete(state)
+    }
+}
+
 fn apply_planning_action(
     domain: &CastPlanningDomain<'_>,
     state: &mut CastPlanningState,
     action: TurnAction,
 ) -> Result<(), CastPlanningError> {
-    apply_planning_action_with_combat_state(domain, state, action, None)
+    apply_planning_action_with_context(domain, state, action, None, None)
 }
 
 fn apply_planning_action_with_combat_state(
@@ -9367,6 +12169,26 @@ fn apply_planning_action_with_combat_state(
     state: &mut CastPlanningState,
     action: TurnAction,
     combat_state: Option<&CommanderCombatState>,
+) -> Result<(), CastPlanningError> {
+    apply_planning_action_with_context(domain, state, action, combat_state, None)
+}
+
+fn apply_planning_action_with_intuition_model(
+    domain: &CastPlanningDomain<'_>,
+    state: &mut CastPlanningState,
+    action: TurnAction,
+    intuition_model: &IntuitionPlanningModel,
+    combat_state: Option<&CommanderCombatState>,
+) -> Result<(), CastPlanningError> {
+    apply_planning_action_with_context(domain, state, action, combat_state, Some(intuition_model))
+}
+
+fn apply_planning_action_with_context(
+    domain: &CastPlanningDomain<'_>,
+    state: &mut CastPlanningState,
+    action: TurnAction,
+    combat_state: Option<&CommanderCombatState>,
+    intuition_model: Option<&IntuitionPlanningModel>,
 ) -> Result<(), CastPlanningError> {
     if let TurnAction::ActivateGrantedLandMana {
         source_card_index,
@@ -9529,6 +12351,218 @@ fn apply_planning_action_with_combat_state(
         return Ok(());
     }
 
+    if let TurnAction::CastAlternativeCost(card_index) = action
+        && let Some(source_object) =
+            reviewed_escape_source_object(domain.deck, &state.zones, card_index)
+    {
+        if domain.rule_of_law_cap_active() && state.spells_cast_this_turn >= 1 {
+            return Err(CastPlanningError::PaymentChanged);
+        }
+        let card = domain
+            .deck
+            .cards
+            .get(card_index)
+            .ok_or(CastPlanningError::CardDisappeared)?;
+        let mut staged = state.clone();
+        if !pay_reviewed_escape_cast_cost(
+            domain.deck,
+            &mut staged.zones,
+            &mut staged.mana_pool,
+            card_index,
+            source_object.object_id,
+            domain.additional_generic_per_cast,
+        ) {
+            return Err(CastPlanningError::PaymentChanged);
+        }
+        reconcile_spent_planning_permanent_mana(domain.deck, &mut staged)?;
+        staged
+            .zones
+            .remove_graveyard_object(source_object.object_id)
+            .filter(|removed| removed.card_index == card_index)
+            .ok_or(CastPlanningError::CardDisappeared)?;
+        apply_planning_controller_spell_cast_triggers(domain, &mut staged, card_index)?;
+        let entry_sequence = staged.zones.next_sequence;
+        staged
+            .zones
+            .record_cast(domain.deck, card_index, domain.turn);
+        if exact_aura_spell_attachment_target(card).is_some()
+            && !staged.zones.attachments.contains_key(&entry_sequence)
+        {
+            return Err(CastPlanningError::PaymentChanged);
+        }
+        apply_conservative_planning_mana_effects(
+            domain.deck,
+            card_index,
+            card,
+            domain.mana_access,
+            domain.turn,
+            &staged.zones,
+            &mut staged.mana_pool,
+        )?;
+        staged.mana_pool.refresh_battlefield_sources(
+            domain.deck,
+            &staged.zones,
+            active_ability_context(domain.deck, &staged.zones),
+        );
+        staged.planned_casts.push(card_index);
+        staged.planned_actions.push(action);
+        *state = staged;
+        return Ok(());
+    }
+
+    if let TurnAction::CastGraveyardReclamation {
+        source_card_index,
+        origin,
+        ..
+    } = action
+    {
+        if domain.rule_of_law_cap_active() && state.spells_cast_this_turn >= 1 {
+            return Err(CastPlanningError::PaymentChanged);
+        }
+        let source = domain
+            .deck
+            .cards
+            .get(source_card_index)
+            .ok_or(CastPlanningError::CardDisappeared)?;
+        classify_graveyard_reclamation(source).ok_or(CastPlanningError::PaymentChanged)?;
+        let mut staged = state.clone();
+        let pending = stage_graveyard_reclamation_spell(
+            domain.deck,
+            action,
+            &mut staged.hand,
+            &mut staged.zones,
+            domain.turn,
+        )
+        .ok_or(CastPlanningError::CardDisappeared)?;
+        if !pay_graveyard_reclamation_cost(
+            domain.deck,
+            &mut staged.zones,
+            &mut staged.mana_pool,
+            source_card_index,
+            origin,
+            domain
+                .mana_access
+                .and_then(|access| access.cost(source_card_index)),
+            source.mana_value.ceil().max(0.0) as u8,
+            domain.additional_generic_per_cast,
+            domain.turn,
+            combat_state,
+        ) {
+            return Err(CastPlanningError::PaymentChanged);
+        }
+        reconcile_spent_planning_permanent_mana(domain.deck, &mut staged)?;
+        apply_planning_controller_spell_cast_triggers(domain, &mut staged, source_card_index)?;
+        let counter_source = domain
+            .opponent_end_step
+            .as_ref()
+            .is_some_and(|context| context.first_relevant_spell_will_be_countered)
+            && scenario_relevant_spell(source);
+        let resolution = resolve_pending_graveyard_reclamation_spell(
+            domain.deck,
+            pending,
+            &mut staged.zones,
+            domain.turn,
+            counter_source,
+            false,
+        );
+        for returned_card_index in resolution.returned_card_indices {
+            let returned = domain
+                .deck
+                .cards
+                .get(returned_card_index)
+                .ok_or(CastPlanningError::CardDisappeared)?;
+            apply_conservative_planning_mana_effects(
+                domain.deck,
+                returned_card_index,
+                returned,
+                domain.mana_access,
+                domain.turn,
+                &staged.zones,
+                &mut staged.mana_pool,
+            )?;
+        }
+        staged.mana_pool.refresh_battlefield_sources(
+            domain.deck,
+            &staged.zones,
+            active_ability_context(domain.deck, &staged.zones),
+        );
+        staged.planned_casts.push(source_card_index);
+        staged.planned_actions.push(action);
+        *state = staged;
+        return Ok(());
+    }
+
+    if let TurnAction::CastModalFace {
+        card_index,
+        face_index,
+    } = action
+    {
+        if domain.rule_of_law_cap_active() && state.spells_cast_this_turn >= 1 {
+            return Err(CastPlanningError::PaymentChanged);
+        }
+        let card = domain
+            .deck
+            .cards
+            .get(card_index)
+            .ok_or(CastPlanningError::CardDisappeared)?;
+        let (face, _) =
+            exact_modal_cast_face(card, face_index).ok_or(CastPlanningError::PaymentChanged)?;
+        let cost = exact_modal_face_mana_cost(card, face_index)
+            .ok_or(CastPlanningError::PaymentChanged)?;
+        let position = state
+            .hand
+            .iter()
+            .position(|candidate| *candidate == card_index)
+            .ok_or(CastPlanningError::CardDisappeared)?;
+        let mut staged = state.clone();
+        if !pay_modal_face_cost(
+            domain.deck,
+            &staged.zones,
+            &mut staged.mana_pool,
+            card_index,
+            face_index,
+            &cost,
+            domain.additional_generic_per_cast,
+        ) {
+            return Err(CastPlanningError::PaymentChanged);
+        }
+        reconcile_spent_planning_permanent_mana(domain.deck, &mut staged)?;
+        if position >= staged.hand.len() || staged.hand[position] != card_index {
+            return Err(CastPlanningError::CardDisappeared);
+        }
+        staged.hand.swap_remove(position);
+        apply_planning_controller_spell_cast_triggers_for_face(
+            domain,
+            &mut staged,
+            card_index,
+            Some(face_index),
+        )?;
+        let types = compile_card_types(&face.type_line);
+        if types.is_instant || types.is_sorcery {
+            staged
+                .zones
+                .record_spell_cast_event(card_index, domain.turn);
+            staged.zones.push_graveyard_card(card_index);
+            staged.zones.advance_sequence();
+        } else if !staged.zones.record_modal_face_permanent_cast(
+            domain.deck,
+            card_index,
+            face_index,
+            domain.turn,
+        ) {
+            return Err(CastPlanningError::PaymentChanged);
+        }
+        staged.mana_pool.refresh_battlefield_sources(
+            domain.deck,
+            &staged.zones,
+            active_ability_context(domain.deck, &staged.zones),
+        );
+        staged.planned_casts.push(card_index);
+        staged.planned_actions.push(action);
+        *state = staged;
+        return Ok(());
+    }
+
     let card_index = action.card_index();
     let Some(position) = state
         .hand
@@ -9588,6 +12622,12 @@ fn apply_planning_action_with_combat_state(
         }
         (TurnAction::CastReviewedRandomDiscardWithManaResponse { .. }, _) => {
             unreachable!("reviewed response-window casts return before hand-card validation")
+        }
+        (TurnAction::CastGraveyardReclamation { .. }, _) => {
+            unreachable!("graveyard reclamation casts return before hand-card validation")
+        }
+        (TurnAction::CastModalFace { .. }, _) => {
+            unreachable!("modal face casts return before root-card validation")
         }
         (
             TurnAction::CastBargainTutor {
@@ -9655,12 +12695,13 @@ fn apply_planning_action_with_combat_state(
                 .ok_or(CastPlanningError::CardDisappeared)?;
             let nested_cast_is_rule_blocked =
                 domain.rule_of_law_cap_active() && staged.spells_cast_this_turn >= 1;
+            let nested_capability = nested_free_cast_capability(domain.deck, target_card_index);
             let cast_target = bargained
                 && cast_without_paying_mana_cost
                 && !nested_cast_is_rule_blocked
                 && target.mana_value.ceil().max(0.0) as u16 <= maximum_mana_value
-                && nested_free_cast_is_supported(target);
-            if cast_target {
+                && nested_capability.is_some();
+            let pending_nested_cast = if cast_target {
                 pay_planning_cost_and_reconcile(
                     domain,
                     &mut staged,
@@ -9676,23 +12717,34 @@ fn apply_planning_action_with_combat_state(
                     target_card_index,
                 )?;
                 staged.planned_casts.push(target_card_index);
+                Some(PendingNestedFreeCast {
+                    card_index: target_card_index,
+                    capability: nested_capability.ok_or(CastPlanningError::PaymentChanged)?,
+                })
             } else {
                 staged.hand.push(target_card_index);
-            }
+                None
+            };
             // The searched card is cast while Beseech is still resolving.
             // Beseech then finishes and leaves the stack before that nested
             // spell can resolve.
             staged
                 .zones
                 .record_cast(domain.deck, card_index, domain.turn);
-            if cast_target {
-                staged
-                    .zones
-                    .record_cast(domain.deck, target_card_index, domain.turn);
+            if let Some(pending) = pending_nested_cast {
+                resolve_pending_nested_free_cast(
+                    domain.deck,
+                    pending,
+                    domain.turn,
+                    &mut staged.zones,
+                )
+                .ok_or(CastPlanningError::PaymentChanged)?;
                 apply_conservative_planning_mana_effects(
+                    domain.deck,
                     target_card_index,
                     target,
                     domain.mana_access,
+                    domain.turn,
                     &staged.zones,
                     &mut staged.mana_pool,
                 )?;
@@ -9707,11 +12759,26 @@ fn apply_planning_action_with_combat_state(
             Ok(())
         }
         (
-            TurnAction::CastOpponentChoiceTutor { pile, .. },
+            action @ (TurnAction::CastOpponentChoiceTutor { .. }
+            | TurnAction::CastShortOpponentChoiceTutor { .. }),
             Some(TypedAtomicTransaction::OpponentChoiceSearchSplit),
         ) => {
+            let (pile, is_short) = match action {
+                TurnAction::CastOpponentChoiceTutor { pile, .. } => (Vec::from(pile), false),
+                TurnAction::CastShortOpponentChoiceTutor { pile, .. } => (
+                    short_intuition_pile_cards(pile).ok_or(CastPlanningError::PaymentChanged)?,
+                    true,
+                ),
+                _ => unreachable!("the match arm accepts only Intuition actions"),
+            };
+            let available_total = (0..domain.deck.cards.len())
+                .map(|target| planner_library_copy_count(domain.deck, state, target))
+                .sum::<usize>();
+            if is_short && (available_total >= 3 || available_total != pile.len()) {
+                return Err(CastPlanningError::CardDisappeared);
+            }
             let mut remaining = HashMap::<usize, usize>::new();
-            for target in pile {
+            for target in pile.iter().copied() {
                 *remaining.entry(target).or_default() += 1;
             }
             if remaining.into_iter().any(|(target, required)| {
@@ -9736,37 +12803,35 @@ fn apply_planning_action_with_combat_state(
             base.planned_casts.push(card_index);
             base.planned_actions.push(action);
 
-            let mut worst: Option<(PlannerValue, usize, CastPlanningState)> = None;
-            for chosen_position in 0..3 {
-                let mut outcome = base.clone();
-                let chosen = pile[chosen_position];
-                outcome.hand.push(chosen);
-                for (position, target) in pile.iter().copied().enumerate() {
-                    if position != chosen_position {
-                        outcome.zones.graveyard.push(target);
-                        outcome.zones.advance_sequence();
-                    }
-                }
-                let value = deterministic_planner_state_value(domain, &outcome).0;
-                if worst
-                    .as_ref()
-                    .is_none_or(|current| (value, chosen) < (current.0, current.1))
-                {
-                    worst = Some((value, chosen, outcome));
-                }
-            }
-            let (_, _, mut outcome) = worst.ok_or(CastPlanningError::PaymentChanged)?;
-            // The opponent chooses while Intuition is still resolving. Its
-            // source reaches the graveyard only after the chosen outcome is
-            // fixed, matching the runtime adversarial evaluation boundary.
-            outcome
-                .zones
-                .record_cast(domain.deck, card_index, domain.turn);
-            *state = outcome;
+            let compiled_model;
+            let model = if let Some(model) = intuition_model {
+                model
+            } else {
+                compiled_model = IntuitionPlanningModel::compile(domain.deck);
+                &compiled_model
+            };
+            let context = IntuitionSelectionContext {
+                deck: domain.deck,
+                source_card_index: card_index,
+                hand: &base.hand,
+                zones: &base.zones,
+                turn: domain.turn,
+                mana_access: domain.mana_access,
+                mana_pool: &base.mana_pool,
+                future_additional_generic_per_cast: domain.additional_generic_per_cast,
+            };
+            let outcome = adversarial_intuition_outcome(model, context, &pile)
+                .ok_or(CastPlanningError::PaymentChanged)?;
+            base.hand = outcome.hand;
+            base.zones = outcome.zones;
+            *state = base;
             Ok(())
         }
         (TurnAction::CastBargainTutor { .. }, _)
-        | (TurnAction::CastOpponentChoiceTutor { .. }, _) => Err(CastPlanningError::PaymentChanged),
+        | (TurnAction::CastOpponentChoiceTutor { .. }, _)
+        | (TurnAction::CastShortOpponentChoiceTutor { .. }, _) => {
+            Err(CastPlanningError::PaymentChanged)
+        }
         (TurnAction::Cast(_), Some(transaction))
             if transaction.initiation() == AtomicInitiation::CastSpell
                 && !matches!(
@@ -9898,10 +12963,18 @@ fn apply_planning_action_with_combat_state(
             staged
                 .zones
                 .record_cast(domain.deck, card_index, domain.turn);
+            resolve_reviewed_modal_graveyard_return(
+                domain.deck,
+                card_index,
+                &mut staged.hand,
+                &mut staged.zones,
+            );
             apply_conservative_planning_mana_effects(
+                domain.deck,
                 card_index,
                 card,
                 domain.mana_access,
+                domain.turn,
                 &staged.zones,
                 &mut staged.mana_pool,
             )?;
@@ -10480,12 +13553,13 @@ fn projected_combat_planner_value(
     )
 }
 
-struct CombatAwareCastPlanningDomain<'domain, 'deck> {
+struct CombatAwareCastPlanningDomain<'domain, 'deck, 'model> {
     base: &'domain CastPlanningDomain<'deck>,
     combat_state: &'domain CommanderCombatState,
+    intuition_model: Option<&'model IntuitionPlanningModel>,
 }
 
-impl TurnPlanningDomain for CombatAwareCastPlanningDomain<'_, '_> {
+impl TurnPlanningDomain for CombatAwareCastPlanningDomain<'_, '_, '_> {
     type ObservableState = CastPlanningState;
     type Action = TurnAction;
     type StateKey = CastPlanningStateKey;
@@ -10494,7 +13568,11 @@ impl TurnPlanningDomain for CombatAwareCastPlanningDomain<'_, '_> {
     type Error = CastPlanningError;
 
     fn legal_actions(&self, state: &Self::ObservableState) -> Vec<Self::Action> {
-        self.base.legal_actions(state)
+        if let Some(model) = self.intuition_model {
+            self.base.legal_actions_with_intuition_model(state, model)
+        } else {
+            self.base.legal_actions(state)
+        }
     }
 
     fn is_executable_action(&self, state: &Self::ObservableState, action: &Self::Action) -> bool {
@@ -10506,7 +13584,22 @@ impl TurnPlanningDomain for CombatAwareCastPlanningDomain<'_, '_> {
         state: &mut Self::ObservableState,
         action: &Self::Action,
     ) -> Result<(), Self::Error> {
-        apply_planning_action_with_combat_state(self.base, state, *action, Some(self.combat_state))
+        if let Some(model) = self.intuition_model {
+            apply_planning_action_with_intuition_model(
+                self.base,
+                state,
+                *action,
+                model,
+                Some(self.combat_state),
+            )
+        } else {
+            apply_planning_action_with_combat_state(
+                self.base,
+                state,
+                *action,
+                Some(self.combat_state),
+            )
+        }
     }
 
     fn action_error_is_recoverable(&self, error: &Self::Error) -> bool {
@@ -10569,10 +13662,11 @@ impl TurnPlanningDomain for CombatAwareCastPlanningDomain<'_, '_> {
     }
 }
 
-fn plan_hand_action_order(
+fn plan_hand_action_order_with_intuition_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
     mana_pool: &TurnManaPool,
+    intuition_model: &IntuitionPlanningModel,
 ) -> Vec<TurnAction> {
     let initial = CastPlanningState {
         hand: hand.to_vec(),
@@ -10584,14 +13678,20 @@ fn plan_hand_action_order(
         planned_actions: Vec::new(),
         stochastic_planner_expectation: None,
     };
-    if let Some(certified) =
-        certified_reviewed_graveyard_storm_primer_continuation(domain, initial.clone())
-    {
+    if let Some(certified) = certified_reviewed_graveyard_storm_primer_continuation_with_model(
+        domain,
+        initial.clone(),
+        intuition_model,
+    ) {
         return certified;
     }
     let cancellation = AtomicBool::new(false);
+    let model_aware_domain = ModelAwareCastPlanningDomain {
+        base: domain,
+        intuition_model,
+    };
     plan_turn(
-        domain,
+        &model_aware_domain,
         initial,
         PlannerConfig {
             beam_width: CAST_PLANNER_BEAM_WIDTH,
@@ -10605,11 +13705,12 @@ fn plan_hand_action_order(
     .unwrap_or_default()
 }
 
-fn plan_hand_action_order_with_combat(
+fn plan_hand_action_order_with_combat_and_intuition_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
     mana_pool: &TurnManaPool,
     combat_state: &CommanderCombatState,
+    intuition_model: &IntuitionPlanningModel,
 ) -> Vec<TurnAction> {
     let initial = CastPlanningState {
         hand: hand.to_vec(),
@@ -10621,15 +13722,18 @@ fn plan_hand_action_order_with_combat(
         planned_actions: Vec::new(),
         stochastic_planner_expectation: None,
     };
-    if let Some(certified) =
-        certified_reviewed_graveyard_storm_primer_continuation(domain, initial.clone())
-    {
+    if let Some(certified) = certified_reviewed_graveyard_storm_primer_continuation_with_model(
+        domain,
+        initial.clone(),
+        intuition_model,
+    ) {
         return certified;
     }
     let cancellation = AtomicBool::new(false);
     let combat_domain = CombatAwareCastPlanningDomain {
         base: domain,
         combat_state,
+        intuition_model: Some(intuition_model),
     };
     plan_turn(
         &combat_domain,
@@ -10646,9 +13750,26 @@ fn plan_hand_action_order_with_combat(
     .unwrap_or_default()
 }
 
-fn certified_reviewed_graveyard_storm_primer_continuation(
+fn card_has_reviewed_primer_setup_mana_capability(card: &CompiledCard) -> bool {
+    matches!(
+        compile_typed_atomic_transaction(card),
+        Some(
+            TypedAtomicTransaction::HandMana { .. }
+                | TypedAtomicTransaction::SacrificeRitual { .. }
+                | TypedAtomicTransaction::NameLinkedGraveyardRitual { .. }
+                | TypedAtomicTransaction::ThresholdRitual { .. }
+                | TypedAtomicTransaction::TemporaryLandSacrificeManaGrant { .. }
+        )
+    ) || classify_spell_resolution_mana(card).is_some()
+        || classify_sacrifice_self_any_color_mana(card).is_some()
+        || compile_typed_conditional_mana_source(card)
+            .is_some_and(TypedConditionalManaSource::is_receipted_artifact_family)
+}
+
+fn certified_reviewed_graveyard_storm_primer_continuation_with_model(
     domain: &CastPlanningDomain<'_>,
     initial: CastPlanningState,
+    intuition_model: &IntuitionPlanningModel,
 ) -> Option<Vec<TurnAction>> {
     const MAX_CERTIFICATE_ACTIONS: usize = 10;
     const MAX_CERTIFICATE_NODES: usize = 2_048;
@@ -10711,12 +13832,11 @@ fn certified_reviewed_graveyard_storm_primer_continuation(
         programs.iter().any(|program| {
             card_index == program.permission_source || card_index == program.mana_source
         }) || compile_typed_first_use_self_transfer_tutor(card).is_some()
-            || matches!(
-                compile_typed_atomic_transaction(card),
-                Some(TypedAtomicTransaction::NameLinkedGraveyardRitual { .. })
-            )
-            || card.effects.mana_production_kind == ManaProductionKind::OneShotActivated
-                && card.effects.mana_produced.conservative_value(1) > 0
+            || card_has_reviewed_primer_setup_mana_capability(card)
+                && !matches!(
+                    compile_typed_atomic_transaction(card),
+                    Some(TypedAtomicTransaction::HandMana { .. })
+                )
     };
 
     let mut frontier = VecDeque::from([(initial, Vec::<TurnAction>::new())]);
@@ -10731,16 +13851,22 @@ fn certified_reviewed_graveyard_storm_primer_continuation(
         expanded = expanded.saturating_add(1);
 
         let mut candidate_actions = domain
-            .legal_actions(&state)
+            .legal_actions_with_intuition_model(&state, intuition_model)
             .into_iter()
             .filter(|action| {
                 matches!(
                     action,
                     TurnAction::CastReviewedRandomDiscardWithManaResponse { .. }
                         | TurnAction::ActivateFirstUseSelfTransferTutor { .. }
+                        | TurnAction::ActivateGrantedLandMana { .. }
+                        | TurnAction::ActivateHandMana(_)
                 ) || matches!(
                     action,
                     TurnAction::Cast(card_index) | TurnAction::CastAlternativeCost(card_index)
+                        if setup_cast(*card_index)
+                ) || matches!(
+                    action,
+                    TurnAction::CastModalFace { card_index, .. }
                         if setup_cast(*card_index)
                 )
             })
@@ -10752,19 +13878,29 @@ fn certified_reviewed_graveyard_storm_primer_continuation(
         // public zones. Admit only the certificate's reviewed setup casts
         // here; `apply_planning_action` remains the exact payment/zone gate and
         // the endpoint still requires the complete Gamble/LED/Wishclaw proof.
-        candidate_actions.extend(
-            state
-                .hand
-                .iter()
-                .copied()
-                .filter(|card_index| setup_cast(*card_index))
-                .map(TurnAction::Cast),
-        );
+        candidate_actions.extend(state.hand.iter().copied().filter_map(|card_index| {
+            let card = domain.deck.cards.get(card_index)?;
+            if matches!(
+                compile_typed_atomic_transaction(card),
+                Some(TypedAtomicTransaction::HandMana { .. })
+            ) {
+                card_has_reviewed_primer_setup_mana_capability(card)
+                    .then_some(TurnAction::ActivateHandMana(card_index))
+            } else {
+                setup_cast(card_index).then_some(TurnAction::Cast(card_index))
+            }
+        }));
         candidate_actions.sort_unstable();
         candidate_actions.dedup();
         for action in candidate_actions {
             let mut next = state.clone();
-            match apply_planning_action(domain, &mut next, action) {
+            match apply_planning_action_with_intuition_model(
+                domain,
+                &mut next,
+                action,
+                intuition_model,
+                None,
+            ) {
                 Ok(()) => {}
                 Err(CastPlanningError::PaymentChanged) => continue,
                 Err(CastPlanningError::CardDisappeared) => return None,
@@ -10781,6 +13917,7 @@ fn reviewed_primer_window_preempts_eager_tutor(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
     mana_pool: &TurnManaPool,
+    intuition_model: &IntuitionPlanningModel,
 ) -> bool {
     let state = CastPlanningState {
         hand: hand.to_vec(),
@@ -10792,7 +13929,7 @@ fn reviewed_primer_window_preempts_eager_tutor(
         planned_actions: Vec::new(),
         stochastic_planner_expectation: None,
     };
-    let actions = domain.legal_actions(&state);
+    let actions = domain.legal_actions_with_intuition_model(&state, intuition_model);
     actions.iter().copied().any(|action| {
         matches!(
             action,
@@ -10801,7 +13938,9 @@ fn reviewed_primer_window_preempts_eager_tutor(
     }) || actions.into_iter().any(|action| {
         matches!(
             action,
-            TurnAction::Cast(_) | TurnAction::CastAlternativeCost(_)
+            TurnAction::Cast(_)
+                | TurnAction::CastAlternativeCost(_)
+                | TurnAction::CastModalFace { .. }
         ) && !reviewed_primer_window_actions_after_mana_source_cast(
             domain,
             &state,
@@ -10811,12 +13950,14 @@ fn reviewed_primer_window_preempts_eager_tutor(
     })
 }
 
-fn hand_plan_completes_credible_executable_route(
+fn hand_plan_completes_credible_executable_route_with_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
     mana_pool: &TurnManaPool,
+    intuition_model: &IntuitionPlanningModel,
 ) -> bool {
-    let planned_actions = plan_hand_action_order(domain, hand, mana_pool);
+    let planned_actions =
+        plan_hand_action_order_with_intuition_model(domain, hand, mana_pool, intuition_model);
     if planned_actions.is_empty() {
         return false;
     }
@@ -10831,7 +13972,15 @@ fn hand_plan_completes_credible_executable_route(
         stochastic_planner_expectation: None,
     };
     for action in planned_actions {
-        if apply_planning_action(domain, &mut final_state, action).is_err() {
+        if apply_planning_action_with_intuition_model(
+            domain,
+            &mut final_state,
+            action,
+            intuition_model,
+            None,
+        )
+        .is_err()
+        {
             return false;
         }
     }
@@ -10845,9 +13994,11 @@ fn hand_plan_completes_credible_executable_route(
 }
 
 fn apply_conservative_planning_mana_effects(
+    deck: &CompiledDeck,
     card_index: usize,
     card: &CompiledCard,
     mana_access: Option<&ManaAccessProfile>,
+    turn: u8,
     zones: &KnownLineZoneState,
     pool: &mut TurnManaPool,
 ) -> Result<(), CastPlanningError> {
@@ -10855,6 +14006,12 @@ fn apply_conservative_planning_mana_effects(
         // The whole-hand discard and self-sacrifice are a distinct optional
         // battlefield action. Casting the permanent cannot silently activate
         // it or install spendable mana that bypasses those exact costs.
+        return Ok(());
+    }
+    if let Some(source) = exact_mana_network_battlefield_source(deck, mana_access, card_index, turn)
+    {
+        add_battlefield_source_to_current_pool(source, deck, zones, turn, pool);
+        materialize_reviewed_granted_land_sources(deck, zones, turn, pool);
         return Ok(());
     }
     let source_profile = mana_access.and_then(|access| access.source(card_index));
@@ -10868,15 +14025,21 @@ fn apply_conservative_planning_mana_effects(
             }
         });
     let mana_output = card.effects.mana_produced.conservative_value(1).min(8);
-    if card.effects.mana_production_kind == ManaProductionKind::OneShotActivated {
+    if let Some(program) = classify_spell_resolution_mana(card) {
+        let _ = add_fixed_mana(pool, program.output);
+    } else if let Some(program) = classify_sacrifice_self_any_color_mana(card) {
+        if !program.requires_tap {
+            return Err(CastPlanningError::PaymentChanged);
+        }
         let source = zones
             .battlefield
             .last()
             .filter(|presence| presence.card_index == card_index)
             .ok_or(CastPlanningError::CardDisappeared)?;
         pool.sources.push(PoolManaSource {
-            colors: source_colors,
-            remaining: mana_output,
+            colors: ManaColorMask::ANY_COLOR,
+            remaining: program.amount,
+            origin_sequence: Some(source.sequence),
             sacrifice_on_first_spend: Some(SacrificeOnFirstSpend {
                 card_index,
                 sequence: source.sequence,
@@ -10912,10 +14075,7 @@ fn apply_conservative_planning_mana_effects(
                 ..PoolManaSource::default()
             });
         }
-    } else if matches!(
-        card.effects.mana_production_kind,
-        ManaProductionKind::SpellResolution | ManaProductionKind::NonRefreshingActivated
-    ) {
+    } else if card.effects.mana_production_kind == ManaProductionKind::NonRefreshingActivated {
         pool.add_floating(source_colors, mana_output);
     }
     pool.add_treasures(immediate_effect_value(
@@ -10969,7 +14129,7 @@ fn planning_route_value(
                 })
                 .count();
             // Typed cards are represented in both the speculative zone ledger
-            // and the ordered cast list; legacy or ambiguous inputs may only
+            // and the ordered cast list; legacy or partially typed inputs may only
             // have the latter. `max`, rather than addition, preserves either
             // witness without double-crediting one physical object.
             present += required_count.min(already_usable.max(newly_cast));
@@ -11365,6 +14525,16 @@ fn mana_behavior_code(behavior: BattlefieldManaBehavior) -> u16 {
         BattlefieldManaBehavior::LinkedCardColors(colors) => {
             0x100 | u16::from(mana_color_code(colors))
         }
+        BattlefieldManaBehavior::CommanderIdentity(colors) => {
+            0x200 | u16::from(mana_color_code(colors))
+        }
+        BattlefieldManaBehavior::ControlledLandCapabilities => 0x300,
+        BattlefieldManaBehavior::NativeLand(colors) => 0x400 | u16::from(mana_color_code(colors)),
+        BattlefieldManaBehavior::CoupledFixed(colors) => {
+            0x8000
+                | u16::from(mana_color_code(colors[0])) << 6
+                | u16::from(mana_color_code(colors[1]))
+        }
     }
 }
 
@@ -11550,7 +14720,7 @@ fn pay_requirements_with_damage_ceiling(
     let mut source_indices = (0..pool.sources.len())
         .filter(|source_index| {
             let source = &pool.sources[*source_index];
-            source.remaining > 0 && source.colors.intersects(colors)
+            source.available_mana() > 0 && source.colors.intersects(colors)
         })
         .collect::<Vec<_>>();
     source_indices.sort_by_key(|source_index| {
@@ -11572,7 +14742,32 @@ fn pay_requirements_with_damage_ceiling(
         }) {
             continue;
         }
-        let color_choices = if source.same_type_coupled && source_option_count(source.colors) > 1 {
+        let color_choices = if let BattlefieldManaBehavior::CoupledFixed(pair) = source.behavior
+            && source.remaining >= 2
+        {
+            let paired_colors = pair[0] | pair[1];
+            let mut choices = pair
+                .into_iter()
+                .filter(|color| colors.intersects(*color))
+                .collect::<Vec<_>>();
+            choices.extend(
+                [
+                    ManaColorMask::WHITE,
+                    ManaColorMask::BLUE,
+                    ManaColorMask::BLACK,
+                    ManaColorMask::RED,
+                    ManaColorMask::GREEN,
+                    ManaColorMask::COLORLESS,
+                ]
+                .into_iter()
+                .filter(|color| {
+                    source.colors.intersects(*color)
+                        && !paired_colors.intersects(*color)
+                        && colors.intersects(*color)
+                }),
+            );
+            choices
+        } else if source.same_type_coupled && source_option_count(source.colors) > 1 {
             [
                 ManaColorMask::WHITE,
                 ManaColorMask::BLUE,
@@ -11644,7 +14839,7 @@ fn pay_generic_with_constraint(
     }
 
     let mut source_indices = (0..pool.sources.len())
-        .filter(|source_index| pool.sources[*source_index].remaining > 0)
+        .filter(|source_index| pool.sources[*source_index].available_mana() > 0)
         .collect::<Vec<_>>();
     source_indices.sort_by_key(|source_index| {
         let source = &pool.sources[*source_index];
@@ -11847,7 +15042,7 @@ fn stage_reviewed_empty_library_win_candidate(
         };
 
         let mut staged_library = library_order.to_vec();
-        let mut staged_exile = zones.exile.clone();
+        let mut staged_exile = zones.exile.iter().copied().collect::<Vec<_>>();
         let Some(library_receipt) = execute_reviewed_library_exile_transaction(
             program,
             deck,
@@ -11939,6 +15134,7 @@ struct PreparedBaselineEpisode {
 #[derive(Debug)]
 struct SimulationRuntimeModel {
     line_activation_costs: Vec<CompiledLineActivationCost>,
+    intuition: IntuitionPlanningModel,
 }
 
 impl SimulationRuntimeModel {
@@ -11949,6 +15145,7 @@ impl SimulationRuntimeModel {
                 .iter()
                 .map(compile_line_activation_cost)
                 .collect(),
+            intuition: IntuitionPlanningModel::compile(deck),
         }
     }
 }
@@ -12337,6 +15534,7 @@ fn simulate_win_speed_inner(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn simulate_win_speed_inner_with_worker_count(
     deck: &CompiledDeck,
     mana_access: Option<&ManaAccessProfile>,
@@ -12377,7 +15575,7 @@ fn simulate_win_speed_inner_with_worker_count(
         |simulation_index| {
             let episode_seed =
                 derive_episode_seed(seed, WIN_SPEED_EPISODE_SEED_DOMAIN, simulation_index);
-            let preparation = prepare_episode(deck, mana_access, options, episode_seed);
+            let preparation = prepare_episode(deck, mana_access, options, episode_seed, None);
             let baseline_result = simulate_prepared_episode_condition(
                 deck,
                 mana_access,
@@ -12591,7 +15789,7 @@ fn simulate_win_speed_inner_with_worker_count(
         options.maximum_turn,
     );
 
-    let report = WinSpeedReport {
+    Ok(WinSpeedReport {
         simulations,
         fidelity: crate::domain::SimulationFidelity::LegacyHeuristic,
         fidelity_message: "Deterministic legacy trajectory estimate using a bounded observable-state planner, typed effect/ability programs where supported, and reviewed structural line witnesses. Only recognized table-lethal routes populate the explicit attempt endpoint; broad engine/combat density is serialized separately as a generic milestone. Resolved table wins remain censored without strict typed execution proof. This is not a complete Magic execution trace.".into(),
@@ -12632,8 +15830,7 @@ fn simulate_win_speed_inner_with_worker_count(
         ),
         interaction_scenarios,
         stress_tests: build_stress_tests(deck, win_attempt_median_delay),
-    };
-    Ok(report)
+    })
 }
 
 fn scenario_episode_input(
@@ -12711,21 +15908,21 @@ fn finalize_scenario_suite(
                         ScenarioExecutionSource::ResponsePressure,
                         collector.episodes,
                     ))?;
-                    Ok::<_, ScenarioReportError>(compact_scenario_report(
+                    let compact = compact_scenario_report(
                         &report,
                         seed,
                         INTERACTION_SCENARIO_SEED_DERIVATION_VERSION,
-                    ))
+                    );
+                    Ok::<_, ScenarioReportError>(compact)
                 })
             })
             .collect::<Vec<_>>();
         let mut compact_reports = Vec::with_capacity(handles.len());
         for handle in handles {
-            compact_reports.push(
-                handle
-                    .join()
-                    .expect("scenario report worker completed without panicking")?,
-            );
+            let compact = handle
+                .join()
+                .expect("scenario report worker completed without panicking")?;
+            compact_reports.push(compact);
         }
         Ok(compact_reports)
     })
@@ -13020,7 +16217,7 @@ fn assess_reviewed_opening_routes(
 /// opening before the London policy decides whether to keep it. This is not a
 /// name allowlist: every member is selected by the same typed roots used by
 /// turn planning and runtime, and the complete mana sequence is paid on a
-/// private pool. The real forced-opening episode regression remains the final
+/// isolated pool. The full forced-opening episode remains the final
 /// authority that the selected hand survives land choice, priority, searches,
 /// zone movement, and the six-card escape-fodder boundary.
 fn reviewed_graveyard_storm_primer_opening_witness(
@@ -13115,14 +16312,8 @@ fn reviewed_graveyard_storm_primer_opening_witness(
                 let Some(card) = deck.cards.get(*card_index) else {
                     return false;
                 };
-                let Some(source) = mana_access.source(*card_index) else {
-                    return false;
-                };
-                card.effects.mana_production_kind == ManaProductionKind::OneShotActivated
-                    && card.effects.mana_produced.conservative_value(1) == 1
+                classify_sacrifice_self_any_color_mana(card).is_some()
                     && card_has_executable_opening_mana_role(card)
-                    && !source.unknown
-                    && (source.any_color || source.colors.intersects(ManaColorMask::BLACK))
             })
             .collect::<Vec<_>>();
         let fetches = distinct_hand_cards
@@ -13342,7 +16533,7 @@ fn apply_effective_hand_strength(
     } else {
         // Unknown exact pips are neutral rather than perfect. This preserves
         // fail-closed behavior while allowing exact route/tutor evidence to
-        // remain useful in tests and partially resolved local card data.
+        // remain useful with partially resolved local card data.
         0.50
     };
 
@@ -13410,6 +16601,8 @@ fn card_changes_observable_plan(card: &CompiledCard) -> bool {
         || card.effects.tutor.is_executable_on_spell_resolution()
         || compile_typed_burst_card_access_program(card).is_some()
         || compile_typed_atomic_transaction(card).is_some()
+        || classify_spell_resolution_mana(card).is_some()
+        || classify_sacrifice_self_any_color_mana(card).is_some()
         || compile_typed_conditional_mana_source(card).is_some()
         || exact_discard_sacrifice_mana_ability(card).is_some()
         || compile_typed_first_use_self_transfer_tutor(card).is_some()
@@ -13420,14 +16613,13 @@ fn card_changes_observable_plan(card: &CompiledCard) -> bool {
 /// cast executor can actually install or resolve receive RAMP/FAST_MANA
 /// development credit.
 fn card_has_executable_planner_mana_role(card: &CompiledCard) -> bool {
-    card.effects.mana_produced.conservative_value(1) > 0
-        && matches!(
-            card.effects.mana_production_kind,
-            ManaProductionKind::SpellResolution
-                | ManaProductionKind::ReusableActivated
-                | ManaProductionKind::OneShotActivated
-                | ManaProductionKind::NonRefreshingActivated
-        )
+    classify_spell_resolution_mana(card).is_some()
+        || classify_sacrifice_self_any_color_mana(card).is_some()
+        || card.effects.mana_produced.conservative_value(1) > 0
+            && matches!(
+                card.effects.mana_production_kind,
+                ManaProductionKind::ReusableActivated | ManaProductionKind::NonRefreshingActivated
+            )
         || immediate_effect_value(card, card.effects.treasure_tokens, 1) > 0
         || card.effects.tutor.is_executable_on_spell_resolution()
             && immediate_effect_value(card, card.effects.lands_to_battlefield, 1) > 0
@@ -13461,13 +16653,10 @@ fn card_has_executable_opening_mana_role(card: &CompiledCard) -> bool {
 fn card_is_current_turn_consumable_mana(card: &CompiledCard) -> bool {
     compile_typed_atomic_transaction(card)
         .is_some_and(|transaction| transaction.is_mana_development())
+        || classify_spell_resolution_mana(card).is_some()
+        || classify_sacrifice_self_any_color_mana(card).is_some()
         || card.effects.mana_produced.conservative_value(1) > 0
-            && matches!(
-                card.effects.mana_production_kind,
-                ManaProductionKind::SpellResolution
-                    | ManaProductionKind::OneShotActivated
-                    | ManaProductionKind::NonRefreshingActivated
-            )
+            && card.effects.mana_production_kind == ManaProductionKind::NonRefreshingActivated
 }
 
 /// Match the activated Treasure tutor shape consumed by
@@ -14169,6 +17358,8 @@ fn opening_plan_search(
         let mut paid_pool = active_pool.clone();
         let atomic_transaction = compile_typed_atomic_transaction(card);
         let conditional_source = compile_typed_conditional_mana_source(card);
+        let spell_resolution_mana = classify_spell_resolution_mana(card);
+        let sacrifice_self_mana = classify_sacrifice_self_any_color_mana(card);
         let entry_choices = if let Some(kind) = conditional_source {
             if !paid_pool.pay(
                 mana.and_then(|profile| profile.cost(card_index)),
@@ -14340,30 +17531,39 @@ fn opening_plan_search(
             if let Some(source) = typed_persistent_source {
                 next_persistent.push(source);
             } else if atomic_transaction.is_none() && conditional_source.is_none() {
-                let output = card.effects.mana_produced.conservative_value(1).min(8);
-                let colors =
-                    opening_source_colors(mana, card_index, card.effects.mana_production_kind);
-                match card.effects.mana_production_kind {
-                    ManaProductionKind::SpellResolution
-                    | ManaProductionKind::OneShotActivated
-                    | ManaProductionKind::NonRefreshingActivated => {
-                        next_pool.add_floating(colors, output);
+                if let Some(program) = spell_resolution_mana {
+                    if !add_fixed_mana(&mut next_pool, program.output) {
+                        continue;
                     }
-                    ManaProductionKind::ReusableActivated => {
-                        next_persistent.push(OpeningPersistentManaSource {
-                            origin_position: *position,
-                            behavior: OpeningManaBehavior::Fixed(colors),
-                            capacity: output,
-                            available_from_turn: if card.has(role::CREATURE) {
-                                turn.saturating_add(1)
-                            } else {
-                                turn
-                            },
-                        });
-                    }
-                    ManaProductionKind::None | ManaProductionKind::Unsupported => {
-                        if card_is_executable_early_acceleration(card) {
-                            continue;
+                } else if let Some(program) = sacrifice_self_mana {
+                    next_pool.add_floating(ManaColorMask::ANY_COLOR, program.amount);
+                } else {
+                    let output = card.effects.mana_produced.conservative_value(1).min(8);
+                    let colors =
+                        opening_source_colors(mana, card_index, card.effects.mana_production_kind);
+                    match card.effects.mana_production_kind {
+                        ManaProductionKind::NonRefreshingActivated => {
+                            next_pool.add_floating(colors, output);
+                        }
+                        ManaProductionKind::ReusableActivated => {
+                            next_persistent.push(OpeningPersistentManaSource {
+                                origin_position: *position,
+                                behavior: OpeningManaBehavior::Fixed(colors),
+                                capacity: output,
+                                available_from_turn: if card.has(role::CREATURE) {
+                                    turn.saturating_add(1)
+                                } else {
+                                    turn
+                                },
+                            });
+                        }
+                        ManaProductionKind::SpellResolution
+                        | ManaProductionKind::OneShotActivated
+                        | ManaProductionKind::None
+                        | ManaProductionKind::Unsupported => {
+                            if card_is_executable_early_acceleration(card) {
+                                continue;
+                            }
                         }
                     }
                 }
@@ -14371,8 +17571,7 @@ fn opening_plan_search(
             let mut next_active_sources = active_sources;
             let transient_artifact = atomic_transaction.is_none()
                 && conditional_source.is_none()
-                && card.effects.card_types.is_artifact
-                && card.effects.mana_production_kind == ManaProductionKind::OneShotActivated;
+                && sacrifice_self_mana.is_some();
             if transient_artifact {
                 let mut activation_board = next_board;
                 update_opening_board_for_permanent(card, &mut activation_board);
@@ -14386,7 +17585,7 @@ fn opening_plan_search(
             } else if conditional_source.is_some()
                 || atomic_transaction.is_none()
                     && card_has_persistent_body(card)
-                    && card.effects.mana_production_kind != ManaProductionKind::OneShotActivated
+                    && sacrifice_self_mana.is_none()
             {
                 update_opening_board_for_permanent(card, &mut next_board);
             }
@@ -14645,14 +17844,14 @@ fn card_is_executable_early_acceleration(card: &CompiledCard) -> bool {
         None if card.ability_program.atomic_transaction.is_some() => false,
         None => {
             card.mana_value <= 1.0
-                && card.effects.mana_produced.conservative_value(1) > 0
-                && matches!(
-                    card.effects.mana_production_kind,
-                    ManaProductionKind::SpellResolution
-                        | ManaProductionKind::ReusableActivated
-                        | ManaProductionKind::OneShotActivated
-                        | ManaProductionKind::NonRefreshingActivated
-                )
+                && (classify_spell_resolution_mana(card).is_some()
+                    || classify_sacrifice_self_any_color_mana(card).is_some()
+                    || card.effects.mana_produced.conservative_value(1) > 0
+                        && matches!(
+                            card.effects.mana_production_kind,
+                            ManaProductionKind::ReusableActivated
+                                | ManaProductionKind::NonRefreshingActivated
+                        ))
         }
     }
 }
@@ -14674,11 +17873,10 @@ fn card_is_executable_zero_land_acceleration(card: &CompiledCard) -> bool {
     }
     card_is_executable_early_acceleration(card)
         && card.mana_value <= 0.0
-        && (matches!(
-            card.effects.mana_production_kind,
-            ManaProductionKind::SpellResolution | ManaProductionKind::OneShotActivated
-        ) || card.effects.mana_production_kind == ManaProductionKind::ReusableActivated
-            && !card.effects.card_types.is_creature)
+        && (classify_spell_resolution_mana(card).is_some()
+            || classify_sacrifice_self_any_color_mana(card).is_some()
+            || card.effects.mana_production_kind == ManaProductionKind::ReusableActivated
+                && !card.effects.card_types.is_creature)
 }
 
 fn remaining_library_counts(
@@ -14789,11 +17987,17 @@ fn uses_competitive_search_envelope(policy: MulliganPolicy, declared_intent: Dec
 }
 
 fn should_keep_cedh(hand: HandEvaluation, policy: MulliganPolicy, paid_mulligans: u8) -> bool {
-    debug_assert!(hand.effective_hand_strength_assessed);
-    let plan_access = hand.explicit_route_access && hand.effective_hand_strength >= 0.55
-        || hand.command_zone_plan_access
-        || hand.independent_hand_plans > 0
-        || !hand.reviewed_route_catalog_present && hand.cedh_hand_plans > 0;
+    let plan_access = if hand.effective_hand_strength_assessed {
+        hand.explicit_route_access && hand.effective_hand_strength >= 0.55
+            || hand.command_zone_plan_access
+            || hand.independent_hand_plans > 0
+            || !hand.reviewed_route_catalog_present && hand.cedh_hand_plans > 0
+    } else {
+        // Compatibility callers may omit the versioned EHS assessment.
+        // Production evaluations always carry it; this fallback preserves
+        // legacy behavior without pretending an absent assessment scored zero.
+        hand.explicit_route_access || hand.command_zone_plan_access || hand.cedh_hand_plans > 0
+    };
     let directly_payable_one_land = hand.lands == 1 && hand.directly_payable_one_land_plan;
     let accelerated_one_land = hand.lands == 1 && hand.accelerated_one_land_plan;
     let zero_land_burst = hand.lands == 0 && hand.accelerated_zero_land_plan;
@@ -15624,9 +18828,11 @@ fn prepare_episode(
     mana_access: Option<&ManaAccessProfile>,
     options: &AnalysisOptions,
     seed: u64,
+    forced_opening: Option<LondonHandSample>,
 ) -> PreparedEpisode {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let opening = sample_london_hand(deck, mana_access, options, &mut rng, 0, None);
+    let opening = forced_opening
+        .unwrap_or_else(|| sample_london_hand(deck, mana_access, options, &mut rng, 0, None));
     PreparedEpisode {
         opening,
         rng_after_opening: rng,
@@ -15669,6 +18875,7 @@ fn simulate_prepared_episode_condition(
     let mut pending_delayed_card_access = Vec::<PendingDelayedCardAccess>::new();
     let mut player_life = COMMANDER_STARTING_LIFE;
     let mut combat_state = CommanderCombatState::new();
+    let mut opponent_libraries = OpponentLibraryTable::after_opening();
     let mut first_attempt_opportunity = false;
     let mut first_attempt_stopped = false;
     let mut first_win_attempt_turn = None;
@@ -15750,6 +18957,17 @@ fn simulate_prepared_episode_condition(
         );
         synchronize_mana_sources_with_battlefield(&mut mana_sources, &line_zones);
         synchronize_turn_pool_with_battlefield(&mut mana_pool, &line_zones);
+        resolve_exact_upkeep_tutors(
+            deck,
+            mana_access,
+            &mut order,
+            position,
+            &mut hand,
+            turn,
+            &mana_pool,
+            &mut rng,
+            &line_zones,
+        );
         if !mana_pool.settle_pending_source_damage(&mut player_life) {
             return isolated.finish(EpisodeOutcome {
                 threat_turn: first_credible_threat_turn,
@@ -15797,7 +19015,7 @@ fn simulate_prepared_episode_condition(
                     mana_access,
                     land_index,
                     turn,
-                    &hand,
+                    &mut hand,
                     &mut order,
                     position,
                     &mut rng,
@@ -15892,10 +19110,11 @@ fn simulate_prepared_episode_condition(
                     .is_some_and(|card| commander_is_priority(card, options.pilot_policy))
         });
         let defer_priority_commanders_for_hand_route = has_uncast_priority_commander
-            && hand_plan_completes_credible_executable_route(
+            && hand_plan_completes_credible_executable_route_with_model(
                 &hand_domain_before_commander,
                 &hand,
                 &mana_pool,
+                &runtime_model.intuition,
             );
 
         // Each selected commander is an independent command-zone object. Try
@@ -16074,7 +19293,7 @@ fn simulate_prepared_episode_condition(
                         &mut mana_pool,
                         &mut rng,
                         ability_context,
-                        &line_zones,
+                        &mut line_zones,
                     );
                     mana_pool.refresh_battlefield_sources(
                         deck,
@@ -16151,7 +19370,7 @@ fn simulate_prepared_episode_condition(
         let mut planned_cast_queue = VecDeque::<TurnAction>::new();
         let mut executed_graveyard_storm_line = None;
         while committed_actions < CAST_PLANNER_MAX_COMMITTED_ACTIONS {
-            if let Some(line_index) = execute_graveyard_storm_under_isolated_scenario(
+            if let Some(execution) = execute_graveyard_storm_under_isolated_scenario(
                 deck,
                 &mut hand,
                 &mut order,
@@ -16190,7 +19409,7 @@ fn simulate_prepared_episode_condition(
                         player_died: true,
                     });
                 }
-                executed_graveyard_storm_line = Some(line_index);
+                executed_graveyard_storm_line = Some(execution);
                 break;
             }
 
@@ -16217,7 +19436,12 @@ fn simulate_prepared_episode_condition(
             let preserve_eot_before_bypasses =
                 planner_prefers_opponent_end_step_top_tutor(&bypass_eot_domain, &hand, &mana_pool);
             let reviewed_primer_window_preempts_eager_tutor =
-                reviewed_primer_window_preempts_eager_tutor(&bypass_eot_domain, &hand, &mana_pool);
+                reviewed_primer_window_preempts_eager_tutor(
+                    &bypass_eot_domain,
+                    &hand,
+                    &mana_pool,
+                    &runtime_model.intuition,
+                );
             let eager_first_use_preserves_eot = !reviewed_primer_window_preempts_eager_tutor
                 && preserve_eot_before_bypasses
                 && active_first_use_self_transfer_tutor(deck, &line_zones).is_some_and(
@@ -16471,14 +19695,20 @@ fn simulate_prepared_episode_condition(
             let planning_rule_of_law_cap_active = planning_domain.rule_of_law_cap_active();
             if planned_cast_queue.is_empty() {
                 planned_cast_queue.extend(if cast_phase_is_precombat {
-                    plan_hand_action_order_with_combat(
+                    plan_hand_action_order_with_combat_and_intuition_model(
                         &planning_domain,
                         &hand,
                         &mana_pool,
                         &combat_state,
+                        &runtime_model.intuition,
                     )
                 } else {
-                    plan_hand_action_order(&planning_domain, &hand, &mana_pool)
+                    plan_hand_action_order_with_intuition_model(
+                        &planning_domain,
+                        &hand,
+                        &mana_pool,
+                        &runtime_model.intuition,
+                    )
                 });
             }
             if deferred_land_play
@@ -16505,7 +19735,7 @@ fn simulate_prepared_episode_condition(
                     mana_access,
                     land_index,
                     turn,
-                    &hand,
+                    &mut hand,
                     &mut order,
                     position,
                     &mut rng,
@@ -16811,6 +20041,314 @@ fn simulate_prepared_episode_condition(
                 }
                 QueuedFirstUseSelfTransferTutorExecution::NotActivation => {}
             }
+            if let TurnAction::CastGraveyardReclamation {
+                source_card_index,
+                origin,
+                ..
+            } = action
+            {
+                let Some(source) = deck.cards.get(source_card_index) else {
+                    planned_cast_queue.clear();
+                    break;
+                };
+                if classify_graveyard_reclamation(source).is_none() {
+                    planned_cast_queue.clear();
+                    break;
+                }
+                isolated.observe_opportunity(InteractionScenario::GraveyardShutdown);
+                if isolated.is(InteractionScenario::GraveyardShutdown) {
+                    if !isolated.applied() {
+                        isolated.activate(turn, 1);
+                    }
+                    planned_cast_queue.clear();
+                    break;
+                }
+                if rule_of_law_blocks_next_spell(&mut isolated, turn, spells_cast_this_turn) {
+                    planned_cast_queue.clear();
+                    continue;
+                }
+                isolated.observe_opportunity(InteractionScenario::GenericTaxStax);
+                let generic_tax = if isolated.is(InteractionScenario::GenericTaxStax) {
+                    isolated.activate(turn, 1);
+                    1
+                } else {
+                    0
+                };
+
+                let mut staged_hand = hand.clone();
+                let mut staged_zones = line_zones.clone();
+                let mut staged_pool = mana_pool.clone();
+                let mut staged_life = player_life;
+                let Some(pending) = stage_graveyard_reclamation_spell(
+                    deck,
+                    action,
+                    &mut staged_hand,
+                    &mut staged_zones,
+                    turn,
+                ) else {
+                    planned_cast_queue.clear();
+                    break;
+                };
+                if !pay_graveyard_reclamation_cost(
+                    deck,
+                    &mut staged_zones,
+                    &mut staged_pool,
+                    source_card_index,
+                    origin,
+                    mana_access.and_then(|access| access.cost(source_card_index)),
+                    source.mana_value.ceil().max(0.0) as u8,
+                    generic_tax,
+                    turn,
+                    Some(&combat_state),
+                ) || !staged_pool.settle_pending_source_damage(&mut staged_life)
+                {
+                    planned_cast_queue.clear();
+                    break;
+                }
+                let staged_spell_ordinal = spells_cast_this_turn.saturating_add(1);
+                if !apply_controller_spell_cast_triggers(
+                    deck,
+                    &mut staged_zones,
+                    source_card_index,
+                    turn,
+                    staged_spell_ordinal,
+                    &mut staged_pool,
+                    &mut staged_life,
+                ) {
+                    return isolated.finish(EpisodeOutcome {
+                        threat_turn: first_credible_threat_turn,
+                        first_win_attempt_turn,
+                        resolved_table_win_turn: None,
+                        timing_provenance,
+                        first_attempt_opportunity,
+                        first_attempt_stopped,
+                        recovered: recovered_attempt,
+                        final_life: staged_life,
+                        player_died: true,
+                    });
+                }
+                let relevant_spell = scenario_relevant_spell(source);
+                if relevant_spell {
+                    isolated.observe_opportunity(InteractionScenario::FirstRelevantSpellCountered);
+                }
+                let counter_source = isolated.is(InteractionScenario::FirstRelevantSpellCountered)
+                    && !isolated.applied()
+                    && relevant_spell;
+                if counter_source {
+                    isolated.activate(turn, 1);
+                }
+                let resolution = resolve_pending_graveyard_reclamation_spell(
+                    deck,
+                    pending,
+                    &mut staged_zones,
+                    turn,
+                    counter_source,
+                    false,
+                );
+
+                hand = staged_hand;
+                line_zones = staged_zones;
+                mana_pool = staged_pool;
+                player_life = staged_life;
+                spells_cast_this_turn = staged_spell_ordinal;
+                committed_actions = committed_actions.saturating_add(1);
+                if generic_tax > 0 {
+                    isolated.add_affected_event();
+                }
+                if !counter_source
+                    && isolated.is(InteractionScenario::FirstRelevantSpellCountered)
+                    && isolated.applied()
+                {
+                    isolated.recover(turn);
+                }
+                if isolated.is(InteractionScenario::RuleOfLawCap)
+                    && isolated
+                        .applied_turn
+                        .is_some_and(|applied_turn| turn > applied_turn)
+                {
+                    isolated.recover(turn);
+                }
+
+                for returned_card_index in resolution.returned_card_indices {
+                    let Some(returned) = deck.cards.get(returned_card_index) else {
+                        continue;
+                    };
+                    apply_roles(
+                        returned.roles,
+                        &mut engine_count,
+                        &mut enabler_count,
+                        &mut payoff_count,
+                        &mut creature_count,
+                        &mut protection_count,
+                    );
+                    if returned.effects.recursion {
+                        recursion_count = recursion_count.saturating_add(1);
+                    }
+                    install_tutored_permanent_runtime(
+                        deck,
+                        returned_card_index,
+                        mana_access,
+                        turn,
+                        &mut mana_sources,
+                        &mut mana_pool,
+                        &mut rng,
+                        Some(&mut hand),
+                        &mut line_zones,
+                    );
+                }
+                synchronize_mana_sources_with_battlefield(&mut mana_sources, &line_zones);
+                synchronize_turn_pool_with_battlefield(&mut mana_pool, &line_zones);
+                mana_pool.refresh_battlefield_sources(
+                    deck,
+                    &line_zones,
+                    active_ability_context(deck, &line_zones),
+                );
+                planned_cast_queue.clear();
+                continue;
+            }
+            if let TurnAction::CastAlternativeCost(card_index) = action
+                && let Some(source_object) =
+                    reviewed_escape_source_object(deck, &line_zones, card_index)
+            {
+                let Some(card) = deck.cards.get(card_index) else {
+                    planned_cast_queue.clear();
+                    break;
+                };
+                isolated.observe_opportunity(InteractionScenario::GraveyardShutdown);
+                if isolated.is(InteractionScenario::GraveyardShutdown) {
+                    if !isolated.applied() {
+                        isolated.activate(turn, 1);
+                    }
+                    planned_cast_queue.clear();
+                    break;
+                }
+                if rule_of_law_blocks_next_spell(&mut isolated, turn, spells_cast_this_turn) {
+                    planned_cast_queue.clear();
+                    continue;
+                }
+                isolated.observe_opportunity(InteractionScenario::GenericTaxStax);
+                let generic_tax = if isolated.is(InteractionScenario::GenericTaxStax) {
+                    isolated.activate(turn, 1);
+                    1
+                } else {
+                    0
+                };
+
+                let mut staged_zones = line_zones.clone();
+                let mut staged_pool = mana_pool.clone();
+                let mut staged_sources = mana_sources.clone();
+                let mut staged_life = player_life;
+                if !pay_reviewed_escape_cast_cost(
+                    deck,
+                    &mut staged_zones,
+                    &mut staged_pool,
+                    card_index,
+                    source_object.object_id,
+                    generic_tax,
+                ) || !staged_pool.settle_pending_source_damage(&mut staged_life)
+                {
+                    planned_cast_queue.clear();
+                    break;
+                }
+                let Some(physical_source) = staged_zones
+                    .remove_graveyard_object(source_object.object_id)
+                    .filter(|removed| removed.card_index == card_index)
+                else {
+                    planned_cast_queue.clear();
+                    break;
+                };
+                let staged_spell_ordinal = spells_cast_this_turn.saturating_add(1);
+                if !apply_controller_spell_cast_triggers(
+                    deck,
+                    &mut staged_zones,
+                    card_index,
+                    turn,
+                    staged_spell_ordinal,
+                    &mut staged_pool,
+                    &mut staged_life,
+                ) {
+                    return isolated.finish(EpisodeOutcome {
+                        threat_turn: first_credible_threat_turn,
+                        first_win_attempt_turn,
+                        resolved_table_win_turn: None,
+                        timing_provenance,
+                        first_attempt_opportunity,
+                        first_attempt_stopped,
+                        recovered: recovered_attempt,
+                        final_life: staged_life,
+                        player_died: true,
+                    });
+                }
+
+                let relevant_spell = scenario_relevant_spell(card);
+                if relevant_spell {
+                    isolated.observe_opportunity(InteractionScenario::FirstRelevantSpellCountered);
+                }
+                let countered = isolated.is(InteractionScenario::FirstRelevantSpellCountered)
+                    && !isolated.applied()
+                    && relevant_spell;
+                if countered {
+                    isolated.activate(turn, 1);
+                    staged_zones.graveyard.push_existing(physical_source);
+                    staged_zones.advance_sequence();
+                } else {
+                    let entry_sequence = staged_zones.next_sequence;
+                    staged_zones.record_cast(deck, card_index, turn);
+                    if exact_aura_spell_attachment_target(card).is_some()
+                        && !staged_zones.attachments.contains_key(&entry_sequence)
+                    {
+                        planned_cast_queue.clear();
+                        break;
+                    }
+                    let ability_context = active_ability_context(deck, &staged_zones);
+                    let _ = apply_cast_mana_effects(
+                        deck,
+                        card_index,
+                        card,
+                        mana_access,
+                        turn,
+                        &mut staged_sources,
+                        &mut staged_pool,
+                        &mut rng,
+                        ability_context,
+                        &mut staged_zones,
+                    );
+                }
+
+                line_zones = staged_zones;
+                mana_pool = staged_pool;
+                mana_sources = staged_sources;
+                player_life = staged_life;
+                spells_cast_this_turn = staged_spell_ordinal;
+                committed_actions = committed_actions.saturating_add(1);
+                if generic_tax > 0 {
+                    isolated.add_affected_event();
+                }
+                if !countered {
+                    if card_has_persistent_body(card) {
+                        apply_roles(
+                            card.roles,
+                            &mut engine_count,
+                            &mut enabler_count,
+                            &mut payoff_count,
+                            &mut creature_count,
+                            &mut protection_count,
+                        );
+                    }
+                    if card.effects.recursion {
+                        recursion_count = recursion_count.saturating_add(1);
+                    }
+                }
+                synchronize_mana_sources_with_battlefield(&mut mana_sources, &line_zones);
+                synchronize_turn_pool_with_battlefield(&mut mana_pool, &line_zones);
+                mana_pool.refresh_battlefield_sources(
+                    deck,
+                    &line_zones,
+                    active_ability_context(deck, &line_zones),
+                );
+                planned_cast_queue.clear();
+                continue;
+            }
             let card_index = action.card_index();
             let Some(action_index) = hand.iter().position(|candidate| *candidate == card_index)
             else {
@@ -16833,6 +20371,153 @@ fn simulate_prepared_episode_condition(
                     continue;
                 }
                 break;
+            }
+            if let TurnAction::CastModalFace { face_index, .. } = action {
+                let Some((face, _)) = exact_modal_cast_face(card, face_index) else {
+                    planned_cast_queue.clear();
+                    break;
+                };
+                let Some(face_cost) = exact_modal_face_mana_cost(card, face_index) else {
+                    planned_cast_queue.clear();
+                    break;
+                };
+                if should_hold_reviewed_sequence_piece(
+                    deck,
+                    card_index,
+                    &hand,
+                    &line_zones,
+                    turn,
+                    &mana_pool,
+                    mana_access,
+                    prospective_generic_tax,
+                ) {
+                    planned_cast_queue.clear();
+                    break;
+                }
+                if rule_of_law_blocks_next_spell(&mut isolated, turn, spells_cast_this_turn) {
+                    planned_cast_queue.clear();
+                    continue;
+                }
+                isolated.observe_opportunity(InteractionScenario::GenericTaxStax);
+                let generic_tax = if isolated.is(InteractionScenario::GenericTaxStax) {
+                    isolated.activate(turn, 1);
+                    1
+                } else {
+                    0
+                };
+                if !pay_modal_face_cost(
+                    deck,
+                    &line_zones,
+                    &mut mana_pool,
+                    card_index,
+                    face_index,
+                    &face_cost,
+                    generic_tax,
+                ) {
+                    planned_cast_queue.clear();
+                    break;
+                }
+                if !mana_pool.settle_pending_source_damage(&mut player_life) {
+                    return isolated.finish(EpisodeOutcome {
+                        threat_turn: first_credible_threat_turn,
+                        first_win_attempt_turn,
+                        resolved_table_win_turn: None,
+                        timing_provenance,
+                        first_attempt_opportunity,
+                        first_attempt_stopped,
+                        recovered: recovered_attempt,
+                        final_life: player_life,
+                        player_died: true,
+                    });
+                }
+                hand.swap_remove(action_index);
+                committed_actions = committed_actions.saturating_add(1);
+                spells_cast_this_turn = spells_cast_this_turn.saturating_add(1);
+                if !apply_controller_spell_cast_triggers_for_face(
+                    deck,
+                    &mut line_zones,
+                    card_index,
+                    Some(face_index),
+                    turn,
+                    spells_cast_this_turn,
+                    &mut mana_pool,
+                    &mut player_life,
+                ) {
+                    return isolated.finish(EpisodeOutcome {
+                        threat_turn: first_credible_threat_turn,
+                        first_win_attempt_turn,
+                        resolved_table_win_turn: None,
+                        timing_provenance,
+                        first_attempt_opportunity,
+                        first_attempt_stopped,
+                        recovered: recovered_attempt,
+                        final_life: player_life,
+                        player_died: true,
+                    });
+                }
+
+                let relevant_spell = scenario_relevant_spell(card);
+                if relevant_spell {
+                    isolated.observe_opportunity(InteractionScenario::FirstRelevantSpellCountered);
+                }
+                if isolated.is(InteractionScenario::FirstRelevantSpellCountered)
+                    && !isolated.applied()
+                    && relevant_spell
+                {
+                    isolated.activate(turn, 1);
+                    line_zones.push_graveyard_card(card_index);
+                    line_zones.advance_sequence();
+                    planned_cast_queue.clear();
+                    continue;
+                }
+
+                let types = compile_card_types(&face.type_line);
+                let entry_sequence = line_zones.next_sequence;
+                let entered_battlefield = if types.is_instant || types.is_sorcery {
+                    line_zones.record_spell_cast_event(card_index, turn);
+                    line_zones.push_graveyard_card(card_index);
+                    line_zones.advance_sequence();
+                    false
+                } else {
+                    line_zones.record_modal_face_permanent_cast(deck, card_index, face_index, turn)
+                };
+                if !(entered_battlefield || types.is_instant || types.is_sorcery) {
+                    planned_cast_queue.clear();
+                    break;
+                }
+                if entered_battlefield && types.is_creature {
+                    creature_count = creature_count.saturating_add(1);
+                }
+                mana_pool.refresh_battlefield_sources(
+                    deck,
+                    &line_zones,
+                    active_ability_context(deck, &line_zones),
+                );
+                if generic_tax > 0 {
+                    isolated.add_affected_event();
+                }
+
+                let targetable = entered_battlefield && scenario_targetable_permanent(card);
+                if targetable {
+                    isolated.observe_opportunity(InteractionScenario::TargetedPermanentRemoval);
+                }
+                if isolated.is(InteractionScenario::TargetedPermanentRemoval)
+                    && targetable
+                    && isolated.activate(turn, 1)
+                    && line_zones
+                        .remove_permanent_sequence(deck, entry_sequence, true)
+                        .is_some()
+                    && types.is_creature
+                {
+                    creature_count = creature_count.saturating_sub(1);
+                }
+                if isolated.is(InteractionScenario::GenericTaxStax) {
+                    isolated.recover(turn);
+                }
+                synchronize_mana_sources_with_battlefield(&mut mana_sources, &line_zones);
+                synchronize_turn_pool_with_battlefield(&mut mana_pool, &line_zones);
+                planned_cast_queue.clear();
+                continue;
             }
             let typed_burst_card_access = compile_typed_burst_card_access_program(card);
             let atomic_transaction = compile_typed_atomic_transaction(card);
@@ -17160,22 +20845,25 @@ fn simulate_prepared_episode_condition(
                     };
                     atomic_resolution = resolution;
                 } else {
-                    atomic_resolution = execute_atomic_spell_resolution_with_choice(
-                        transaction,
-                        commit.pre_resolution_graveyard_count,
-                        commit.pre_resolution_source_name_matches,
-                        commit.choice,
-                        deck,
-                        mana_access,
-                        &mut order,
-                        position,
-                        &mut hand,
-                        turn,
-                        &mut mana_pool,
-                        &mut rng,
-                        &mut line_zones,
-                        generic_tax,
-                    );
+                    atomic_resolution =
+                        execute_atomic_spell_resolution_with_choice_and_intuition_model(
+                            transaction,
+                            card_index,
+                            commit.pre_resolution_graveyard_count,
+                            commit.pre_resolution_source_name_matches,
+                            commit.choice,
+                            &runtime_model.intuition,
+                            deck,
+                            mana_access,
+                            &mut order,
+                            position,
+                            &mut hand,
+                            turn,
+                            &mut mana_pool,
+                            &mut rng,
+                            &mut line_zones,
+                            generic_tax,
+                        );
                 }
                 false
             } else if let Some(kind) = conditional_mana_source.filter(|kind| kind.is_entry_linked())
@@ -17211,117 +20899,94 @@ fn simulate_prepared_episode_condition(
                     &mut mana_pool,
                     &mut rng,
                     ability_context,
-                    &line_zones,
+                    &mut line_zones,
                 )
             };
-            let mut nested_target_to_resolve = None;
+            let mut pending_nested_cast = None;
             if let Some(target_index) = atomic_resolution.free_cast_offer {
-                let target_supported = deck
-                    .cards
-                    .get(target_index)
-                    .is_some_and(nested_free_cast_is_supported);
+                let target_supported = nested_free_cast_is_supported(deck, target_index);
                 let rule_blocked = target_supported
                     && rule_of_law_blocks_next_spell(&mut isolated, turn, spells_cast_this_turn);
-                let mut cast_succeeded = false;
                 if target_supported && !rule_blocked {
-                    let mut candidate_pool = mana_pool.clone();
-                    if candidate_pool.pay_with_generic_adjustment(
-                        None,
-                        0,
+                    pending_nested_cast = stage_pending_nested_free_cast(
+                        deck,
+                        target_index,
+                        turn,
                         generic_tax,
-                        generic_spell_cost_reduction(deck, &line_zones, target_index),
-                        0,
-                    ) {
-                        mana_pool = candidate_pool;
-                        if generic_tax > 0 {
-                            isolated.add_affected_event();
-                        }
-                        if !mana_pool.settle_pending_source_damage(&mut player_life) {
-                            return isolated.finish(EpisodeOutcome {
-                                threat_turn: first_credible_threat_turn,
-                                first_win_attempt_turn,
-                                resolved_table_win_turn: None,
-                                timing_provenance,
-                                first_attempt_opportunity,
-                                first_attempt_stopped,
-                                recovered: recovered_attempt,
-                                final_life: player_life,
-                                player_died: true,
-                            });
-                        }
-                        spells_cast_this_turn = spells_cast_this_turn.saturating_add(1);
-                        if !apply_controller_spell_cast_triggers(
-                            deck,
-                            &mut line_zones,
-                            target_index,
-                            turn,
-                            spells_cast_this_turn,
-                            &mut mana_pool,
-                            &mut player_life,
-                        ) {
-                            return isolated.finish(EpisodeOutcome {
-                                threat_turn: first_credible_threat_turn,
-                                first_win_attempt_turn,
-                                resolved_table_win_turn: None,
-                                timing_provenance,
-                                first_attempt_opportunity,
-                                first_attempt_stopped,
-                                recovered: recovered_attempt,
-                                final_life: player_life,
-                                player_died: true,
-                            });
-                        }
-                        nested_target_to_resolve = Some(target_index);
-                        cast_succeeded = true;
+                        &mut line_zones,
+                        &mut mana_pool,
+                        &mut spells_cast_this_turn,
+                        &mut player_life,
+                    );
+                    if pending_nested_cast.is_some() && generic_tax > 0 {
+                        isolated.add_affected_event();
                     }
                 }
-                if !cast_succeeded {
+                if pending_nested_cast.is_none() {
                     hand.push(target_index);
                 }
             }
-            if atomic_commit.is_some() {
+            if atomic_commit.is_some() && !atomic_resolution.source_finalized {
                 // Atomic source spells remain on the stack throughout their
                 // ordered resolution. In particular, Beseech's offered card
                 // is cast before Beseech itself reaches the graveyard.
                 line_zones.record_cast(deck, card_index, turn);
             }
-            if let Some(target_index) = nested_target_to_resolve {
+            if let Some(pending) = pending_nested_cast {
                 // Casting the offered spell happens during Beseech's
                 // resolution, but that spell cannot resolve until Beseech has
                 // finished and left the stack. Preserve that exact ordering
                 // for graveyard-sensitive effects and ordered line evidence.
-                let target = &deck.cards[target_index];
-                line_zones.record_cast(deck, target_index, turn);
-                let ability_context = active_ability_context(deck, &line_zones);
-                let nested_consumed_source = apply_cast_mana_effects(
+                if pending_nested_free_cast_is_countered(
                     deck,
-                    target_index,
-                    target,
-                    mana_access,
+                    pending,
                     turn,
-                    &mut mana_sources,
-                    &mut mana_pool,
-                    &mut rng,
-                    ability_context,
-                    &line_zones,
-                );
-                if nested_consumed_source {
-                    line_zones.remove_named_permanent(deck, &target.normalized_name, true);
-                } else if card_has_persistent_body(target) {
-                    apply_roles(
-                        target.roles,
-                        &mut engine_count,
-                        &mut enabler_count,
-                        &mut payoff_count,
-                        &mut creature_count,
-                        &mut protection_count,
+                    &mut line_zones,
+                    &mut isolated,
+                ) {
+                    planned_cast_queue.clear();
+                    changes_observable_plan = true;
+                } else if resolve_pending_nested_free_cast(deck, pending, turn, &mut line_zones)
+                    .is_some()
+                {
+                    let target_index = pending.card_index;
+                    let target = &deck.cards[target_index];
+                    let ability_context = active_ability_context(deck, &line_zones);
+                    let nested_consumed_source = apply_cast_mana_effects(
+                        deck,
+                        target_index,
+                        target,
+                        mana_access,
+                        turn,
+                        &mut mana_sources,
+                        &mut mana_pool,
+                        &mut rng,
+                        ability_context,
+                        &mut line_zones,
                     );
+                    if !nested_consumed_source && card_has_persistent_body(target) {
+                        apply_roles(
+                            target.roles,
+                            &mut engine_count,
+                            &mut enabler_count,
+                            &mut payoff_count,
+                            &mut creature_count,
+                            &mut protection_count,
+                        );
+                    }
+                    if target.effects.recursion {
+                        recursion_count = recursion_count.saturating_add(1);
+                    }
+                    creature_count =
+                        creature_count.saturating_add(immediate_creature_tokens(target));
+                    extra_turn_credit =
+                        extra_turn_credit.saturating_add(immediate_extra_turns(target));
+                    changes_observable_plan = true;
+                } else {
+                    let _ = counter_pending_nested_free_cast(deck, pending, &mut line_zones);
+                    planned_cast_queue.clear();
+                    changes_observable_plan = true;
                 }
-                if target.effects.recursion {
-                    recursion_count = recursion_count.saturating_add(1);
-                }
-                creature_count = creature_count.saturating_add(immediate_creature_tokens(target));
-                extra_turn_credit = extra_turn_credit.saturating_add(immediate_extra_turns(target));
             }
             mana_pool.refresh_battlefield_sources(
                 deck,
@@ -17330,7 +20995,6 @@ fn simulate_prepared_episode_condition(
             );
             if consumed_mana_source {
                 changes_observable_plan = true;
-                line_zones.remove_named_permanent(deck, &card.normalized_name, true);
             }
             if typed_overrun_cast {
                 resolve_typed_overrun_creature_tutor(
@@ -17350,7 +21014,7 @@ fn simulate_prepared_episode_condition(
                     &mut protection_count,
                 );
             } else if atomic_transaction.is_none() && conditional_mana_source.is_none() {
-                execute_tutor_on_resolution(
+                let resolved_tutor_life_loss = execute_tutor_on_resolution(
                     deck,
                     card,
                     mana_access,
@@ -17369,7 +21033,7 @@ fn simulate_prepared_episode_condition(
                     &mut protection_count,
                     0,
                 );
-                player_life -= f32::from(card.effects.tutor.life_loss_after_resolution);
+                player_life -= f32::from(resolved_tutor_life_loss.unwrap_or_default());
                 if player_life <= 0.0 {
                     return isolated.finish(EpisodeOutcome {
                         threat_turn: first_credible_threat_turn,
@@ -17383,6 +21047,17 @@ fn simulate_prepared_episode_condition(
                         player_died: true,
                     });
                 }
+            }
+            if entry_resolution.entered_battlefield {
+                resolve_reviewed_permanent_entry_scry(
+                    deck,
+                    card,
+                    &hand,
+                    &line_zones,
+                    turn,
+                    &mut order,
+                    position,
+                );
             }
             if let Some(program) = typed_burst_card_access {
                 let resolution = execute_typed_burst_card_access(
@@ -17408,8 +21083,18 @@ fn simulate_prepared_episode_condition(
                     });
                 }
             } else {
+                resolve_immediate_spell_scries(
+                    deck,
+                    card,
+                    &hand,
+                    &line_zones,
+                    turn,
+                    &mut order,
+                    position,
+                );
                 resolve_immediate_spell_draws(card, &mut hand, &order, &mut position);
             }
+            resolve_reviewed_modal_graveyard_return(deck, card_index, &mut hand, &mut line_zones);
             if card.effects.recursion && !graveyard_suppressed {
                 recursion_count = recursion_count.saturating_add(1);
             }
@@ -17441,25 +21126,32 @@ fn simulate_prepared_episode_condition(
             if targeted_permanent_checkpoint {
                 isolated.observe_opportunity(InteractionScenario::TargetedPermanentRemoval);
             }
+            let ward_counters_removal = targeted_permanent_checkpoint
+                && table_activity_timeline
+                    .turn(turn)
+                    .and_then(first_table_response_payment)
+                    .is_some_and(|payment| ward_counters_targeted_removal(card, payment));
             if isolated.is(InteractionScenario::TargetedPermanentRemoval)
                 && targeted_permanent_checkpoint
                 && isolated.activate(turn, 1)
             {
-                if !consumed_mana_source {
-                    remove_roles(
-                        card.roles,
-                        &mut engine_count,
-                        &mut enabler_count,
-                        &mut payoff_count,
-                        &mut creature_count,
-                        &mut protection_count,
-                    );
+                if !ward_counters_removal {
+                    if !consumed_mana_source {
+                        remove_roles(
+                            card.roles,
+                            &mut engine_count,
+                            &mut enabler_count,
+                            &mut payoff_count,
+                            &mut creature_count,
+                            &mut protection_count,
+                        );
+                    }
+                    if card.effects.recursion {
+                        recursion_count = recursion_count.saturating_sub(1);
+                    }
+                    mana_sources.truncate(mana_sources_before);
+                    line_zones.remove_named_permanent(deck, &card.normalized_name, false);
                 }
-                if card.effects.recursion {
-                    recursion_count = recursion_count.saturating_sub(1);
-                }
-                mana_sources.truncate(mana_sources_before);
-                line_zones.remove_named_permanent(deck, &card.normalized_name, false);
                 planned_cast_queue.clear();
             }
             if changes_observable_plan {
@@ -17503,7 +21195,7 @@ fn simulate_prepared_episode_condition(
                 mana_access,
                 land_index,
                 turn,
-                &hand,
+                &mut hand,
                 &mut order,
                 position,
                 &mut rng,
@@ -17697,7 +21389,7 @@ fn simulate_prepared_episode_condition(
             stage_reviewed_empty_library_win_candidate(deck, &order, position, &line_zones, turn);
         let ready_line_index = pending_strict_win_candidate
             .map(|candidate| candidate.line_index)
-            .or(executed_graveyard_storm_line)
+            .or(executed_graveyard_storm_line.map(|execution| execution.line_index))
             .or_else(|| {
                 if combat_table_lethal_ready {
                     return None;
@@ -17834,16 +21526,19 @@ fn simulate_prepared_episode_condition(
                 first_attempt_opportunity = true;
                 isolated.observe_opportunity(InteractionScenario::FirstWinAttemptStopped);
 
-                let isolated_first_attempt_stop = isolated
-                    .is(InteractionScenario::FirstWinAttemptStopped)
+                let opponents_are_restricted =
+                    opponents_cannot_interact_during_controller_turn(deck, &line_zones);
+                let isolated_first_attempt_stop = !opponents_are_restricted
+                    && isolated.is(InteractionScenario::FirstWinAttemptStopped)
                     && !isolated.applied()
                     && isolated.activate(turn, 1);
                 let hand_protection = payable_hand_protection(deck, &hand, mana_access, &mana_pool);
                 let effective_protection =
                     protection_count.saturating_add(u8::from(hand_protection.is_some()));
-                let opponent_would_interact = opponent_rolls.stops_attempt(profile, 0);
-                let opponent_stops_attempt =
-                    opponent_rolls.stops_attempt(profile, effective_protection);
+                let opponent_would_interact =
+                    !opponents_are_restricted && opponent_rolls.stops_attempt(profile, 0);
+                let opponent_stops_attempt = !opponents_are_restricted
+                    && opponent_rolls.stops_attempt(profile, effective_protection);
                 if opponent_would_interact {
                     consume_paid_hand_protection(
                         &mut hand,
@@ -17928,7 +21623,8 @@ fn simulate_prepared_episode_condition(
                             deck,
                             &mut line_zones,
                             activity,
-                            &combat_state,
+                            &mut combat_state,
+                            &mut opponent_libraries,
                             &mut hand,
                             &order,
                             &mut position,
@@ -17959,7 +21655,12 @@ fn simulate_prepared_episode_condition(
                             &mut rng,
                             &mut line_zones,
                             &mut treasure_reserve,
+                            &mut engine_count,
+                            &mut enabler_count,
+                            &mut payoff_count,
                             &mut creature_count,
+                            &mut protection_count,
+                            &mut recursion_count,
                             &mut player_life,
                             &mut isolated,
                         ) {
@@ -18002,6 +21703,138 @@ fn simulate_prepared_episode_condition(
             ) && isolated.applied()
             {
                 isolated.recover(turn);
+            }
+
+            let resolved_graveyard_storm = executed_graveyard_storm_line
+                .filter(|execution| structural_table_lethal_line == Some(execution.line_index));
+            if let Some(execution) = resolved_graveyard_storm {
+                let active_opponents =
+                    OpponentId::ALL.map(|opponent| combat_state.is_opponent_active(opponent));
+                let Some(saturation) = opponent_libraries.saturate_active_opponents(
+                    active_opponents,
+                    execution.recurrence,
+                    execution.self_library_cards_committed,
+                ) else {
+                    return isolated.finish(EpisodeOutcome {
+                        threat_turn: first_credible_threat_turn,
+                        first_win_attempt_turn,
+                        resolved_table_win_turn: None,
+                        timing_provenance,
+                        first_attempt_opportunity,
+                        first_attempt_stopped,
+                        recovered: recovered_attempt,
+                        final_life: player_life,
+                        player_died: false,
+                    });
+                };
+                debug_assert!(
+                    !combat_state.evaluate_terminal().is_table_win(),
+                    "library exhaustion alone cannot be a resolved table win"
+                );
+                debug_assert!(
+                    opponent_libraries
+                        .draw_loss_receipts()
+                        .into_iter()
+                        .all(|receipt| receipt.is_none()),
+                    "saturation must not invent an empty-library draw attempt"
+                );
+
+                // Breach sacrifices itself at the beginning of the next end
+                // step. Opponents then take their modeled turns in stable
+                // order. Each normal draw is a real CR 104.3c attempt against
+                // the exhausted opaque library, and CR 704.5b removes that
+                // opponent before any later spell activity.
+                if !resolve_post_graveyard_storm_controller_draw(
+                    &line_zones,
+                    &mut hand,
+                    &order,
+                    &mut position,
+                ) {
+                    return isolated.finish(EpisodeOutcome {
+                        threat_turn: first_credible_threat_turn,
+                        first_win_attempt_turn,
+                        resolved_table_win_turn: None,
+                        timing_provenance,
+                        first_attempt_opportunity,
+                        first_attempt_stopped,
+                        recovered: recovered_attempt,
+                        final_life: player_life,
+                        player_died: true,
+                    });
+                }
+                deliver_due_delayed_card_access(&mut hand, &mut pending_delayed_card_access, turn);
+                let removed = resolve_beginning_of_end_step_self_sacrifices(
+                    deck,
+                    &mut line_zones,
+                    &mut mana_sources,
+                );
+                remove_persistent_contributions(
+                    deck,
+                    &removed,
+                    &mut commanders_cast,
+                    &mut engine_count,
+                    &mut enabler_count,
+                    &mut payoff_count,
+                    &mut creature_count,
+                    &mut protection_count,
+                    &mut recursion_count,
+                );
+                discard_to_maximum_hand_size(
+                    deck,
+                    mana_access,
+                    &mut hand,
+                    order.get(position..).unwrap_or_default(),
+                    &mut line_zones,
+                    &mana_sources,
+                    turn,
+                    treasure_reserve,
+                );
+                let activity = table_activity_timeline
+                    .turn(turn)
+                    .expect("table activity timeline covers every simulated turn");
+                if !apply_table_turn_activity_with_end_steps(
+                    deck,
+                    &mut line_zones,
+                    activity,
+                    &mut combat_state,
+                    &mut opponent_libraries,
+                    &mut hand,
+                    &order,
+                    &mut position,
+                    &mut treasure_reserve,
+                    &mut player_life,
+                ) {
+                    return isolated.finish(EpisodeOutcome {
+                        threat_turn: first_credible_threat_turn,
+                        first_win_attempt_turn,
+                        resolved_table_win_turn: None,
+                        timing_provenance,
+                        first_attempt_opportunity,
+                        first_attempt_stopped,
+                        recovered: recovered_attempt,
+                        final_life: player_life,
+                        player_died: true,
+                    });
+                }
+                let draw_loss_receipts = opponent_libraries.draw_loss_receipts();
+                let all_saturated_opponents_lost_to_draw =
+                    OpponentId::ALL.into_iter().all(|opponent| {
+                        !saturation.active_opponents[opponent.index()]
+                            || draw_loss_receipts[opponent.index()].is_some()
+                    });
+                let resolved_table_win = all_saturated_opponents_lost_to_draw
+                    && combat_state.evaluate_terminal().is_table_win();
+                return isolated.finish(EpisodeOutcome {
+                    threat_turn: first_credible_threat_turn,
+                    first_win_attempt_turn,
+                    resolved_table_win_turn: resolved_table_win.then_some(turn),
+                    timing_provenance,
+                    first_attempt_opportunity,
+                    first_attempt_stopped,
+                    recovered: recovered_attempt,
+                    final_life: player_life,
+                    player_died: false,
+                });
             }
 
             let typed_table_win_resolved = matches!(
@@ -18074,7 +21907,8 @@ fn simulate_prepared_episode_condition(
                 deck,
                 &mut line_zones,
                 activity,
-                &combat_state,
+                &mut combat_state,
+                &mut opponent_libraries,
                 &mut hand,
                 &order,
                 &mut position,
@@ -18105,7 +21939,12 @@ fn simulate_prepared_episode_condition(
                 &mut rng,
                 &mut line_zones,
                 &mut treasure_reserve,
+                &mut engine_count,
+                &mut enabler_count,
+                &mut payoff_count,
                 &mut creature_count,
+                &mut protection_count,
+                &mut recursion_count,
                 &mut player_life,
                 &mut isolated,
             ) {
@@ -18863,6 +22702,7 @@ fn plain_executable_ability_root_is_complete(card: &CompiledCard, expected_count
         && program.self_transfer_tutor_permanent.is_none()
         && program.entry_linked_permanent.is_none()
         && program.atomic_transaction.is_none()
+        && program.graveyard_reclamation.is_none()
         && program.face_programs.is_empty()
 }
 
@@ -19204,6 +23044,13 @@ fn exact_mill_storm_spell(card: &CompiledCard) -> Option<u8> {
         .filter(|count| *count == 3)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExecutedGraveyardStormLine {
+    line_index: usize,
+    recurrence: FiniteMillRecurrenceReceipt,
+    self_library_cards_committed: u16,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_ready_graveyard_storm_line(
     deck: &CompiledDeck,
@@ -19219,29 +23066,35 @@ fn execute_ready_graveyard_storm_line(
     additional_generic_per_cast: u8,
     rule_of_law: bool,
     graveyard_shutdown: bool,
-) -> Option<usize> {
+) -> Option<ExecutedGraveyardStormLine> {
     for require_table_lethal in [true, false] {
         for (line_index, line) in deck.known_lines.iter().enumerate() {
             if line.table_lethal_if_resolved != require_table_lethal {
                 continue;
             }
-            if execute_graveyard_storm_transaction(
-                line,
-                deck,
-                hand,
-                library_order,
-                next_draw_position,
-                zones,
-                turn,
-                mana_access,
-                mana_pool,
-                spells_cast_this_turn,
-                player_life,
-                additional_generic_per_cast,
-                rule_of_law,
-                graveyard_shutdown,
-            ) {
-                return Some(line_index);
+            if let Some((recurrence, self_library_cards_committed)) =
+                execute_graveyard_storm_transaction_with_receipt(
+                    line,
+                    deck,
+                    hand,
+                    library_order,
+                    next_draw_position,
+                    zones,
+                    turn,
+                    mana_access,
+                    mana_pool,
+                    spells_cast_this_turn,
+                    player_life,
+                    additional_generic_per_cast,
+                    rule_of_law,
+                    graveyard_shutdown,
+                )
+            {
+                return Some(ExecutedGraveyardStormLine {
+                    line_index,
+                    recurrence,
+                    self_library_cards_committed,
+                });
             }
         }
     }
@@ -19261,7 +23114,31 @@ fn execute_graveyard_storm_under_isolated_scenario(
     spells_cast_this_turn: &mut u8,
     player_life: &mut f32,
     isolated: &mut IsolatedScenarioRuntime,
-) -> Option<usize> {
+) -> Option<ExecutedGraveyardStormLine> {
+    if isolated.is(InteractionScenario::FirstWinAttemptStopped) && !isolated.applied() {
+        let mut preview_hand = hand.clone();
+        let mut preview_library = library_order.clone();
+        let mut preview_zones = zones.clone();
+        let mut preview_pool = mana_pool.clone();
+        let mut preview_spell_count = *spells_cast_this_turn;
+        let mut preview_life = *player_life;
+        return execute_ready_graveyard_storm_line(
+            deck,
+            &mut preview_hand,
+            &mut preview_library,
+            next_draw_position,
+            &mut preview_zones,
+            turn,
+            mana_access,
+            &mut preview_pool,
+            &mut preview_spell_count,
+            &mut preview_life,
+            0,
+            false,
+            false,
+        );
+    }
+
     let rule_of_law = isolated.is(InteractionScenario::RuleOfLawCap);
     let graveyard_shutdown = isolated.is(InteractionScenario::GraveyardShutdown);
     let generic_tax = isolated.is(InteractionScenario::GenericTaxStax);
@@ -19324,7 +23201,7 @@ fn execute_graveyard_storm_under_isolated_scenario(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_graveyard_storm_transaction(
+fn execute_graveyard_storm_transaction_with_receipt(
     line: &crate::domain::KnownLine,
     deck: &CompiledDeck,
     hand: &mut Vec<usize>,
@@ -19339,16 +23216,12 @@ fn execute_graveyard_storm_transaction(
     additional_generic_per_cast: u8,
     rule_of_law: bool,
     graveyard_shutdown: bool,
-) -> bool {
+) -> Option<(FiniteMillRecurrenceReceipt, u16)> {
     if rule_of_law || graveyard_shutdown {
-        return false;
+        return None;
     }
-    let Some(program) = compile_graveyard_storm_program(line, deck) else {
-        return false;
-    };
-    let Some(mana_access) = mana_access else {
-        return false;
-    };
+    let program = compile_graveyard_storm_program(line, deck)?;
+    let mana_access = mana_access?;
 
     let mut candidate_hand = hand.clone();
     let mut candidate_library = library_order.clone();
@@ -19368,86 +23241,77 @@ fn execute_graveyard_storm_transaction(
         &mut candidate_life,
         additional_generic_per_cast,
     ) {
-        return false;
+        return None;
     }
+    let recurrence = prove_finite_breach_mill_recurrence(
+        u16::from(candidate_spell_count),
+        candidate_library.len().saturating_sub(next_draw_position),
+        MAXIMUM_TABLE_SATURATION_PACKETS,
+    )?;
+    let initial_library_len = candidate_library.len();
+    let initial_physical_card_count = graveyard_storm_physical_card_count(
+        &candidate_hand,
+        &candidate_library,
+        next_draw_position,
+        &candidate_zones,
+    )?;
 
     let self_target_resolutions = usize::from(
         u16::from(program.exile_count)
             .saturating_mul(2)
             .div_ceil(u16::from(program.mill_per_resolution)),
     );
-    let Some(first_mill) = execute_graveyard_storm_iteration(
-        deck,
-        program,
-        &mut candidate_hand,
-        &mut candidate_library,
-        next_draw_position,
-        &mut candidate_zones,
-        turn,
-        mana_access,
-        &mut candidate_pool,
-        &mut candidate_spell_count,
-        &mut candidate_life,
-        additional_generic_per_cast,
-        self_target_resolutions,
-    ) else {
-        return false;
-    };
-    let first_fodder = graveyard_storm_fodder_count(&candidate_zones, program);
-    let first_mana = candidate_pool.total();
-
-    let Some(second_mill) = execute_graveyard_storm_iteration(
-        deck,
-        program,
-        &mut candidate_hand,
-        &mut candidate_library,
-        next_draw_position,
-        &mut candidate_zones,
-        turn,
-        mana_access,
-        &mut candidate_pool,
-        &mut candidate_spell_count,
-        &mut candidate_life,
-        additional_generic_per_cast,
-        self_target_resolutions,
-    ) else {
-        return false;
-    };
-    let second_fodder = graveyard_storm_fodder_count(&candidate_zones, program);
-    if second_mill < first_mill
-        || second_fodder < first_fodder
-        || candidate_pool.total() < first_mana
+    let recurrence_iterations = usize::from(recurrence.recurrence_iterations);
+    let expected_self_library_cards = usize::from(recurrence.self_library_cards_required);
+    let expected_cards_per_iteration =
+        expected_self_library_cards.checked_div(recurrence_iterations)?;
+    if expected_cards_per_iteration.checked_mul(recurrence_iterations)?
+        != expected_self_library_cards
     {
-        return false;
+        return None;
     }
-
-    // Prove one more complete recurrence on a private clone. The third
-    // iteration is not committed; it establishes that the two real iterations
-    // did not merely consume a finite pile and stop.
-    let mut proof_hand = candidate_hand.clone();
-    let mut proof_library = candidate_library.clone();
-    let mut proof_zones = candidate_zones.clone();
-    let mut proof_pool = candidate_pool.clone();
-    let mut proof_spell_count = candidate_spell_count;
-    let mut proof_life = candidate_life;
-    if execute_graveyard_storm_iteration(
-        deck,
-        program,
-        &mut proof_hand,
-        &mut proof_library,
-        next_draw_position,
-        &mut proof_zones,
-        turn,
-        mana_access,
-        &mut proof_pool,
-        &mut proof_spell_count,
-        &mut proof_life,
-        additional_generic_per_cast,
-        self_target_resolutions,
-    )
-    .is_none()
+    let mut self_library_cards_committed = 0usize;
+    for _ in 0..recurrence_iterations {
+        let iteration_cards = execute_graveyard_storm_iteration(
+            deck,
+            program,
+            &mut candidate_hand,
+            &mut candidate_library,
+            next_draw_position,
+            &mut candidate_zones,
+            turn,
+            mana_access,
+            &mut candidate_pool,
+            &mut candidate_spell_count,
+            &mut candidate_life,
+            additional_generic_per_cast,
+            self_target_resolutions,
+        )?;
+        if iteration_cards != expected_cards_per_iteration {
+            return None;
+        }
+        self_library_cards_committed = self_library_cards_committed.checked_add(iteration_cards)?;
+    }
+    let physical_library_movement = initial_library_len.checked_sub(candidate_library.len())?;
+    let expected_next_card = library_order
+        .get(next_draw_position.checked_add(expected_self_library_cards)?)
+        .copied();
+    if self_library_cards_committed != expected_self_library_cards
+        || physical_library_movement != expected_self_library_cards
+        || candidate_library.get(..next_draw_position) != library_order.get(..next_draw_position)
+        || candidate_library.get(next_draw_position).copied() != expected_next_card
+        || graveyard_storm_physical_card_count(
+            &candidate_hand,
+            &candidate_library,
+            next_draw_position,
+            &candidate_zones,
+        )? != initial_physical_card_count
     {
-        return false;
+        return None;
+    }
+    let self_library_cards_committed = u16::try_from(self_library_cards_committed).ok()?;
+    if self_library_cards_committed != recurrence.self_library_cards_required {
+        return None;
     }
 
     *hand = candidate_hand;
@@ -19456,7 +23320,22 @@ fn execute_graveyard_storm_transaction(
     *mana_pool = candidate_pool;
     *spells_cast_this_turn = candidate_spell_count;
     *player_life = candidate_life;
-    true
+    Some((recurrence, self_library_cards_committed))
+}
+
+fn graveyard_storm_physical_card_count(
+    hand: &[usize],
+    library_order: &[usize],
+    next_draw_position: usize,
+    zones: &KnownLineZoneState,
+) -> Option<usize> {
+    library_order
+        .len()
+        .checked_sub(next_draw_position)?
+        .checked_add(hand.len())?
+        .checked_add(zones.battlefield.len())?
+        .checked_add(zones.graveyard.len())?
+        .checked_add(zones.exile.len())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -19777,21 +23656,6 @@ fn exile_graveyard_fodder(zones: &mut KnownLineZoneState, program: GraveyardStor
     }
     *zones = candidate;
     true
-}
-
-fn graveyard_storm_fodder_count(
-    zones: &KnownLineZoneState,
-    program: GraveyardStormProgram,
-) -> usize {
-    zones
-        .graveyard
-        .iter()
-        .filter(|card_index| {
-            **card_index != program.permission_source
-                && **card_index != program.mana_source
-                && **card_index != program.mill_spell
-        })
-        .count()
 }
 
 fn battlefield_contains(zones: &KnownLineZoneState, card_index: usize) -> bool {
@@ -20574,6 +24438,11 @@ fn typed_battlefield_mana_source(
         ),
     };
     let is_land = card.effects.card_types.is_land;
+    let behavior = if is_land && behavior == BattlefieldManaBehavior::Fixed {
+        BattlefieldManaBehavior::NativeLand(colors)
+    } else {
+        behavior
+    };
     Some(BattlefieldManaSource {
         colors,
         capacity,
@@ -20654,58 +24523,155 @@ fn add_battlefield_source_to_current_pool(
     pool.refresh_battlefield_sources(deck, zones, context);
 }
 
-fn reviewed_fetchland(card: &CompiledCard) -> Option<ReviewedFetchland> {
-    if !card.effects.card_types.is_land
-        || card.ability_program.abilities.len() != 1
-        || card.ability_program.entry_linked_permanent.is_some()
-        || card.ability_program.atomic_transaction.is_some()
-        || !card.ability_program.face_programs.is_empty()
-    {
-        return None;
+fn materialize_reviewed_granted_land_sources(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+    turn: u8,
+    pool: &mut TurnManaPool,
+) {
+    let (lands_have_any_color, globally_granted_land_colors) =
+        active_mana_network_land_grants(deck, zones);
+    if !lands_have_any_color && globally_granted_land_colors.is_empty() {
+        return;
     }
 
-    // The reviewed lifecycle is the exact allied/enemy fetchland activation:
-    // tapping, paying one life, and sacrificing the source are all mandatory.
-    // Omitting the `{T}, ` prefix previously made real Scryfall Oracle text
-    // fail recognition because the activation cost was incomplete.
-    const PREFIX: &str = "{t}, pay 1 life, sacrifice this permanent: search your library for ";
-    const SUFFIX: &str = " card, put it onto the battlefield, then shuffle";
-    let mut descriptor = None;
-    for ability in &card.ability_program.abilities {
-        let normalized_oracle = match ability {
-            AbilityCompilation::Executable(ability) => ability.normalized_oracle.as_str(),
-            AbilityCompilation::Unsupported(ability) => ability.normalized_oracle.as_str(),
-        };
-        let lower = normalized_oracle
-            .trim()
-            .trim_end_matches('.')
-            .to_ascii_lowercase();
-        let Some(subtypes_with_article) = lower
-            .strip_prefix(PREFIX)
-            .and_then(|text| text.strip_suffix(SUFFIX))
-        else {
+    for presence in &zones.battlefield {
+        let Some(card) = deck.cards.get(presence.card_index) else {
             continue;
         };
-        let Some(subtypes) = subtypes_with_article
-            .strip_prefix("a ")
-            .or_else(|| subtypes_with_article.strip_prefix("an "))
-        else {
-            continue;
-        };
-        let Some((first, second)) = subtypes.split_once(" or ") else {
-            continue;
-        };
-        let candidate = ReviewedFetchland {
-            first_subtype: BasicLandSubtype::parse(first)?,
-            second_subtype: BasicLandSubtype::parse(second)?,
-        };
-        if candidate.first_subtype == candidate.second_subtype
-            || descriptor.replace(candidate).is_some()
+        if !battlefield_card_types(card, zones, presence.sequence).is_land
+            || pool
+                .sources
+                .iter()
+                .any(|source| source.origin_sequence == Some(presence.sequence))
         {
-            return None;
+            continue;
         }
+        let native = battlefield_land_source(deck, None, presence.card_index, turn);
+        if native.available_from_turn > turn && presence.entered_turn >= turn {
+            continue;
+        }
+        let (colors, behavior, capacity) = if native.reliability >= 0.999 {
+            (native.colors, native.behavior, native.capacity)
+        } else {
+            (
+                ManaColorMask::NONE,
+                BattlefieldManaBehavior::NativeLand(ManaColorMask::NONE),
+                1,
+            )
+        };
+        pool.sources.push(PoolManaSource {
+            colors,
+            remaining: 0,
+            origin_card_index: Some(presence.card_index),
+            origin_sequence: Some(presence.sequence),
+            behavior,
+            base_capacity: capacity,
+            is_land: true,
+            ..PoolManaSource::default()
+        });
     }
-    descriptor
+    pool.refresh_battlefield_sources(deck, zones, active_ability_context(deck, zones));
+}
+
+fn exact_land_runtime(card: &CompiledCard) -> Option<ExactLandRuntimeProgram> {
+    classify_exact_land_program(&card.type_line, &card.ability_program)
+}
+
+fn reviewed_fetchland(card: &CompiledCard) -> Option<ReviewedFetchland> {
+    exact_land_runtime(card)?
+        .fetchland
+        .map(|fetchland| fetchland.descriptor)
+}
+
+fn exact_land_mana_mask(colors: &[LandManaColor]) -> ManaColorMask {
+    colors
+        .iter()
+        .copied()
+        .fold(ManaColorMask::NONE, |mask, color| {
+            mask | match color {
+                LandManaColor::White => ManaColorMask::WHITE,
+                LandManaColor::Blue => ManaColorMask::BLUE,
+                LandManaColor::Black => ManaColorMask::BLACK,
+                LandManaColor::Red => ManaColorMask::RED,
+                LandManaColor::Green => ManaColorMask::GREEN,
+                LandManaColor::Colorless => ManaColorMask::COLORLESS,
+            }
+        })
+}
+
+fn exact_mana_network_battlefield_source(
+    deck: &CompiledDeck,
+    mana_access: Option<&ManaAccessProfile>,
+    card_index: usize,
+    turn: u8,
+) -> Option<BattlefieldManaSource> {
+    let card = deck.cards.get(card_index)?;
+    let program = exact_mana_network(card)?;
+    let (colors, capacity, behavior, available_from_turn) = match program {
+        ExactManaNetworkProgram::CommanderIdentityMana(_) => {
+            let identity = mana_access
+                .map(|access| access.commander_identity)
+                .unwrap_or(ManaColorMask::NONE);
+            (
+                identity,
+                1,
+                BattlefieldManaBehavior::CommanderIdentity(identity),
+                turn,
+            )
+        }
+        ExactManaNetworkProgram::ControlledLandCapabilityMana(_) => (
+            ManaColorMask::NONE,
+            1,
+            BattlefieldManaBehavior::ControlledLandCapabilities,
+            turn,
+        ),
+        ExactManaNetworkProgram::ControlledLandAnyColorGrant(_) => (
+            ManaColorMask::ANY_COLOR,
+            1,
+            BattlefieldManaBehavior::Fixed,
+            turn,
+        ),
+        ExactManaNetworkProgram::GlobalBasicLandSubtypeGrant(_) => (
+            ManaColorMask::NONE,
+            1,
+            BattlefieldManaBehavior::NativeLand(ManaColorMask::NONE),
+            turn,
+        ),
+        ExactManaNetworkProgram::SelfBounceDualLand(program) => {
+            let first = exact_land_mana_mask(&[program.coupled_output[0]]);
+            let second = exact_land_mana_mask(&[program.coupled_output[1]]);
+            (
+                first | second,
+                2,
+                BattlefieldManaBehavior::CoupledFixed([first, second]),
+                exact_land_available_from_turn(&program.entry, turn, true),
+            )
+        }
+    };
+    Some(BattlefieldManaSource {
+        colors,
+        capacity,
+        reliability: 1.0,
+        available_from_turn,
+        is_land: card.effects.card_types.is_land,
+        card_index: Some(card_index),
+        behavior,
+        ..BattlefieldManaSource::default()
+    })
+}
+
+fn exact_land_available_from_turn(entry: &ExactLandEntry, turn: u8, can_pay_life: bool) -> u8 {
+    match entry {
+        ExactLandEntry::UntappedByDefault => turn,
+        ExactLandEntry::AlwaysTapped { .. } => turn.saturating_add(1),
+        ExactLandEntry::PayTwoLifeOrTapped { .. } if can_pay_life => turn,
+        ExactLandEntry::PayTwoLifeOrTapped { .. } => turn.saturating_add(1),
+        ExactLandEntry::UntappedWithAtLeastOpponents {
+            minimum_opponents, ..
+        } if MODELED_COMMANDER_OPPONENT_COUNT >= *minimum_opponents => turn,
+        ExactLandEntry::UntappedWithAtLeastOpponents { .. } => turn.saturating_add(1),
+    }
 }
 
 fn library_card_has_basic_land_subtype(card: &CompiledCard, subtype: BasicLandSubtype) -> bool {
@@ -20856,12 +24822,75 @@ fn resolve_reviewed_fetchland_activation(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn resolve_reviewed_self_bounce_land_entry(
+    deck: &CompiledDeck,
+    mana_access: Option<&ManaAccessProfile>,
+    land_index: usize,
+    turn: u8,
+    hand: &mut Vec<usize>,
+    zones: &mut KnownLineZoneState,
+    mana_sources: &mut Vec<BattlefieldManaSource>,
+    mana_pool: &mut TurnManaPool,
+) -> Option<bool> {
+    let ExactManaNetworkProgram::SelfBounceDualLand(_) =
+        exact_mana_network(deck.cards.get(land_index)?)?
+    else {
+        return None;
+    };
+    let entering_sequence = zones
+        .battlefield
+        .last()
+        .filter(|presence| presence.card_index == land_index)?
+        .sequence;
+    let return_sequence = zones
+        .battlefield
+        .iter()
+        .filter(|presence| {
+            deck.cards
+                .get(presence.card_index)
+                .is_some_and(|card| battlefield_card_types(card, zones, presence.sequence).is_land)
+        })
+        .min_by(|left, right| {
+            let rank = |presence: &BattlefieldLineCard| {
+                let source = battlefield_land_source(deck, mana_access, presence.card_index, turn);
+                (
+                    presence.sequence == entering_sequence,
+                    source.capacity,
+                    source_option_count(source.colors),
+                    presence.sequence,
+                )
+            };
+            rank(left).cmp(&rank(right))
+        })?
+        .sequence;
+
+    let mut staged_zones = zones.clone();
+    let returned_card_index =
+        staged_zones.remove_permanent_sequence(deck, return_sequence, false)?;
+    let mut staged_sources = mana_sources.clone();
+    let mut staged_pool = mana_pool.clone();
+    synchronize_mana_sources_with_battlefield(&mut staged_sources, &staged_zones);
+    synchronize_turn_pool_with_battlefield(&mut staged_pool, &staged_zones);
+    staged_pool.refresh_battlefield_sources(
+        deck,
+        &staged_zones,
+        active_ability_context(deck, &staged_zones),
+    );
+
+    *zones = staged_zones;
+    *mana_sources = staged_sources;
+    *mana_pool = staged_pool;
+    hand.push(returned_card_index);
+    Some(return_sequence != entering_sequence)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_land_play(
     deck: &CompiledDeck,
     mana_access: Option<&ManaAccessProfile>,
     land_index: usize,
     turn: u8,
-    hand: &[usize],
+    hand: &mut Vec<usize>,
     library_order: &mut Vec<usize>,
     next_draw_position: usize,
     rng: &mut ChaCha8Rng,
@@ -20871,6 +24900,26 @@ fn execute_land_play(
     player_life: &mut f32,
 ) -> ReviewedFetchlandResolution {
     zones.record_land_play(deck, land_index, turn);
+    if matches!(
+        deck.cards.get(land_index).and_then(exact_mana_network),
+        Some(ExactManaNetworkProgram::SelfBounceDualLand(_))
+    ) && !resolve_reviewed_self_bounce_land_entry(
+        deck,
+        mana_access,
+        land_index,
+        turn,
+        hand,
+        zones,
+        mana_sources,
+        mana_pool,
+    )
+    .unwrap_or(false)
+    {
+        return ReviewedFetchlandResolution {
+            searched_target: None,
+            player_died: false,
+        };
+    }
     if let Some(descriptor) = deck.cards.get(land_index).and_then(reviewed_fetchland)
         && let Some(fetch_sequence) = zones
             .battlefield
@@ -20895,11 +24944,23 @@ fn execute_land_play(
         );
     }
 
-    let source = battlefield_land_source(deck, mana_access, land_index, turn);
+    let mut source = battlefield_land_source(deck, mana_access, land_index, turn);
+    if let Some(program) = deck.cards.get(land_index).and_then(exact_land_runtime)
+        && let Some(entry @ ExactLandEntry::PayTwoLifeOrTapped { life, .. }) =
+            program.entry.as_ref()
+    {
+        let life = f32::from(*life);
+        let pay_life = *player_life > life;
+        source.available_from_turn = exact_land_available_from_turn(entry, turn, pay_life);
+        if pay_life {
+            *player_life -= life;
+        }
+    }
     mana_sources.push(source);
     if battlefield_source_is_trajectory_available(&source, turn) {
         add_battlefield_source_to_current_pool(source, deck, zones, turn, mana_pool);
     }
+    materialize_reviewed_granted_land_sources(deck, zones, turn, mana_pool);
     ReviewedFetchlandResolution {
         searched_target: None,
         player_died: false,
@@ -20912,6 +24973,11 @@ fn battlefield_land_source(
     card_index: usize,
     turn: u8,
 ) -> BattlefieldManaSource {
+    if let Some(source) = exact_mana_network_battlefield_source(deck, mana_access, card_index, turn)
+        && source.is_land
+    {
+        return source;
+    }
     if let Some(kind) = deck
         .cards
         .get(card_index)
@@ -20924,6 +24990,24 @@ fn battlefield_land_source(
         && let Some(source) = typed_battlefield_mana_source(deck, card_index, kind, None, turn)
     {
         return source;
+    }
+    if let Some(program) = deck.cards.get(card_index).and_then(exact_land_runtime)
+        && program.has_exact_trajectory_source()
+        && let (Some(colors), Some(entry)) = (program.exact_mana_colors(), program.entry.as_ref())
+    {
+        return BattlefieldManaSource {
+            colors: exact_land_mana_mask(&colors),
+            capacity: 1,
+            reliability: 1.0,
+            // Route projections assume the reviewed two-life option remains
+            // payable. The real land-play transition rechecks and commits the
+            // life payment before making the source available this turn.
+            available_from_turn: exact_land_available_from_turn(entry, turn, true),
+            is_land: true,
+            card_index: Some(card_index),
+            behavior: BattlefieldManaBehavior::NativeLand(exact_land_mana_mask(&colors)),
+            ..BattlefieldManaSource::default()
+        };
     }
     let source = mana_access.and_then(|access| access.source(card_index));
     let colors = source
@@ -20947,6 +25031,7 @@ fn battlefield_land_source(
         available_from_turn,
         is_land: true,
         card_index: Some(card_index),
+        behavior: BattlefieldManaBehavior::NativeLand(colors),
         ..BattlefieldManaSource::default()
     }
 }
@@ -20962,11 +25047,19 @@ fn apply_cast_mana_effects(
     pool: &mut TurnManaPool,
     _rng: &mut ChaCha8Rng,
     ability_context: ActiveAbilityContext,
-    zones: &KnownLineZoneState,
+    zones: &mut KnownLineZoneState,
 ) -> bool {
     if exact_discard_sacrifice_mana_ability(card).is_some() {
         // This source remains a battlefield object until its typed queued
         // action pays the entire-hand discard and self-sacrifice atomically.
+        return false;
+    }
+    if let Some(source) = exact_mana_network_battlefield_source(deck, mana_access, card_index, turn)
+        && !source.is_land
+    {
+        battlefield.push(source);
+        add_battlefield_source_to_current_pool(source, deck, zones, turn, pool);
+        materialize_reviewed_granted_land_sources(deck, zones, turn, pool);
         return false;
     }
     if let Some(kind) = compile_typed_conditional_mana_source(card)
@@ -20977,6 +25070,61 @@ fn apply_cast_mana_effects(
         battlefield.push(source);
         add_typed_source_to_current_pool(source, deck, zones, turn, pool);
         return false;
+    }
+    if let Some(program) = classify_spell_resolution_mana(card) {
+        let _ = add_fixed_mana(pool, program.output);
+        return false;
+    }
+    if let Some(program) = classify_sacrifice_self_any_color_mana(card) {
+        if !program.requires_tap {
+            return false;
+        }
+        let Some(source_sequence) = zones
+            .battlefield
+            .iter()
+            .rev()
+            .find(|presence| presence.card_index == card_index)
+            .map(|presence| presence.sequence)
+        else {
+            return false;
+        };
+        if zones.tapped_creatures_this_turn.contains(&source_sequence)
+            || pool.sources.iter().any(|source| {
+                source.origin_sequence == Some(source_sequence) && source.physically_tapped
+            })
+        {
+            return false;
+        }
+
+        let mut staged_zones = zones.clone();
+        let mut staged_pool = pool.clone();
+        for source in &mut staged_pool.sources {
+            if source.origin_sequence == Some(source_sequence) {
+                source.remaining = 0;
+                source.activation_used = true;
+                source.physically_tapped = true;
+            }
+        }
+        let Some(removed) = staged_zones.remove_permanent_sequence(deck, source_sequence, true)
+        else {
+            return false;
+        };
+        if removed != card_index {
+            return false;
+        }
+        staged_pool
+            .sources
+            .retain(|source| source.origin_sequence != Some(source_sequence));
+        synchronize_turn_pool_with_battlefield(&mut staged_pool, &staged_zones);
+        staged_pool.add_floating_from_nonland_permanent(
+            ManaColorMask::ANY_COLOR,
+            program.amount,
+            false,
+            ability_context,
+        );
+        *zones = staged_zones;
+        *pool = staged_pool;
+        return true;
     }
     let source_profile = mana_access.and_then(|access| access.source(card_index));
     let source_colors = source_profile
@@ -21000,13 +25148,7 @@ fn apply_cast_mana_effects(
     let mana_output = card.effects.mana_produced.conservative_value(1).min(8);
     let consumed_mana_source = match card.effects.mana_production_kind {
         ManaProductionKind::None | ManaProductionKind::Unsupported => false,
-        ManaProductionKind::SpellResolution => {
-            // The spell's printed mana cost was paid by the action loop. The
-            // descriptor admits only unconditional Add-mana resolution text
-            // with no unmodeled additional cost.
-            pool.add_floating(source_colors, mana_output);
-            false
-        }
+        ManaProductionKind::SpellResolution => false,
         ManaProductionKind::ReusableActivated => {
             // Tapping a noncreature permanent is immediately legal only when
             // its exact source profile does not say it enters tapped. Creature
@@ -21035,14 +25177,7 @@ fn apply_cast_mana_effects(
             }
             false
         }
-        ManaProductionKind::OneShotActivated => {
-            // Compilation only admits a self-sacrifice activation whose other
-            // timing/costs are already proven legal now. Credit the burst once
-            // and tell the zone tracker to move the permanent to graveyard;
-            // never install it as a reusable battlefield source.
-            pool.add_floating(source_colors, mana_output);
-            true
-        }
+        ManaProductionKind::OneShotActivated => false,
         ManaProductionKind::NonRefreshingActivated => {
             // The complete reviewed lifecycle proves a legal first tap but
             // also forbids a normal untap. Credit that activation now while
@@ -21826,12 +25961,30 @@ fn execute_tutor_on_resolution(
     creature_count: &mut u8,
     protection_count: &mut u8,
     future_additional_generic_per_cast: u8,
-) {
-    if !tutor.effects.tutor.is_executable_on_spell_resolution() {
-        return;
-    }
+) -> Option<u8> {
+    let exact_program =
+        compile_tutor_runtime_from_program(&tutor.type_line, &tutor.ability_program);
+    let (instructions, life_loss_after_resolution) = match exact_program {
+        Some(TutorRuntimeProgram::Spell(program)) => {
+            let instruction = exact_spell_tutor_instruction(&program.search)?;
+            let life_loss = match program.life_loss {
+                None => 0,
+                Some(loss) if loss.timing == ExactTutorLifeLossTiming::AfterSearchTransaction => {
+                    loss.amount
+                }
+                Some(_) => return None,
+            };
+            (vec![instruction], life_loss)
+        }
+        Some(TutorRuntimeProgram::TriggeredPermanent(_)) => return None,
+        None if tutor.effects.tutor.is_executable_on_spell_resolution() => (
+            tutor.effects.tutor.instructions.clone(),
+            tutor.effects.tutor.life_loss_after_resolution,
+        ),
+        None => return None,
+    };
 
-    for instruction in &tutor.effects.tutor.instructions {
+    for instruction in &instructions {
         if instruction.source != TutorSourceZone::Library {
             continue;
         }
@@ -21933,6 +26086,121 @@ fn execute_tutor_on_resolution(
             library_order.insert(unseen_start, target_index);
         }
     }
+    Some(life_loss_after_resolution)
+}
+
+fn exact_spell_tutor_instruction(
+    search: &crate::tutor_runtime::TutorSearchTransaction,
+) -> Option<TutorInstruction> {
+    if search.source_zone != ExactTutorSourceZone::Library
+        || search.requirement != crate::tutor_runtime::SearchRequirement::Required
+        || search.quantity != ExactTutorSearchQuantity::ExactlyOne
+    {
+        return None;
+    }
+    let destination = match search.destination_zone()? {
+        ExactTutorDestinationZone::Hand => TutorDestination::Hand,
+        ExactTutorDestinationZone::TopOfLibrary => TutorDestination::LibraryTop,
+    };
+    let target = match search.searched_card {
+        ExactTutorCardPredicate::AnyCard => crate::effects::TutorTarget::AnyCard,
+        ExactTutorCardPredicate::Enchantment => crate::effects::TutorTarget::Enchantment,
+        ExactTutorCardPredicate::ArtifactOrEnchantment => {
+            crate::effects::TutorTarget::ArtifactOrEnchantment
+        }
+        ExactTutorCardPredicate::BasicLand => crate::effects::TutorTarget::BasicLand,
+    };
+    let move_count = search
+        .ordered_steps
+        .iter()
+        .filter(|step| matches!(step, ExactTutorStep::MoveSearchedCardsTo(_)))
+        .count();
+    if move_count != 1 || !search.shuffles_library() {
+        return None;
+    }
+    Some(TutorInstruction {
+        source: TutorSourceZone::Library,
+        target,
+        destination,
+        quantity: 1,
+        reveal: search.reveals_searched_cards(),
+        shuffle_after: true,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_exact_upkeep_tutors(
+    deck: &CompiledDeck,
+    mana_access: Option<&ManaAccessProfile>,
+    library_order: &mut Vec<usize>,
+    next_draw_position: usize,
+    hand: &mut Vec<usize>,
+    turn: u8,
+    mana_pool: &TurnManaPool,
+    rng: &mut ChaCha8Rng,
+    line_zones: &KnownLineZoneState,
+) {
+    let controlled_land_count = line_zones
+        .battlefield
+        .iter()
+        .filter(|presence| {
+            deck.cards
+                .get(presence.card_index)
+                .is_some_and(|card| card.has(role::LAND))
+        })
+        .count();
+    // The normal table model advances each opponent through one ordinary land
+    // drop per turn. The intervening-if condition is checked both when the
+    // trigger would be created and immediately before this resolution.
+    let opponent_land_count = usize::from(turn);
+    if opponent_land_count <= controlled_land_count {
+        return;
+    }
+    let trigger_sources = line_zones
+        .battlefield
+        .iter()
+        .filter_map(|presence| {
+            let card = deck.cards.get(presence.card_index)?;
+            matches!(
+                compile_tutor_runtime_from_program(&card.type_line, &card.ability_program),
+                Some(TutorRuntimeProgram::TriggeredPermanent(_))
+            )
+            .then_some(presence.card_index)
+        })
+        .collect::<Vec<_>>();
+    let instruction = TutorInstruction {
+        source: TutorSourceZone::Library,
+        target: crate::effects::TutorTarget::BasicLand,
+        destination: TutorDestination::Hand,
+        quantity: 3,
+        reveal: true,
+        shuffle_after: true,
+    };
+    for _ in trigger_sources {
+        if usize::from(turn) <= controlled_land_count {
+            continue;
+        }
+        for _ in 0..instruction.quantity {
+            let Some(target_position) = best_tutor_target_position(
+                deck,
+                instruction,
+                library_order,
+                next_draw_position,
+                hand,
+                line_zones,
+                turn,
+                mana_access,
+                mana_pool,
+                0,
+                false,
+            ) else {
+                break;
+            };
+            hand.push(library_order.remove(target_position));
+        }
+        let unseen_start = next_draw_position.min(library_order.len());
+        library_order[unseen_start..].shuffle(rng);
+    }
 }
 
 fn exact_instant_library_top_tutor(card: &CompiledCard) -> Option<TutorInstruction> {
@@ -22010,6 +26278,160 @@ fn opponent_end_step_payment_pool(
     };
     pool.add_treasures(treasure_reserve);
     pool
+}
+
+#[derive(Debug, Clone)]
+struct OpponentEndStepFlashProjection {
+    card_index: usize,
+    hand_after_cast: Vec<usize>,
+    zones_after_resolution: KnownLineZoneState,
+    pool_after_resolution: TurnManaPool,
+    life_after_resolution: f32,
+    created_creature_tokens: u8,
+    target_score: i32,
+}
+
+fn exact_end_step_flash_permanent(card: &CompiledCard) -> bool {
+    exact_flash_hand_timing_permission(card)
+        && modeled_line_card_kind(card) == Some(ModeledLineCardKind::Permanent)
+        && card.effects.mana_production_kind == ManaProductionKind::None
+        && !card.has(role::LAND | role::MANA_SOURCE | role::RAMP | role::FAST_MANA)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_opponent_end_step_flash_permanent(
+    deck: &CompiledDeck,
+    mana_access: Option<&ManaAccessProfile>,
+    hand: &mut Vec<usize>,
+    turn: u8,
+    end_step_pool: &mut TurnManaPool,
+    zones: &mut KnownLineZoneState,
+    spells_cast_in_window: &mut u8,
+    player_life: &mut f32,
+    engine_count: &mut u8,
+    enabler_count: &mut u8,
+    payoff_count: &mut u8,
+    creature_count: &mut u8,
+    protection_count: &mut u8,
+    recursion_count: &mut u8,
+    isolated: &IsolatedScenarioRuntime,
+) -> bool {
+    let Some(mana_access) = mana_access else {
+        return false;
+    };
+    if isolated.is(InteractionScenario::RuleOfLawCap)
+        && isolated.applied()
+        && *spells_cast_in_window > 0
+    {
+        return false;
+    }
+    let additional_generic_per_cast =
+        u8::from(isolated.is(InteractionScenario::GenericTaxStax) && isolated.applied());
+    let next_turn = turn.saturating_add(1);
+    let mut distinct_cards = hand.clone();
+    distinct_cards.sort_unstable();
+    distinct_cards.dedup();
+    let projection = distinct_cards
+        .into_iter()
+        .filter_map(|card_index| {
+            let card = deck.cards.get(card_index)?;
+            if !exact_end_step_flash_permanent(card) {
+                return None;
+            }
+            let cost = mana_access.cost(card_index);
+            if cost.is_none_or(|cost| !activation_cost_is_exactly_modeled(cost)) {
+                return None;
+            }
+            let hand_position = hand.iter().position(|candidate| *candidate == card_index)?;
+            let mut staged_hand = hand.clone();
+            staged_hand.swap_remove(hand_position);
+            let mut staged_pool = end_step_pool.clone();
+            let mut staged_zones = zones.clone();
+            if !pay_spell_cost_choice(
+                deck,
+                &mut staged_zones,
+                &mut staged_pool,
+                card_index,
+                cost,
+                card.mana_value.ceil().max(0.0) as u8,
+                additional_generic_per_cast,
+                0,
+                turn,
+                SpellPaymentChoice::Printed,
+                None,
+            ) {
+                return None;
+            }
+            let mut staged_life = *player_life;
+            if !staged_pool.settle_pending_source_damage(&mut staged_life) {
+                return None;
+            }
+            let token_count_before = staged_zones.creature_tokens.len();
+            if !apply_controller_spell_cast_triggers(
+                deck,
+                &mut staged_zones,
+                card_index,
+                turn,
+                spells_cast_in_window.saturating_add(1),
+                &mut staged_pool,
+                &mut staged_life,
+            ) {
+                return None;
+            }
+            let battlefield_count_before = staged_zones.battlefield.len();
+            staged_zones.record_cast(deck, card_index, turn);
+            if staged_zones.battlefield.len() != battlefield_count_before.saturating_add(1) {
+                return None;
+            }
+            let created_creature_tokens = staged_zones
+                .creature_tokens
+                .len()
+                .saturating_sub(token_count_before)
+                .min(usize::from(u8::MAX)) as u8;
+            let target_score =
+                tutor_target_score(deck, card, &staged_hand, &staged_zones, next_turn);
+            (target_score > 0).then_some(OpponentEndStepFlashProjection {
+                card_index,
+                hand_after_cast: staged_hand,
+                zones_after_resolution: staged_zones,
+                pool_after_resolution: staged_pool,
+                life_after_resolution: staged_life,
+                created_creature_tokens,
+                target_score,
+            })
+        })
+        .max_by(|left, right| {
+            left.target_score
+                .cmp(&right.target_score)
+                .then_with(|| {
+                    deck.cards[right.card_index]
+                        .normalized_name
+                        .cmp(&deck.cards[left.card_index].normalized_name)
+                })
+                .then_with(|| right.card_index.cmp(&left.card_index))
+        });
+    let Some(projection) = projection else {
+        return false;
+    };
+    let card = &deck.cards[projection.card_index];
+    *hand = projection.hand_after_cast;
+    *zones = projection.zones_after_resolution;
+    *end_step_pool = projection.pool_after_resolution;
+    *player_life = projection.life_after_resolution;
+    *spells_cast_in_window = spells_cast_in_window.saturating_add(1);
+    apply_roles(
+        card.roles,
+        engine_count,
+        enabler_count,
+        payoff_count,
+        creature_count,
+        protection_count,
+    );
+    *creature_count = creature_count.saturating_add(projection.created_creature_tokens);
+    if card.effects.recursion {
+        *recursion_count = recursion_count.saturating_add(1);
+    }
+    *player_life <= 0.0
 }
 
 fn future_untapped_mana_pool(
@@ -22594,7 +27016,12 @@ fn execute_opponent_end_step_top_tutor_before_next_turn(
     rng: &mut ChaCha8Rng,
     zones: &mut KnownLineZoneState,
     treasure_reserve: &mut u8,
+    engine_count: &mut u8,
+    enabler_count: &mut u8,
+    payoff_count: &mut u8,
     creature_count: &mut u8,
+    protection_count: &mut u8,
+    recursion_count: &mut u8,
     player_life: &mut f32,
     isolated: &mut IsolatedScenarioRuntime,
 ) -> bool {
@@ -22619,6 +27046,26 @@ fn execute_opponent_end_step_top_tutor_before_next_turn(
         isolated,
     );
     if player_died {
+        *treasure_reserve = end_step_pool.remaining_treasures();
+        return true;
+    }
+    if execute_opponent_end_step_flash_permanent(
+        deck,
+        mana_access,
+        hand,
+        turn,
+        &mut end_step_pool,
+        zones,
+        &mut spells_cast_in_window,
+        player_life,
+        engine_count,
+        enabler_count,
+        payoff_count,
+        creature_count,
+        protection_count,
+        recursion_count,
+        isolated,
+    ) {
         *treasure_reserve = end_step_pool.remaining_treasures();
         return true;
     }
@@ -23450,6 +27897,39 @@ fn immediate_effect_value(
     }
 }
 
+fn reviewed_spell_scry_draw(card: &CompiledCard) -> Option<(u8, u8)> {
+    let compiled = card.effects.utility_modal.as_ref()?;
+    let ReviewedUtilityModalProgram::SpellScryDraw(program) = &compiled.program else {
+        return None;
+    };
+    let [
+        ReviewedSpellScryDrawStep::Scry(scry),
+        ReviewedSpellScryDrawStep::DrawCards { count, .. },
+    ] = program.ordered_steps.as_slice()
+    else {
+        return None;
+    };
+    (scry.count > 0
+        && scry.may_put_any_number_on_bottom
+        && scry.may_order_cards_left_on_top
+        && scry.may_order_cards_put_on_bottom
+        && *count > 0)
+        .then_some((scry.count, *count))
+}
+
+fn reviewed_entry_scry(card: &CompiledCard) -> Option<&ReviewedEntryScryProgram> {
+    let compiled = card.effects.utility_modal.as_ref()?;
+    let ReviewedUtilityModalProgram::EntryScry(program) = &compiled.program else {
+        return None;
+    };
+    (program.scry.count > 0
+        && program.scry.may_put_any_number_on_bottom
+        && program.scry.may_order_cards_left_on_top
+        && program.scry.may_order_cards_put_on_bottom
+        && program.draw_count > 0)
+        .then_some(program)
+}
+
 /// Returns only cards that a resolving spell explicitly draws.
 ///
 /// `impulse_access` is descriptive metadata for look/reveal/exile-top text. It
@@ -23457,6 +27937,9 @@ fn immediate_effect_value(
 /// hand. Exact typed executors own those movements. Treating scalar access as a
 /// draw made pure reorder effects draw cards and made Ponder draw four.
 fn immediate_cards_drawn(card: &CompiledCard) -> u8 {
+    if let Some((_, draws)) = reviewed_spell_scry_draw(card) {
+        return draws;
+    }
     let typed_spell_draws = card
         .ability_program
         .executable_abilities()
@@ -23497,6 +27980,116 @@ fn immediate_cards_drawn(card: &CompiledCard) -> u8 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn resolve_exact_scry_count(
+    deck: &CompiledDeck,
+    count: u16,
+    hand: &[usize],
+    zones: &KnownLineZoneState,
+    turn: u8,
+    library_order: &mut Vec<usize>,
+    next_draw_position: usize,
+) {
+    let end = next_draw_position
+        .saturating_add(usize::from(count))
+        .min(library_order.len());
+    if next_draw_position >= end {
+        return;
+    }
+    let viewed = library_order[next_draw_position..end].to_vec();
+    let (kept, bottom): (Vec<_>, Vec<_>) = viewed.into_iter().partition(|card_index| {
+        deck.cards
+            .get(*card_index)
+            .is_some_and(|candidate| tutor_target_score(deck, candidate, hand, zones, turn) > 0)
+    });
+    library_order.splice(next_draw_position..end, kept);
+    library_order.extend(bottom);
+}
+
+fn resolve_immediate_spell_scries(
+    deck: &CompiledDeck,
+    card: &CompiledCard,
+    hand: &[usize],
+    zones: &KnownLineZoneState,
+    turn: u8,
+    library_order: &mut Vec<usize>,
+    next_draw_position: usize,
+) {
+    if let Some((scry_count, _)) = reviewed_spell_scry_draw(card) {
+        resolve_exact_scry_count(
+            deck,
+            u16::from(scry_count),
+            hand,
+            zones,
+            turn,
+            library_order,
+            next_draw_position,
+        );
+        return;
+    }
+    if card.ability_program.version != EXECUTABLE_ABILITY_PROGRAM_VERSION
+        || !card.ability_program.face_programs.is_empty()
+    {
+        return;
+    }
+    for scry in card
+        .ability_program
+        .executable_abilities()
+        .filter(|ability| {
+            ability.timing == AbilityTiming::SpellResolution
+                && ability.costs.is_empty()
+                && ability.preconditions == [AbilityPrecondition::SourceZone(ProgramZone::Stack)]
+        })
+        .flat_map(|ability| ability.effects.iter())
+        .filter_map(|effect| {
+            let AbilityEffect::Scry(scry) = effect else {
+                return None;
+            };
+            (scry.player == ControllerRelation::You
+                && scry.count > 0
+                && scry.from == ProgramZone::Library
+                && scry.may_put_any_number_on_bottom
+                && scry.preserve_kept_relative_order
+                && scry.may_order_bottom_cards)
+                .then_some(scry)
+        })
+    {
+        resolve_exact_scry_count(
+            deck,
+            scry.count,
+            hand,
+            zones,
+            turn,
+            library_order,
+            next_draw_position,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_reviewed_permanent_entry_scry(
+    deck: &CompiledDeck,
+    card: &CompiledCard,
+    hand: &[usize],
+    zones: &KnownLineZoneState,
+    turn: u8,
+    library_order: &mut Vec<usize>,
+    next_draw_position: usize,
+) {
+    let Some(program) = reviewed_entry_scry(card) else {
+        return;
+    };
+    resolve_exact_scry_count(
+        deck,
+        u16::from(program.scry.count),
+        hand,
+        zones,
+        turn,
+        library_order,
+        next_draw_position,
+    );
+}
+
 fn resolve_immediate_spell_draws(
     card: &CompiledCard,
     hand: &mut Vec<usize>,
@@ -23523,7 +28116,7 @@ fn immediate_extra_turns(card: &CompiledCard) -> u8 {
 /// A reviewed Oracle-style spell is deliberately conserved until every named
 /// member of at least one reviewed package is either usable this turn or in
 /// hand and the remaining printed costs are jointly payable. This is a small,
-/// versioned sequencing adapter, not a general combo executor.
+/// versioned sequencing adapter. It is not a general combo executor.
 #[allow(clippy::too_many_arguments)]
 fn should_hold_reviewed_sequence_piece(
     deck: &CompiledDeck,
@@ -23723,9 +28316,27 @@ fn should_hold_reactive_card(card: &CompiledCard) -> bool {
         || card.has(role::INSTANT_SORCERY);
     let requires_reactive_target =
         card.effects.targeted_removal || card.has(role::COUNTERSPELL | role::PROTECTION);
+    let exact_interaction =
+        compile_interaction_runtime_from_program(&card.type_line, &card.ability_program);
+    let exact_restriction =
+        compile_restriction_protection_from_program(&card.type_line, &card.ability_program);
+    let exact_opposing_aura = matches!(
+        exact_restriction.as_ref(),
+        Some(compiled)
+            if matches!(
+                compiled.program,
+                RestrictionProtectionProgram::AuraRestriction(_)
+            )
+    );
+    if exact_opposing_aura {
+        return true;
+    }
     reactive
         && is_resolving_spell
-        && (requires_reactive_target || !has_target_independent_executable_effect(card))
+        && (exact_interaction.is_some()
+            || exact_restriction.is_some()
+            || requires_reactive_target
+            || !has_target_independent_executable_effect(card))
 }
 
 fn has_target_independent_executable_effect(card: &CompiledCard) -> bool {
@@ -23733,13 +28344,12 @@ fn has_target_independent_executable_effect(card: &CompiledCard) -> bool {
         || compile_typed_necropotence_lifecycle(card).is_some()
         || card.effects.tutor.is_executable_on_spell_resolution()
         || immediate_effect_value(card, card.effects.lands_to_battlefield, 1) > 0
+        || classify_spell_resolution_mana(card).is_some()
+        || classify_sacrifice_self_any_color_mana(card).is_some()
         || card.effects.mana_produced.conservative_value(1) > 0
             && matches!(
                 card.effects.mana_production_kind,
-                ManaProductionKind::SpellResolution
-                    | ManaProductionKind::ReusableActivated
-                    | ManaProductionKind::OneShotActivated
-                    | ManaProductionKind::NonRefreshingActivated
+                ManaProductionKind::ReusableActivated | ManaProductionKind::NonRefreshingActivated
             )
         || immediate_creature_tokens(card) > 0
         || immediate_effect_value(card, card.effects.treasure_tokens, 1) > 0
@@ -23756,8 +28366,30 @@ fn payable_hand_protection(
         .enumerate()
         .filter_map(|(hand_position, card_index)| {
             let card = deck.cards.get(*card_index)?;
-            let is_reactive_spell = card.has(role::PROTECTION | role::COUNTERSPELL)
-                && card.effects.card_types.is_instant;
+            let exact_unconditional_counter = matches!(
+                compile_interaction_runtime_from_program(&card.type_line, &card.ability_program),
+                Some(InteractionRuntimeProgram::Counterspell {
+                    ref target,
+                    unless_controller_pays_generic: None,
+                }) if target.matches(SpellTargetCandidate {
+                    is_instant: true,
+                    mana_value: 1,
+                    ..SpellTargetCandidate::default()
+                })
+            );
+            let exact_complete_protection = matches!(
+                compile_restriction_protection_from_program(
+                    &card.type_line,
+                    &card.ability_program,
+                ),
+                Some(compiled)
+                    if matches!(
+                        compiled.program,
+                        RestrictionProtectionProgram::CompleteProtection(_)
+                    )
+            );
+            let is_reactive_spell = card.effects.card_types.is_instant
+                && (exact_complete_protection || exact_unconditional_counter);
             if !is_reactive_spell {
                 return None;
             }
@@ -23778,6 +28410,27 @@ fn payable_hand_protection(
                 .then_with(|| left_index.cmp(right_index))
         })
         .map(|(hand_position, _, paid_pool)| (hand_position, paid_pool))
+}
+
+fn opponents_cannot_interact_during_controller_turn(
+    deck: &CompiledDeck,
+    zones: &KnownLineZoneState,
+) -> bool {
+    zones.battlefield.iter().any(|presence| {
+        deck.cards.get(presence.card_index).is_some_and(|card| {
+            matches!(
+                compile_restriction_protection_from_program(
+                    &card.type_line,
+                    &card.ability_program,
+                ),
+                Some(compiled)
+                    if matches!(
+                        compiled.program,
+                        RestrictionProtectionProgram::OpponentTurnRestriction(_)
+                    )
+            )
+        })
+    })
 }
 
 fn consume_paid_hand_protection(
@@ -23985,7 +28638,10 @@ fn scenario_graveyard_dependent(card: &CompiledCard) -> bool {
 }
 
 fn scenario_executable_graveyard_action(card: &CompiledCard) -> bool {
-    card.effects.recursion
+    classify_graveyard_reclamation(card).is_some()
+        || reviewed_alternative_option(card, SpellPaymentChoice::Alternative)
+            .is_some_and(|option| option.kind == ReviewedCastOptionKind::Escape)
+        || card.effects.recursion
         || card.ability_program.executable_abilities().any(|ability| {
             ability.effects.iter().any(|effect| {
                 matches!(

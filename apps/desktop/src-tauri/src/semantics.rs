@@ -4,11 +4,11 @@ use crate::ability_ir::{AbilityProfile, GraphCard, build_synergy_graph, compile_
 use crate::ability_program::{
     AbilityCost, AbilityEffect, AbilityTiming, ActivationWindow, CardType as ProgramCardType,
     ControllerRelation, DelayedEvent, DelayedObjectReference, DiscardedObjectReference,
-    ExecutableAbilityProgramV1, LibraryPosition, ManaCost as ProgramManaCost,
-    ManaKind as ProgramManaKind, NecropotenceDiscardEvent, OracleCardFaceInput, OracleCardInput,
-    StepProcedure, TargetSelector, TokenKind, TriggerEventKind, TurnStep,
-    VariableCreatureOverrunEffect, VariableCreatureTutorEffect, Zone,
-    compile_executable_ability_program, compile_face_bound_ability_program,
+    ExecutableAbilityProgramV1, FaceCastCharacteristicsInput, LibraryPosition,
+    ManaCost as ProgramManaCost, ManaKind as ProgramManaKind, NecropotenceDiscardEvent,
+    OracleCardFaceInput, OracleCardInput, StepProcedure, TargetSelector, TokenKind,
+    TriggerEventKind, TurnStep, VariableCreatureOverrunEffect, VariableCreatureTutorEffect, Zone,
+    compile_executable_ability_program, compile_face_bound_ability_program_with_characteristics,
 };
 use crate::comprehensive_rules::ComprehensiveRulesSnapshot;
 use crate::domain::{
@@ -353,8 +353,27 @@ fn compile_deck_internal(
                             oracle_text: &face.oracle_text,
                         })
                         .collect::<Vec<_>>();
-                    compile_face_bound_ability_program(oracle_input, &face_inputs)
+                    let face_characteristics = definition
+                        .faces
+                        .iter()
+                        .map(|face| FaceCastCharacteristicsInput {
+                            name: &face.name,
+                            type_line: &face.type_line,
+                            mana_cost: face.mana_cost.as_deref(),
+                            colors: &face.colors,
+                            color_indicator: &face.color_indicator,
+                            keywords: &face.keywords,
+                            power: face.power.as_deref(),
+                            toughness: face.toughness.as_deref(),
+                        })
+                        .collect::<Vec<_>>();
+                    compile_face_bound_ability_program_with_characteristics(
+                        oracle_input,
+                        &face_inputs,
+                        &face_characteristics,
+                    )
                 };
+                effects.retain_exact_mana_network_program(&definition.type_line, &ability_program);
                 let complete_necropotence_lifecycle =
                     ability_program_has_complete_necropotence_lifecycle(&ability_program);
                 if ability_program_has_necropotence_lifecycle_candidate(&ability_program)

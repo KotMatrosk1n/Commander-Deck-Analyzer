@@ -54,6 +54,7 @@ export async function getDataStatus(): Promise<DataStatus> {
       cardCount: 1847,
       source: "Scryfall API cache",
       message: "Browser preview: native card data is unavailable.",
+      schemaVersion: "unavailable",
     };
   }
   return invoke<DataStatus>("get_data_status");

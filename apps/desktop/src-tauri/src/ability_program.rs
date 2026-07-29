@@ -11,7 +11,7 @@
 
 use regex::{Regex, RegexBuilder};
 
-pub(crate) const EXECUTABLE_ABILITY_PROGRAM_VERSION: &str = "executable-ability-program/v16";
+pub(crate) const EXECUTABLE_ABILITY_PROGRAM_VERSION: &str = "executable-ability-program/v22";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OracleCardInput<'a> {
@@ -30,6 +30,18 @@ pub(crate) struct OracleCardFaceInput<'a> {
     pub name: &'a str,
     pub type_line: &'a str,
     pub oracle_text: &'a str,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FaceCastCharacteristicsInput<'a> {
+    pub name: &'a str,
+    pub type_line: &'a str,
+    pub mana_cost: Option<&'a str>,
+    pub colors: &'a [String],
+    pub color_indicator: &'a [String],
+    pub keywords: &'a [String],
+    pub power: Option<&'a str>,
+    pub toughness: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +80,14 @@ pub(crate) struct ExecutableAbilityProgramV1 {
     /// root transaction candidate is recognized, it owns every paragraph of
     /// that candidate so a supported-looking sibling cannot execute alone.
     pub atomic_transaction: Option<AtomicTransactionCompilation>,
+    /// One complete graveyard reclamation spell root. Its targeted movement,
+    /// Flashback permission and replacement, and conditional spell-copy
+    /// procedure cannot execute as independent Oracle paragraphs.
+    ///
+    /// The copy is a distinct stack object but is never a cast object. The
+    /// physical source card remains separately attributable so a Flashback
+    /// stack exit always applies to that card and never to its copy.
+    pub graveyard_reclamation: Option<GraveyardReclamationCompilation>,
     /// Exact face-bound programs retained independently for supported
     /// transforming and modal double-faced layouts. Legacy consumers continue
     /// to see only the primary castable face in `abilities`; alternate faces
@@ -87,6 +107,7 @@ impl ExecutableAbilityProgramV1 {
             self_transfer_tutor_permanent: None,
             entry_linked_permanent: None,
             atomic_transaction: None,
+            graveyard_reclamation: None,
             face_programs: Vec::new(),
         }
     }
@@ -164,6 +185,20 @@ impl ExecutableAbilityProgramV1 {
             AtomicTransactionCompilation::Unsupported(transaction) => Some(transaction),
         }
     }
+
+    pub fn executable_graveyard_reclamation(&self) -> Option<&ExecutableGraveyardReclamation> {
+        match self.graveyard_reclamation.as_ref()? {
+            GraveyardReclamationCompilation::Executable(program) => Some(program),
+            GraveyardReclamationCompilation::Unsupported(_) => None,
+        }
+    }
+
+    pub fn unsupported_graveyard_reclamation(&self) -> Option<&UnsupportedGraveyardReclamation> {
+        match self.graveyard_reclamation.as_ref()? {
+            GraveyardReclamationCompilation::Executable(_) => None,
+            GraveyardReclamationCompilation::Unsupported(program) => Some(program),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,12 +206,27 @@ pub(crate) struct BoundFaceAbilityProgram {
     pub face_index: usize,
     pub name: String,
     pub type_line: String,
+    /// Exact characteristics retained for a modal face while it is being
+    /// cast and while the resulting permanent remains on the battlefield.
+    /// Transform faces deliberately omit this because their back face cannot
+    /// be chosen as an alternate spell.
+    pub cast_characteristics: Option<BoundFaceCastCharacteristics>,
     pub disposition: FaceProgramDisposition,
     pub abilities: Vec<AbilityCompilation>,
     pub necropotence_lifecycle: Option<NecropotenceLifecycleCompilation>,
     pub self_transfer_tutor_permanent: Option<SelfTransferTutorPermanentCompilation>,
     pub entry_linked_permanent: Option<EntryLinkedPermanentCompilation>,
     pub atomic_transaction: Option<AtomicTransactionCompilation>,
+    pub graveyard_reclamation: Option<GraveyardReclamationCompilation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoundFaceCastCharacteristics {
+    pub mana_cost: Option<String>,
+    pub colors: Vec<String>,
+    pub keywords: Vec<String>,
+    pub printed_power: Option<i16>,
+    pub printed_toughness: Option<i16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +322,220 @@ pub(crate) struct NecropotenceCardAccessActivation {
     pub window: ActivationWindow,
     pub costs: Vec<AbilityCost>,
     pub access: LinkedDelayedCardAccessEffect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationCompilation {
+    Executable(ExecutableGraveyardReclamation),
+    Unsupported(UnsupportedGraveyardReclamation),
+}
+
+/// One complete reviewed spell root that returns a small permanent from its
+/// controller's graveyard and has a linked Flashback copy procedure.
+///
+/// The root is deliberately not represented as three independent abilities.
+/// A runtime must retain the source card, source spell, optional spell copy,
+/// and each spell object's target as separate identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecutableGraveyardReclamation {
+    pub normalized_oracle: String,
+    pub source_spell: GraveyardReclamationSourceSpell,
+    pub flashback: GraveyardReclamationFlashback,
+    pub resolution_order: GraveyardReclamationResolutionOrder,
+    pub pending_trigger_order: GraveyardReclamationPendingTriggerOrder,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnsupportedGraveyardReclamation {
+    pub normalized_oracle: String,
+    pub reasons: Vec<UnsupportedReason>,
+}
+
+/// The original spell is the physical source card represented on the stack.
+/// Its target is chosen while casting. The same ordered resolution procedure
+/// is copied when the second instruction creates a spell copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationSourceSpell {
+    pub physical_card: GraveyardReclamationObject,
+    pub stack_object: GraveyardReclamationObject,
+    pub target: GraveyardReclamationTarget,
+    pub target_selection: GraveyardReclamationTargetSelection,
+    pub resolution: GraveyardReclamationSpellResolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationObject {
+    PhysicalSourceCard,
+    SourceSpellOnStack,
+    CopyOfSourceSpellOnStack,
+    TargetOfThisSpellOrCopy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationTarget {
+    pub chooser: ControllerRelation,
+    pub count: u16,
+    pub graveyard_owner: ControllerRelation,
+    pub from: Zone,
+    pub card_type: CardType,
+    pub maximum_mana_value: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationTargetSelection {
+    ChooseOneLegalTargetDuringCast,
+}
+
+/// The source spell and its optional copy share this ordered resolution
+/// procedure. Target legality is checked before either instruction. A spell
+/// whose sole target is illegal does not resolve, so neither the return nor
+/// the conditional copy instruction occurs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationSpellResolution {
+    pub target_legality: GraveyardReclamationResolutionTargetLegality,
+    pub all_targets_illegal: GraveyardReclamationAllTargetsIllegalOutcome,
+    pub instructions: Vec<GraveyardReclamationResolutionInstruction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationResolutionInstruction {
+    ReturnTargetToBattlefield(GraveyardReclamationReturnTarget),
+    CreateConditionalCopy(GraveyardReclamationCopyProcedure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationReturnTarget {
+    pub object: GraveyardReclamationObject,
+    pub from: Zone,
+    pub to: Zone,
+    pub destination_controller: ControllerRelation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationResolutionTargetLegality {
+    CheckAllTargetsBeforeResolutionInstructions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationAllTargetsIllegalOutcome {
+    SpellDoesNotResolveAndSkipsAllInstructions,
+}
+
+/// Flashback casts the one physical source card from its owner's graveyard
+/// for an alternative cost. Under CR 702.34a, if that card would leave the
+/// stack for any reason, including being countered, it is exiled instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationFlashback {
+    pub action: GraveyardReclamationCastAction,
+    pub object: GraveyardReclamationObject,
+    pub owner: ControllerRelation,
+    pub from: Zone,
+    pub to: Zone,
+    pub alternative_cost: ManaCost,
+    pub cast_sequence: Vec<GraveyardReclamationFlashbackCastStep>,
+    pub stack_exit_replacement: GraveyardReclamationStackExitReplacement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationCastAction {
+    CastPhysicalSourceCard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationFlashbackCastStep {
+    /// CR 601.2 moves the physical card to the stack before choices and cost
+    /// payment. Alternative-cost choice is retained separately from the total
+    /// cost determination and payment sequence in CR 601.2b and 601.2f-h.
+    MovePhysicalSourceCardToStack,
+    ChooseFlashbackAlternativeCost,
+    ChooseRequiredLegalTarget,
+    DetermineTotalCost,
+    ActivateManaAbilities,
+    PayTotalCost,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationStackExitReplacement {
+    pub object: GraveyardReclamationObject,
+    pub event: GraveyardReclamationStackExitEvent,
+    pub replacement_destination: Zone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationStackExitEvent {
+    FlashbackSourceWouldLeaveStackForAnyReason,
+}
+
+/// The second instruction of a legally resolving source spell may create one
+/// spell copy if that source spell was cast from a graveyard. This is part of
+/// the spell's resolution, not a cast trigger. Under CR 707.10 and 707.10c,
+/// the copy is put on the stack without being cast, and a changed target must
+/// be legal. Creating the copy is optional, and choosing a new legal target
+/// for that copy is a separate optional decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationCopyProcedure {
+    pub condition: GraveyardReclamationCopyCondition,
+    pub timing: GraveyardReclamationCopyTiming,
+    pub source_object: GraveyardReclamationObject,
+    pub optional: bool,
+    pub copy: GraveyardReclamationSpellCopy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationCopyCondition {
+    ThisSpellWasCastFromGraveyard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationCopyTiming {
+    SecondInstructionAfterTargetReturn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationSpellCopy {
+    pub object: GraveyardReclamationObject,
+    pub destination: Zone,
+    pub is_cast: bool,
+    pub inherits_source_effect: bool,
+    pub inherits_source_target: bool,
+    pub retarget: GraveyardReclamationRetargetPermission,
+    pub stack_position: GraveyardReclamationStackPosition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraveyardReclamationRetargetPermission {
+    pub optional: bool,
+    pub target: GraveyardReclamationTarget,
+    pub timing: GraveyardReclamationRetargetTiming,
+    pub legality: GraveyardReclamationRetargetLegality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationRetargetTiming {
+    AsCopyIsPutOntoStack,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationRetargetLegality {
+    MustSatisfySourceTargetDefinition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationStackPosition {
+    AboveResolvingSourceSpell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationResolutionOrder {
+    SourceSpellFinishesAndLeavesStackBeforeCopyCanResolve,
+}
+
+/// Triggered abilities created by the first return wait until the source spell
+/// finishes. They are then put above the already-created copy, so a bounded
+/// runtime must process that trigger boundary before resolving the copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardReclamationPendingTriggerOrder {
+    SourceReturnTriggersArePutAboveCopyAfterSourceFinishes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -758,8 +1022,15 @@ pub(crate) enum UnsupportedReasonCode {
 pub(crate) enum AbilityTiming {
     DeckConstruction,
     SpellResolution,
-    Activated { window: ActivationWindow },
-    Triggered { event: TriggerEvent },
+    /// The source Aura spell chooses a legal target while it is on the stack.
+    /// This is distinct from resolution and from an Equipment activation.
+    AuraSpellTargeting,
+    Activated {
+        window: ActivationWindow,
+    },
+    Triggered {
+        event: TriggerEvent,
+    },
     StaticModifier,
 }
 
@@ -797,6 +1068,10 @@ pub(crate) enum TriggerEventKind {
     OneOrMoreCreaturesDealCombatDamageToPlayer,
     ChosenTypeCreatureEntersOrAttacks,
     OtherFlyingCreatureEntersBattlefield,
+    /// The source permanent becomes the target of a spell or ability an
+    /// opponent controls. The triggering stack object remains separately
+    /// attributable for the linked Ward payment.
+    SourceBecomesTargetByOpponentSpellOrAbility,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -962,6 +1237,9 @@ pub(crate) enum AbilityEffect {
     CreateToken(TokenEffect),
     MoveZone(ZoneMovementEffect),
     GrantCastPermission(CastPermissionEffect),
+    GrantCastTimingPermission(CastTimingPermissionEffect),
+    Ward(WardEffect),
+    Scry(ScryEffect),
     ModifyNonlandMana(NonlandManaModifier),
     /// One indivisible mana-ability resolution. The source's damage cannot be
     /// dropped while retaining only the mana output.
@@ -1552,6 +1830,40 @@ pub(crate) enum CastPermissionKind {
     Escape,
 }
 
+/// A permission that changes only when the source spell may be cast. The
+/// source zone is explicit so a hand-only executor cannot silently broaden
+/// the permission to graveyard or exile casts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CastTimingPermissionEffect {
+    pub from: Zone,
+    pub window: ActivationWindow,
+}
+
+/// One complete Ward trigger. The source permanent, opposing stack-object
+/// controller, exact payment, and counter-on-nonpayment consequence remain
+/// linked so no consumer can treat Ward as unconditional hexproof.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WardEffect {
+    pub target: TargetSelector,
+    pub triggering_object_controller: ControllerRelation,
+    pub payment: Vec<AbilityCost>,
+    pub counter_triggering_spell_or_ability_unless_paid: bool,
+}
+
+/// The complete bounded Scry procedure. The controller looks at exactly the
+/// retained top-card count, may move any number of those cards, preserves the
+/// relative order of cards left on top, and may choose the order of cards
+/// moved to the bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScryEffect {
+    pub player: ControllerRelation,
+    pub count: u16,
+    pub from: Zone,
+    pub may_put_any_number_on_bottom: bool,
+    pub preserve_kept_relative_order: bool,
+    pub may_order_bottom_cards: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NonlandManaModifier {
     pub additional_amount: u16,
@@ -1566,6 +1878,14 @@ pub(crate) struct NonlandManaModifier {
 pub(crate) fn compile_face_bound_ability_program(
     root: OracleCardInput<'_>,
     faces: &[OracleCardFaceInput<'_>],
+) -> ExecutableAbilityProgramV1 {
+    compile_face_bound_ability_program_with_characteristics(root, faces, &[])
+}
+
+pub(crate) fn compile_face_bound_ability_program_with_characteristics(
+    root: OracleCardInput<'_>,
+    faces: &[OracleCardFaceInput<'_>],
+    characteristics: &[FaceCastCharacteristicsInput<'_>],
 ) -> ExecutableAbilityProgramV1 {
     let layout = root.layout.trim().to_ascii_lowercase();
     if !matches!(layout.as_str(), "modal_dfc" | "transform")
@@ -1598,18 +1918,58 @@ pub(crate) fn compile_face_bound_ability_program(
         .iter()
         .enumerate()
         .map(|(face_index, program)| {
+            let cast_characteristics = (layout == "modal_dfc")
+                .then(|| characteristics.get(face_index))
+                .flatten()
+                .filter(|characteristics| {
+                    characteristics.name.trim() == faces[face_index].name.trim()
+                        && characteristics.type_line.trim() == faces[face_index].type_line.trim()
+                })
+                .map(|characteristics| BoundFaceCastCharacteristics {
+                    mana_cost: characteristics
+                        .mana_cost
+                        .map(str::trim)
+                        .filter(|cost| !cost.is_empty())
+                        .map(str::to_string),
+                    colors: characteristics
+                        .colors
+                        .iter()
+                        .chain(characteristics.color_indicator)
+                        .filter(|color| {
+                            matches!(
+                                color.trim().to_ascii_uppercase().as_str(),
+                                "W" | "U" | "B" | "R" | "G"
+                            )
+                        })
+                        .map(|color| color.trim().to_ascii_uppercase())
+                        .fold(Vec::<String>::new(), |mut colors, color| {
+                            if !colors.contains(&color) {
+                                colors.push(color);
+                            }
+                            colors
+                        }),
+                    keywords: characteristics.keywords.to_vec(),
+                    printed_power: characteristics
+                        .power
+                        .and_then(|power| power.trim().parse::<i16>().ok()),
+                    printed_toughness: characteristics
+                        .toughness
+                        .and_then(|toughness| toughness.trim().parse::<i16>().ok()),
+                });
             let has_executable_program = program.executable_abilities().next().is_some()
                 || program.executable_necropotence_lifecycle().is_some()
                 || program.executable_self_transfer_tutor_permanent().is_some()
                 || program.executable_entry_linked_permanent().is_some()
-                || program.executable_atomic_transaction().is_some();
+                || program.executable_atomic_transaction().is_some()
+                || program.executable_graveyard_reclamation().is_some();
             let is_complete = program.unsupported_abilities().next().is_none()
                 && program.unsupported_necropotence_lifecycle().is_none()
                 && program
                     .unsupported_self_transfer_tutor_permanent()
                     .is_none()
                 && program.unsupported_entry_linked_permanent().is_none()
-                && program.unsupported_atomic_transaction().is_none();
+                && program.unsupported_atomic_transaction().is_none()
+                && program.unsupported_graveyard_reclamation().is_none();
             let disposition = if face_index == 0 {
                 FaceProgramDisposition::PrimaryCastable
             } else if layout == "modal_dfc" && has_executable_program && is_complete {
@@ -1621,12 +1981,14 @@ pub(crate) fn compile_face_bound_ability_program(
                 face_index,
                 name: faces[face_index].name.to_string(),
                 type_line: faces[face_index].type_line.to_string(),
+                cast_characteristics,
                 disposition,
                 abilities: program.abilities.clone(),
                 necropotence_lifecycle: program.necropotence_lifecycle.clone(),
                 self_transfer_tutor_permanent: program.self_transfer_tutor_permanent.clone(),
                 entry_linked_permanent: program.entry_linked_permanent.clone(),
                 atomic_transaction: program.atomic_transaction.clone(),
+                graveyard_reclamation: program.graveyard_reclamation.clone(),
             }
         })
         .collect();
@@ -1639,6 +2001,7 @@ pub(crate) fn compile_face_bound_ability_program(
         self_transfer_tutor_permanent: primary.self_transfer_tutor_permanent.clone(),
         entry_linked_permanent: primary.entry_linked_permanent.clone(),
         atomic_transaction: primary.atomic_transaction.clone(),
+        graveyard_reclamation: primary.graveyard_reclamation.clone(),
         face_programs,
     }
 }
@@ -1665,6 +2028,7 @@ pub(crate) fn compile_executable_ability_program(
             self_transfer_tutor_permanent: None,
             entry_linked_permanent: None,
             atomic_transaction: None,
+            graveyard_reclamation: None,
             face_programs: Vec::new(),
         };
     }
@@ -1691,6 +2055,7 @@ pub(crate) fn compile_executable_ability_program(
             self_transfer_tutor_permanent: None,
             entry_linked_permanent: None,
             atomic_transaction: None,
+            graveyard_reclamation: None,
             face_programs: Vec::new(),
         };
     }
@@ -1714,6 +2079,7 @@ pub(crate) fn compile_executable_ability_program(
             self_transfer_tutor_permanent: Some(self_transfer_tutor_permanent),
             entry_linked_permanent: None,
             atomic_transaction: None,
+            graveyard_reclamation: None,
             face_programs: Vec::new(),
         };
     }
@@ -1737,6 +2103,31 @@ pub(crate) fn compile_executable_ability_program(
             self_transfer_tutor_permanent: None,
             entry_linked_permanent: Some(entry_linked_permanent),
             atomic_transaction: None,
+            graveyard_reclamation: None,
+            face_programs: Vec::new(),
+        };
+    }
+    if let Some(graveyard_reclamation) =
+        compile_graveyard_reclamation(&normalized_oracle, input.type_line)
+    {
+        let abilities = match &graveyard_reclamation {
+            GraveyardReclamationCompilation::Executable(_) => Vec::new(),
+            GraveyardReclamationCompilation::Unsupported(program) => {
+                vec![AbilityCompilation::Unsupported(UnsupportedAbility {
+                    clause_index: 0,
+                    normalized_oracle: program.normalized_oracle.clone(),
+                    reasons: program.reasons.clone(),
+                })]
+            }
+        };
+        return ExecutableAbilityProgramV1 {
+            version: EXECUTABLE_ABILITY_PROGRAM_VERSION,
+            abilities,
+            necropotence_lifecycle: None,
+            self_transfer_tutor_permanent: None,
+            entry_linked_permanent: None,
+            atomic_transaction: None,
+            graveyard_reclamation: Some(graveyard_reclamation),
             face_programs: Vec::new(),
         };
     }
@@ -1760,13 +2151,21 @@ pub(crate) fn compile_executable_ability_program(
             self_transfer_tutor_permanent: None,
             entry_linked_permanent: None,
             atomic_transaction: Some(atomic_transaction),
+            graveyard_reclamation: None,
             face_programs: Vec::new(),
         };
     }
-    let abilities = if is_variable_creature_tutor_overrun_candidate(&normalized_oracle) {
+    let abilities = if let Some(compilation) = compile_tap_sacrifice_any_color_mana_root(
+        input.oracle_text,
+        input.name,
+        input.type_line,
+        &normalized_oracle,
+    ) {
+        vec![compilation]
+    } else if is_variable_creature_tutor_overrun_candidate(&normalized_oracle) {
         // The reviewed variable-X tutor and its conditional overrun are one
         // spell-resolution ability in current Oracle text. Some historical
-        // source records wrapped the second sentence onto a new line. Compile the
+        // exports wrapped the second sentence onto a new line. Compile the
         // complete normalized text atomically so presentation wrapping cannot
         // change behavior and no supported-looking subset can execute alone.
         vec![compile_clause(0, &normalized_oracle, input.type_line)]
@@ -1788,8 +2187,76 @@ pub(crate) fn compile_executable_ability_program(
         self_transfer_tutor_permanent: None,
         entry_linked_permanent: None,
         atomic_transaction: None,
+        graveyard_reclamation: None,
         face_programs: Vec::new(),
     }
+}
+
+fn compile_tap_sacrifice_any_color_mana_root(
+    oracle_text: &str,
+    card_name: &str,
+    type_line: &str,
+    normalized_oracle: &str,
+) -> Option<AbilityCompilation> {
+    let clauses = oracle_clauses(oracle_text);
+    let normalized_clauses = clauses
+        .iter()
+        .map(|clause| normalize_self_reference(clause, card_name, type_line))
+        .collect::<Vec<_>>();
+    if !normalized_clauses
+        .iter()
+        .any(|clause| is_tap_sacrifice_any_color_mana_candidate(clause))
+    {
+        return None;
+    }
+
+    const CURRENT: &str = "{t}, sacrifice this permanent: add one mana of any color";
+    let exact_root = normalized_clauses.len() == 1
+        && trim_terminal_period(&normalized_clauses[0].to_ascii_lowercase()) == CURRENT;
+    if !exact_root || !type_line_has_card_type(type_line, "artifact") {
+        return Some(unsupported(
+            0,
+            normalized_oracle,
+            UnsupportedReason::new(
+                UnsupportedReasonCode::MixedKnownAndUnknownEffect,
+                "The reviewed artifact mana root requires exactly tap, then sacrifice this source, to add one mana of any color, with no reordered costs, extra costs, extra effects, or sibling clauses.",
+            ),
+        ));
+    }
+
+    Some(AbilityCompilation::Executable(ExecutableAbility {
+        clause_index: 0,
+        normalized_oracle: normalized_clauses[0].clone(),
+        timing: AbilityTiming::Activated {
+            window: ActivationWindow::NormalPriority,
+        },
+        costs: vec![AbilityCost::TapSelf, AbilityCost::SacrificeSelf],
+        preconditions: vec![
+            AbilityPrecondition::SourceZone(Zone::Battlefield),
+            AbilityPrecondition::SourceUntapped,
+        ],
+        effects: vec![AbilityEffect::AddMana(ManaEffect {
+            amount: 1,
+            kind: ManaKind::AnyOneColor,
+        })],
+    }))
+}
+
+fn is_tap_sacrifice_any_color_mana_candidate(normalized_clause: &str) -> bool {
+    let lower = trim_terminal_period(normalized_clause).to_ascii_lowercase();
+    let Some((costs, effect)) = lower.split_once(':') else {
+        return false;
+    };
+    let costs = costs.trim();
+    let effect = effect.trim();
+
+    !costs.contains('.')
+        && !costs.contains('(')
+        && !costs.contains('"')
+        && costs.contains("sacrifice")
+        && effect.starts_with("add ")
+        && effect.contains("mana")
+        && effect.contains("any color")
 }
 
 fn compile_necropotence_lifecycle(
@@ -2074,6 +2541,157 @@ fn unsupported_entry_linked_permanent(
     detail: impl Into<String>,
 ) -> EntryLinkedPermanentCompilation {
     EntryLinkedPermanentCompilation::Unsupported(UnsupportedEntryLinkedPermanent {
+        normalized_oracle: normalized_oracle.to_string(),
+        reasons: vec![UnsupportedReason::new(
+            UnsupportedReasonCode::MixedKnownAndUnknownEffect,
+            detail,
+        )],
+    })
+}
+
+fn compile_graveyard_reclamation(
+    normalized_oracle: &str,
+    type_line: &str,
+) -> Option<GraveyardReclamationCompilation> {
+    let lower = trim_terminal_period(&normalized_oracle.to_ascii_lowercase()).to_string();
+    if !is_graveyard_reclamation_candidate(&lower) {
+        return None;
+    }
+
+    const CURRENT: &str = "return target permanent card with mana value 3 or less from your graveyard to the battlefield. if this spell was cast from a graveyard, you may copy this spell and may choose a new target for the copy. flashback {4}{w} (you may cast this card from your graveyard for its flashback cost. then exile it.)";
+
+    if !type_line.trim().eq_ignore_ascii_case("sorcery") || lower != CURRENT {
+        return Some(unsupported_graveyard_reclamation(
+            normalized_oracle,
+            "The reviewed graveyard reclamation spell requires the complete Sorcery root: exactly one target permanent card with mana value 3 or less from your graveyard; movement of that target to the battlefield; an optional second resolution instruction that copies the spell only after its legal target returns, with separately optional legal retargeting; and Flashback {4}{W} with the physical source card exiled whenever it would leave the stack.",
+        ));
+    }
+
+    let target = GraveyardReclamationTarget {
+        chooser: ControllerRelation::You,
+        count: 1,
+        graveyard_owner: ControllerRelation::You,
+        from: Zone::Graveyard,
+        card_type: CardType::Permanent,
+        maximum_mana_value: 3,
+    };
+    Some(GraveyardReclamationCompilation::Executable(
+        ExecutableGraveyardReclamation {
+            normalized_oracle: normalized_oracle.to_string(),
+            source_spell: GraveyardReclamationSourceSpell {
+                physical_card: GraveyardReclamationObject::PhysicalSourceCard,
+                stack_object: GraveyardReclamationObject::SourceSpellOnStack,
+                target: target.clone(),
+                target_selection:
+                    GraveyardReclamationTargetSelection::ChooseOneLegalTargetDuringCast,
+                resolution: GraveyardReclamationSpellResolution {
+                    target_legality:
+                        GraveyardReclamationResolutionTargetLegality::CheckAllTargetsBeforeResolutionInstructions,
+                    all_targets_illegal:
+                        GraveyardReclamationAllTargetsIllegalOutcome::SpellDoesNotResolveAndSkipsAllInstructions,
+                    instructions: vec![
+                        GraveyardReclamationResolutionInstruction::ReturnTargetToBattlefield(
+                            GraveyardReclamationReturnTarget {
+                                object: GraveyardReclamationObject::TargetOfThisSpellOrCopy,
+                                from: Zone::Graveyard,
+                                to: Zone::Battlefield,
+                                destination_controller: ControllerRelation::You,
+                            },
+                        ),
+                        GraveyardReclamationResolutionInstruction::CreateConditionalCopy(
+                            GraveyardReclamationCopyProcedure {
+                                condition:
+                                    GraveyardReclamationCopyCondition::ThisSpellWasCastFromGraveyard,
+                                timing:
+                                    GraveyardReclamationCopyTiming::SecondInstructionAfterTargetReturn,
+                                source_object:
+                                    GraveyardReclamationObject::SourceSpellOnStack,
+                                optional: true,
+                                copy: GraveyardReclamationSpellCopy {
+                                    object:
+                                        GraveyardReclamationObject::CopyOfSourceSpellOnStack,
+                                    destination: Zone::Stack,
+                                    is_cast: false,
+                                    inherits_source_effect: true,
+                                    inherits_source_target: true,
+                                    retarget: GraveyardReclamationRetargetPermission {
+                                        optional: true,
+                                        target: target.clone(),
+                                        timing:
+                                            GraveyardReclamationRetargetTiming::AsCopyIsPutOntoStack,
+                                        legality:
+                                            GraveyardReclamationRetargetLegality::MustSatisfySourceTargetDefinition,
+                                    },
+                                    stack_position:
+                                        GraveyardReclamationStackPosition::AboveResolvingSourceSpell,
+                                },
+                            },
+                        ),
+                    ],
+                },
+            },
+            flashback: GraveyardReclamationFlashback {
+                action: GraveyardReclamationCastAction::CastPhysicalSourceCard,
+                object: GraveyardReclamationObject::PhysicalSourceCard,
+                owner: ControllerRelation::You,
+                from: Zone::Graveyard,
+                to: Zone::Stack,
+                alternative_cost: ManaCost::PrintedSymbols {
+                    oracle: "{4}{W}".to_string(),
+                    profile: ManaCostProfile {
+                        generic: 4,
+                        white: 1,
+                        ..ManaCostProfile::default()
+                    },
+                },
+                cast_sequence: vec![
+                    GraveyardReclamationFlashbackCastStep::MovePhysicalSourceCardToStack,
+                    GraveyardReclamationFlashbackCastStep::ChooseFlashbackAlternativeCost,
+                    GraveyardReclamationFlashbackCastStep::ChooseRequiredLegalTarget,
+                    GraveyardReclamationFlashbackCastStep::DetermineTotalCost,
+                    GraveyardReclamationFlashbackCastStep::ActivateManaAbilities,
+                    GraveyardReclamationFlashbackCastStep::PayTotalCost,
+                ],
+                stack_exit_replacement: GraveyardReclamationStackExitReplacement {
+                    object: GraveyardReclamationObject::PhysicalSourceCard,
+                    event: GraveyardReclamationStackExitEvent::FlashbackSourceWouldLeaveStackForAnyReason,
+                    replacement_destination: Zone::Exile,
+                },
+            },
+            resolution_order:
+                GraveyardReclamationResolutionOrder::SourceSpellFinishesAndLeavesStackBeforeCopyCanResolve,
+            pending_trigger_order:
+                GraveyardReclamationPendingTriggerOrder::SourceReturnTriggersArePutAboveCopyAfterSourceFinishes,
+        },
+    ))
+}
+
+fn is_graveyard_reclamation_candidate(lower: &str) -> bool {
+    let has_targeted_reclamation = lower.contains(
+        "return target permanent card with mana value 3 or less from your graveyard to the battlefield",
+    );
+    let has_graveyard_copy = lower.contains(
+        "if this spell was cast from a graveyard, you may copy this spell and may choose a new target for the copy",
+    );
+    let has_linked_flashback = lower.contains(
+        "flashback {4}{w} (you may cast this card from your graveyard for its flashback cost. then exile it.)",
+    );
+    [
+        has_targeted_reclamation,
+        has_graveyard_copy,
+        has_linked_flashback,
+    ]
+    .into_iter()
+    .filter(|signature| *signature)
+    .count()
+        >= 2
+}
+
+fn unsupported_graveyard_reclamation(
+    normalized_oracle: &str,
+    detail: impl Into<String>,
+) -> GraveyardReclamationCompilation {
+    GraveyardReclamationCompilation::Unsupported(UnsupportedGraveyardReclamation {
         normalized_oracle: normalized_oracle.to_string(),
         reasons: vec![UnsupportedReason::new(
             UnsupportedReasonCode::MixedKnownAndUnknownEffect,
@@ -2638,10 +3256,7 @@ fn oracle_clauses(oracle_text: &str) -> Vec<&str> {
 }
 
 fn normalize_self_reference(clause: &str, card_name: &str, type_line: &str) -> String {
-    let mut normalized = clause
-        .trim()
-        .replace('’', "'")
-        .replace(['\u{2013}', '\u{2014}'], "-");
+    let mut normalized = clause.trim().replace('’', "'");
     if !card_name.trim().is_empty() {
         let self_reference = RegexBuilder::new(&regex::escape(card_name.trim()))
             .case_insensitive(true)
@@ -2679,6 +3294,20 @@ fn normalize_self_reference(clause: &str, card_name: &str, type_line: &str) -> S
     normalized.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Canonical source identity shared with the execution-coverage binder.
+///
+/// This deliberately exposes only the same name-independent normalization
+/// already used by the ability compiler. It does not compile or authorize an
+/// ability.
+pub(crate) fn normalize_oracle_clause_for_receipt(
+    clause: &str,
+    card_name: &str,
+    type_line: &str,
+) -> String {
+    let normalized = normalize_self_reference(clause, card_name, type_line);
+    strip_ability_word_prefix(&normalized).to_string()
+}
+
 fn strip_ability_word_prefix(clause: &str) -> &str {
     let Some((label, rules_text)) = clause.split_once(" - ") else {
         return clause;
@@ -2714,6 +3343,15 @@ fn compile_clause(
     if let Some(compilation) =
         compile_self_alternative_spell_cost_clause(clause_index, normalized_oracle, type_line)
     {
+        return compilation;
+    }
+    if let Some(compilation) = compile_flash_clause(clause_index, normalized_oracle, type_line) {
+        return compilation;
+    }
+    if let Some(compilation) = compile_ward_clause(clause_index, normalized_oracle, type_line) {
+        return compilation;
+    }
+    if let Some(compilation) = compile_enchant_clause(clause_index, normalized_oracle, type_line) {
         return compilation;
     }
     if contains_modal_structure(normalized_oracle) {
@@ -2816,6 +3454,199 @@ fn compile_clause(
             "The paragraph is not a supported spell-resolution, activated, triggered, or static template.",
         ),
     )
+}
+
+fn compile_flash_clause(
+    clause_index: usize,
+    normalized_oracle: &str,
+    type_line: &str,
+) -> Option<AbilityCompilation> {
+    let lowercase = normalized_oracle.to_ascii_lowercase();
+    let lower = trim_terminal_period(&lowercase);
+    if !lower.starts_with("flash") {
+        return None;
+    }
+    if !matches!(
+        lower,
+        "flash" | "flash (you may cast this spell any time you could cast an instant.)"
+    ) {
+        return Some(unsupported(
+            clause_index,
+            normalized_oracle,
+            UnsupportedReason::new(
+                UnsupportedReasonCode::MixedKnownAndUnknownEffect,
+                "Flash requires the exact printed keyword and, when present, its complete instant-timing reminder.",
+            ),
+        ));
+    }
+    if !is_nonland_spell_source_type(type_line) {
+        return Some(unsupported(
+            clause_index,
+            normalized_oracle,
+            UnsupportedReason::new(
+                UnsupportedReasonCode::UnsupportedQualifier,
+                "Flash requires a castable nonland spell source.",
+            ),
+        ));
+    }
+
+    Some(AbilityCompilation::Executable(ExecutableAbility {
+        clause_index,
+        normalized_oracle: normalized_oracle.to_string(),
+        timing: AbilityTiming::StaticModifier,
+        costs: Vec::new(),
+        preconditions: vec![AbilityPrecondition::SourceZone(Zone::Hand)],
+        effects: vec![AbilityEffect::GrantCastTimingPermission(
+            CastTimingPermissionEffect {
+                from: Zone::Hand,
+                window: ActivationWindow::InstantSpeedOnly,
+            },
+        )],
+    }))
+}
+
+fn compile_ward_clause(
+    clause_index: usize,
+    normalized_oracle: &str,
+    type_line: &str,
+) -> Option<AbilityCompilation> {
+    let lowercase = normalized_oracle.to_ascii_lowercase();
+    let lower = trim_terminal_period(&lowercase);
+    if !lower.starts_with("ward") {
+        return None;
+    }
+    if !is_permanent_source_type(type_line) {
+        return Some(unsupported(
+            clause_index,
+            normalized_oracle,
+            UnsupportedReason::new(
+                UnsupportedReasonCode::UnsupportedQualifier,
+                "Ward requires a permanent source.",
+            ),
+        ));
+    }
+    let pattern = Regex::new(
+        r"^ward (?P<cost>(?:\{(?:[0-9]+|[wubrgcx])\})+)(?: \(whenever this permanent becomes the target of a spell or ability an opponent controls, counter it unless that player pays (?P<reminder_cost>(?:\{(?:[0-9]+|[wubrgcx])\})+)\.\))?$",
+    )
+    .expect("static Ward pattern is valid");
+    let Some(captures) = pattern.captures(lower) else {
+        return Some(unsupported(
+            clause_index,
+            normalized_oracle,
+            UnsupportedReason::new(
+                UnsupportedReasonCode::MixedKnownAndUnknownEffect,
+                "Ward requires one exact mana payment and, when present, its complete opposing-target and counter-unless-paid reminder.",
+            ),
+        ));
+    };
+    let cost_text = captures
+        .name("cost")
+        .expect("the Ward pattern always captures its cost")
+        .as_str();
+    if captures
+        .name("reminder_cost")
+        .is_some_and(|reminder| reminder.as_str() != cost_text)
+    {
+        return Some(unsupported(
+            clause_index,
+            normalized_oracle,
+            UnsupportedReason::new(
+                UnsupportedReasonCode::MixedKnownAndUnknownEffect,
+                "The Ward reminder payment must match the printed keyword payment.",
+            ),
+        ));
+    }
+    let cost = match parse_mana_cost(cost_text) {
+        Ok(cost) => cost,
+        Err(reason) => return Some(unsupported(clause_index, normalized_oracle, reason)),
+    };
+    let source_filter = ObjectFilter {
+        card_type: Some(CardType::Permanent),
+        controller: Some(ControllerRelation::You),
+        ..ObjectFilter::default()
+    };
+    let event = TriggerEvent {
+        kind: TriggerEventKind::SourceBecomesTargetByOpponentSpellOrAbility,
+        actor: ControllerRelation::Opponent,
+        object_filter: source_filter.clone(),
+    };
+
+    Some(AbilityCompilation::Executable(ExecutableAbility {
+        clause_index,
+        normalized_oracle: normalized_oracle.to_string(),
+        timing: AbilityTiming::Triggered {
+            event: event.clone(),
+        },
+        costs: Vec::new(),
+        preconditions: vec![
+            AbilityPrecondition::SourceZone(Zone::Battlefield),
+            AbilityPrecondition::EventObjectIsSource,
+            AbilityPrecondition::EventObjectMatches(event.object_filter),
+        ],
+        effects: vec![AbilityEffect::Ward(WardEffect {
+            target: TargetSelector::SelfPermanent,
+            triggering_object_controller: ControllerRelation::Opponent,
+            payment: vec![AbilityCost::Mana(cost)],
+            counter_triggering_spell_or_ability_unless_paid: true,
+        })],
+    }))
+}
+
+fn compile_enchant_clause(
+    clause_index: usize,
+    normalized_oracle: &str,
+    type_line: &str,
+) -> Option<AbilityCompilation> {
+    let lowercase = normalized_oracle.to_ascii_lowercase();
+    let lower = trim_terminal_period(&lowercase);
+    if !lower.starts_with("enchant ") {
+        return None;
+    }
+    if !type_line_has_card_type(type_line, "enchantment")
+        || !type_line_has_card_type(type_line, "aura")
+    {
+        return Some(unsupported(
+            clause_index,
+            normalized_oracle,
+            UnsupportedReason::new(
+                UnsupportedReasonCode::UnsupportedQualifier,
+                "Enchant requires an Enchantment source with the Aura subtype.",
+            ),
+        ));
+    }
+    let target = match lower {
+        "enchant creature" => ObjectFilter {
+            card_type: Some(CardType::Creature),
+            ..ObjectFilter::default()
+        },
+        "enchant creature you control" => ObjectFilter {
+            card_type: Some(CardType::Creature),
+            controller: Some(ControllerRelation::You),
+            ..ObjectFilter::default()
+        },
+        _ => {
+            return Some(unsupported(
+                clause_index,
+                normalized_oracle,
+                UnsupportedReason::new(
+                    UnsupportedReasonCode::UnsupportedQualifier,
+                    "This Enchant target restriction is not in the reviewed creature-target family.",
+                ),
+            ));
+        }
+    };
+
+    Some(AbilityCompilation::Executable(ExecutableAbility {
+        clause_index,
+        normalized_oracle: normalized_oracle.to_string(),
+        timing: AbilityTiming::AuraSpellTargeting,
+        costs: Vec::new(),
+        preconditions: vec![AbilityPrecondition::SourceZone(Zone::Stack)],
+        effects: vec![AbilityEffect::AttachSourceToTarget(AttachSourceEffect {
+            attachment_kind: AttachmentKind::Aura,
+            target,
+        })],
+    }))
 }
 
 fn compile_become_monarch_self_entry_clause(
@@ -3725,13 +4556,14 @@ fn compile_static_creature_modifier_clause(
                 body,
                 "aura",
             )
-        } else {
-            let body = lower.strip_prefix("equipped creature ")?;
+        } else if let Some(body) = lower.strip_prefix("equipped creature ") {
             (
                 StaticCreatureModifierTarget::CreatureEquippedBySource,
                 body,
                 "equipment",
             )
+        } else {
+            return None;
         };
 
     if !type_line_has_card_type(type_line, required_subtype) {
@@ -4837,6 +5669,9 @@ fn parse_effects(effect_text: &str) -> Result<Vec<AbilityEffect>, Vec<Unsupporte
         )]);
     }
 
+    if let Some(effects) = parse_scry_effects(lower) {
+        return Ok(effects);
+    }
     if let Some(effect) = parse_draw_effect(lower) {
         return Ok(vec![AbilityEffect::Draw(effect)]);
     }
@@ -4919,6 +5754,35 @@ fn parse_effects(effect_text: &str) -> Result<Vec<AbilityEffect>, Vec<Unsupporte
             "No reviewed executable effect template matched the entire paragraph."
         },
     )])
+}
+
+fn parse_scry_effects(lower: &str) -> Option<Vec<AbilityEffect>> {
+    let remainder = lower.strip_prefix("scry ")?;
+    let count_end = remainder
+        .find(|character: char| !character.is_ascii_alphanumeric())
+        .unwrap_or(remainder.len());
+    let count_text = remainder.get(..count_end)?;
+    let count = parse_number_word(count_text).filter(|count| *count > 0)?;
+    let trailing = remainder.get(count_end..)?.trim();
+    let scry = AbilityEffect::Scry(ScryEffect {
+        player: ControllerRelation::You,
+        count,
+        from: Zone::Library,
+        may_put_any_number_on_bottom: true,
+        preserve_kept_relative_order: true,
+        may_order_bottom_cards: true,
+    });
+    if trailing.is_empty() {
+        return Some(vec![scry]);
+    }
+    let draw_text = trailing
+        .strip_prefix(". ")
+        .or_else(|| trailing.strip_prefix(", then "))?;
+    let draw = parse_draw_effect(draw_text)?;
+    if draw.optional || draw.unless_event_player_pays.is_some() {
+        return None;
+    }
+    Some(vec![scry, AbilityEffect::Draw(draw)])
 }
 
 fn parse_upkeep_life_loss_creature_token_effects(effect_text: &str) -> Option<Vec<AbilityEffect>> {
@@ -5147,6 +6011,13 @@ fn parse_mana_effect(lower: &str) -> Option<ManaEffect> {
         });
     }
 
+    if lower == "add one mana of any color" {
+        return Some(ManaEffect {
+            amount: 1,
+            kind: ManaKind::AnyOneColor,
+        });
+    }
+
     let pattern = Regex::new(
         r"^add (?P<count>one|two|three|four|five|[0-9]+) mana of (?P<kind>any one color|any type that permanent produced)$",
     )
@@ -5287,9 +6158,10 @@ fn parse_mill_effect(lower: &str) -> Option<MillEffect> {
 fn parse_tap_effect(lower: &str) -> Option<(bool, TargetSelector)> {
     let (tap, target) = if let Some(target) = lower.strip_prefix("tap ") {
         (true, target)
-    } else {
-        let target = lower.strip_prefix("untap ")?;
+    } else if let Some(target) = lower.strip_prefix("untap ") {
         (false, target)
+    } else {
+        return None;
     };
     let selector = match target {
         "this permanent" => TargetSelector::SelfPermanent,

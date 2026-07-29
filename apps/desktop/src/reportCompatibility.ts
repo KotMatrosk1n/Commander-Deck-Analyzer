@@ -9,20 +9,20 @@ import type {
   TurnDistribution,
 } from "./types";
 
-export const CURRENT_SIMULATION_ENGINE_VERSION = "abstract-play-0.42";
+export const CURRENT_SIMULATION_ENGINE_VERSION = "abstract-play-0.48";
 export const CURRENT_TIMING_ENDPOINT_VERSION = "commander-timing-endpoints/v3";
 export const CURRENT_EFFECTIVE_HAND_STRENGTH_VERSION =
   "mtg-effective-hand-strength/v4";
 export const CURRENT_OPENING_CANDIDATE_COHORT_VERSION =
   "opening-candidate-cohort/v1";
 export const CURRENT_ABILITY_PROGRAM_VERSION =
-  "executable-ability-program/v16";
-export const CURRENT_TURN_PLANNER_VERSION = "bounded-beam-0.6";
+  "executable-ability-program/v22";
+export const CURRENT_TURN_PLANNER_VERSION = "bounded-beam-0.7";
 export const CURRENT_STRICT_ENGINE_VERSION = "strict-kernel-0.1";
 export const CURRENT_EXECUTION_COVERAGE_COMPILER_VERSION =
-  "execution-coverage-0.4";
+  "execution-coverage-0.9";
 export const CURRENT_BRACKET_MODEL_VERSION = "evidence-score-0.8-uncalibrated";
-export const CURRENT_CACHE_KEY_VERSION = "analysis-cache-42";
+export const CURRENT_CACHE_KEY_VERSION = "analysis-cache-46";
 const ALLOWED_TRIAL_COUNTS = [1000, 5000, 10000] as const;
 const MINIMUM_TURN_HORIZON = 2;
 const MAXIMUM_TURN_HORIZON = 12;

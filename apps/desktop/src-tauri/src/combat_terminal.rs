@@ -8,8 +8,12 @@
 //! Rules basis:
 //! - CR 104.2a: a player wins once all opponents have left the game.
 //! - CR 104.3b: a player with 0 or less life loses as a state-based action.
+//! - CR 104.3c: a player who was required to draw more cards than remained in
+//!   their library loses the game.
 //! - CR 104.3j: a Commander player dealt 21 or more combat damage by the same
 //!   commander loses as a state-based action.
+//! - CR 704.5b: the empty-library draw loss is applied at the next
+//!   state-based-action checkpoint.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -56,6 +60,7 @@ impl TryFrom<usize> for OpponentId {
 pub enum TerminalRule {
     Cr104_2aAllOpponentsLeft,
     Cr104_3bLifeTotal,
+    Cr104_3cRequiredDrawExceedsLibrary,
     Cr104_3jCommanderDamage,
 }
 
@@ -63,6 +68,8 @@ pub enum TerminalRule {
 #[serde(rename_all = "camelCase")]
 pub struct LossRules {
     pub life_total: bool,
+    #[serde(default)]
+    pub required_draw_exceeds_library: bool,
     pub commander_damage: bool,
 }
 
@@ -70,6 +77,8 @@ impl LossRules {
     pub const fn primary_rule(self) -> TerminalRule {
         if self.life_total {
             TerminalRule::Cr104_3bLifeTotal
+        } else if self.required_draw_exceeds_library {
+            TerminalRule::Cr104_3cRequiredDrawExceedsLibrary
         } else {
             TerminalRule::Cr104_3jCommanderDamage
         }
@@ -78,6 +87,8 @@ impl LossRules {
     pub fn rules(self) -> impl Iterator<Item = TerminalRule> {
         [
             self.life_total.then_some(TerminalRule::Cr104_3bLifeTotal),
+            self.required_draw_exceeds_library
+                .then_some(TerminalRule::Cr104_3cRequiredDrawExceedsLibrary),
             self.commander_damage
                 .then_some(TerminalRule::Cr104_3jCommanderDamage),
         ]
@@ -119,6 +130,8 @@ impl TerminalEvaluation {
 pub struct OpponentState {
     life_total: i64,
     commander_combat_damage: u32,
+    #[serde(default)]
+    attempted_required_draw_from_empty_library: bool,
     has_left_game: bool,
 }
 
@@ -127,6 +140,7 @@ impl Default for OpponentState {
         Self {
             life_total: COMMANDER_STARTING_LIFE,
             commander_combat_damage: 0,
+            attempted_required_draw_from_empty_library: false,
             has_left_game: false,
         }
     }
@@ -139,6 +153,10 @@ impl OpponentState {
 
     pub const fn commander_combat_damage(&self) -> u32 {
         self.commander_combat_damage
+    }
+
+    pub const fn attempted_required_draw_from_empty_library(&self) -> bool {
+        self.attempted_required_draw_from_empty_library
     }
 
     pub const fn has_left_game(&self) -> bool {
@@ -204,6 +222,25 @@ impl CommanderCombatState {
         self.opponents[opponent.index()].has_left_game = true;
     }
 
+    /// Record CR 104.3c after a modeled draw instruction could not be
+    /// completed, then immediately apply the next CR 704.5b checkpoint.
+    ///
+    /// Emptying a library alone must not call this method: the loss exists
+    /// only after a later required draw is attempted.
+    pub(crate) fn record_required_draw_from_empty_library(
+        &mut self,
+        opponent: OpponentId,
+    ) -> Result<TerminalEvaluation, CombatTerminalError> {
+        if !self.is_opponent_active(opponent) {
+            return Err(CombatTerminalError::OpponentAlreadyLeft { opponent });
+        }
+        let mut staged = self.clone();
+        staged.opponents[opponent.index()].attempted_required_draw_from_empty_library = true;
+        let terminal = staged.apply_state_based_actions();
+        *self = staged;
+        Ok(terminal)
+    }
+
     /// Evaluate the next state-based-action checkpoint without mutating state.
     pub fn evaluate_terminal(&self) -> TerminalEvaluation {
         let opponents = std::array::from_fn(|index| {
@@ -213,10 +250,13 @@ impl CommanderCombatState {
             } else {
                 let rules = LossRules {
                     life_total: opponent.life_total <= 0,
+                    required_draw_exceeds_library: opponent
+                        .attempted_required_draw_from_empty_library,
                     commander_damage: opponent.commander_combat_damage
                         >= COMMANDER_DAMAGE_LOSS_THRESHOLD,
                 };
-                if rules.life_total || rules.commander_damage {
+                if rules.life_total || rules.required_draw_exceeds_library || rules.commander_damage
+                {
                     OpponentTerminalStatus::LosesAsStateBasedAction { rules }
                 } else {
                     OpponentTerminalStatus::Active
@@ -618,6 +658,7 @@ fn nearest_live_target(state: &CommanderCombatState, commander_damage: bool) -> 
 fn opponent_is_active(opponent: &OpponentState) -> bool {
     !opponent.has_left_game
         && opponent.life_total > 0
+        && !opponent.attempted_required_draw_from_empty_library
         && opponent.commander_combat_damage < COMMANDER_DAMAGE_LOSS_THRESHOLD
 }
 

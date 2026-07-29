@@ -1,10 +1,11 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 
 use chrono::Utc;
+use flate2::read::GzDecoder;
 use reqwest::header::{ACCEPT, USER_AGENT};
 use rusqlite::types::Type;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -21,18 +22,24 @@ use crate::domain::{
 use crate::parser::normalize_card_name;
 
 const SCRYFALL_COLLECTION_URL: &str = "https://api.scryfall.com/cards/collection";
+const SCRYFALL_NAMED_URL: &str = "https://api.scryfall.com/cards/named";
+const SCRYFALL_DISPLAY_ALIAS_URL: &str = "https://api.scryfall.com/cards/search?q=has%3Aflavor_name&unique=prints&order=name&include_variations=true&include_extras=true";
 const SCRYFALL_BULK_URL: &str = "https://api.scryfall.com/bulk-data/oracle-cards";
 const USER_AGENT_VALUE: &str = concat!("CommanderDeckAnalyzer/", env!("CARGO_PKG_VERSION"));
 const ACCEPT_VALUE: &str = "application/json;q=0.9,*/*;q=0.8";
-const CARD_DATA_SCHEMA_VERSION: &str = "6";
-const SCRYFALL_CARD_INGESTOR_VERSION: &str = "scryfall-oracle-cards-3";
+pub(crate) const CARD_DATA_SCHEMA_VERSION: &str = "7";
+pub(crate) const SCRYFALL_CARD_INGESTOR_VERSION: &str = "scryfall-oracle-cards-5";
 /// Reviewed against Scryfall's public `api-types` CardFields/CardFace contract
 /// at this upstream revision. Fields outside this versioned classification are
 /// retained and blocked by execution coverage instead of being discarded.
-pub(crate) const SCRYFALL_FIELD_CLASSIFICATION_VERSION: &str = "scryfall-card-fields/2026-07-28/api-types-c16cdfba9e09a0d3aef9ef0db6c36153a7529615+live-union/v2";
+pub(crate) const SCRYFALL_FIELD_CLASSIFICATION_VERSION: &str = "scryfall-card-fields/2026-07-28/api-types-c16cdfba9e09a0d3aef9ef0db6c36153a7529615+live-union/v3";
+pub(crate) const CARD_ALIAS_RESOLUTION_VERSION: &str = "scryfall-display-aliases-2";
 const MINIMUM_FULL_SNAPSHOT_CARDS: u64 = 25_000;
 const MAXIMUM_BULK_METADATA_BYTES: usize = 1024 * 1024;
 const MAXIMUM_BULK_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+const MAXIMUM_DISPLAY_ALIAS_PAGE_BYTES: usize = 16 * 1024 * 1024;
+const MAXIMUM_DISPLAY_ALIAS_PAGES: usize = 32;
+const MAXIMUM_DISPLAY_ALIAS_RECORDS: usize = 10_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CardDataError {
@@ -100,10 +107,22 @@ impl CardRepository {
         let source = metadata(&connection, "card_data_source")?
             .unwrap_or_else(|| "Scryfall card data".to_string());
         let snapshot_sha256 = metadata(&connection, "card_data_snapshot_sha256")?;
+        let schema_version = metadata(&connection, "schema_version")?
+            .unwrap_or_else(|| CARD_DATA_SCHEMA_VERSION.into());
         let ingestor_version = metadata(&connection, "card_data_ingestor_version")?;
-        let full_snapshot_is_current = ingestor_version.as_deref()
-            == Some(SCRYFALL_CARD_INGESTOR_VERSION)
-            && snapshot_sha256.is_some();
+        let alias_catalog_version = metadata(&connection, "card_data_alias_catalog_version")?;
+        let alias_catalog_sha256 = metadata(&connection, "card_data_alias_catalog_sha256")?;
+        let alias_catalog_record_count =
+            metadata(&connection, "card_data_alias_catalog_record_count")?
+                .and_then(|value| value.parse::<u64>().ok());
+        let full_snapshot_is_current = full_snapshot_metadata_is_current(
+            &schema_version,
+            ingestor_version.as_deref(),
+            snapshot_sha256.as_deref(),
+            alias_catalog_version.as_deref(),
+            alias_catalog_sha256.as_deref(),
+            alias_catalog_record_count,
+        );
         let state = card_data_state(card_count, full_snapshot_is_current);
         let message = match state {
             DataState::Ready => format!("{card_count} Oracle cards are available locally."),
@@ -123,6 +142,11 @@ impl CardRepository {
             source,
             message,
             snapshot_sha256,
+            schema_version,
+            ingestor_version,
+            alias_catalog_version,
+            alias_catalog_sha256,
+            alias_catalog_record_count,
         })
     }
 
@@ -154,7 +178,12 @@ impl CardRepository {
                     cards.game_changer
              FROM card_aliases
              JOIN cards ON cards.normalized_name = card_aliases.normalized_name
-             WHERE card_aliases.alias = ?1",
+             WHERE card_aliases.alias = ?1
+               AND (
+                    SELECT COUNT(DISTINCT candidate.normalized_name)
+                    FROM card_aliases AS candidate
+                    WHERE candidate.alias = ?1
+               ) = 1",
         )?;
         let mut cards = HashMap::new();
 
@@ -174,23 +203,35 @@ impl CardRepository {
         Ok(cards)
     }
 
-    fn store_with_aliases(
+    fn enrich_with_resolved_aliases(
         &self,
         records: &[(CardDefinition, Vec<String>)],
+    ) -> Result<(), CardDataError> {
+        self.store_records_with_aliases(records, false)
+    }
+
+    fn store_records_with_aliases(
+        &self,
+        records: &[(CardDefinition, Vec<String>)],
+        replace_existing_cards: bool,
     ) -> Result<(), CardDataError> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
         {
             let mut statement = transaction.prepare(UPSERT_CARD_SQL)?;
-            let mut delete_aliases =
-                transaction.prepare("DELETE FROM card_aliases WHERE normalized_name = ?1")?;
+            let mut existing_card =
+                transaction.prepare("SELECT 1 FROM cards WHERE normalized_name = ?1")?;
             let mut insert_alias = transaction.prepare(
-                "INSERT INTO card_aliases(alias, normalized_name) VALUES (?1, ?2)
-                 ON CONFLICT(alias) DO UPDATE SET normalized_name = excluded.normalized_name",
+                "INSERT OR IGNORE INTO card_aliases(alias, normalized_name) VALUES (?1, ?2)",
             )?;
             for (card, aliases) in records {
-                insert_card(&mut statement, card)?;
-                delete_aliases.execute([&card.normalized_name])?;
+                let exists = existing_card
+                    .query_row([&card.normalized_name], |_| Ok(()))
+                    .optional()?
+                    .is_some();
+                if replace_existing_cards || !exists {
+                    insert_card(&mut statement, card)?;
+                }
                 for alias in aliases {
                     let normalized_alias = normalize_card_name(alias);
                     if !normalized_alias.is_empty() && normalized_alias != card.normalized_name {
@@ -248,19 +289,30 @@ impl CardRepository {
                 .json::<ScryfallCollectionResponse>()
                 .await?;
 
-            let records = response
+            let mut records = response
                 .data
                 .into_iter()
                 .filter_map(deck_card_with_face_aliases)
                 .collect::<Vec<_>>();
+            let mut chunk_unresolved = Vec::new();
+            for identifier in response.not_found {
+                let Some(name) = identifier.name else {
+                    continue;
+                };
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let Some(raw) = fetch_scryfall_named_exact(&client, &name).await? else {
+                    chunk_unresolved.push(name);
+                    continue;
+                };
+                let Some(record) = revalidate_scryfall_named_exact_response(&name, raw) else {
+                    chunk_unresolved.push(name);
+                    continue;
+                };
+                records.push(record);
+            }
             resolved.extend(records.iter().map(|(card, _)| card.clone()));
-            self.store_with_aliases(&records)?;
-            unresolved.extend(
-                response
-                    .not_found
-                    .into_iter()
-                    .filter_map(|identifier| identifier.name),
-            );
+            self.enrich_with_resolved_aliases(&records)?;
+            unresolved.extend(chunk_unresolved);
         }
 
         Ok((resolved, unresolved))
@@ -280,7 +332,8 @@ impl CardRepository {
         });
 
         let metadata = fetch_bulk_metadata(&client).await?;
-        let download_url = reqwest::Url::parse(&metadata.download_uri).map_err(|_| {
+        let (download_uri, payload_format) = metadata.preferred_download()?;
+        let download_url = reqwest::Url::parse(download_uri).map_err(|_| {
             CardDataError::Message("Scryfall returned an invalid download URL.".into())
         })?;
         validate_bulk_download_url(&download_url)?;
@@ -290,7 +343,7 @@ impl CardRepository {
             .parent()
             .ok_or_else(|| CardDataError::Message("Card data path has no parent.".into()))?;
         std::fs::create_dir_all(parent)?;
-        let download_path = parent.join("oracle-cards.download.json");
+        let download_path = parent.join(payload_format.temporary_filename());
         let next_database_path = parent.join("cards.next.sqlite");
         let backup_database_path = parent.join("cards.previous.sqlite");
 
@@ -338,6 +391,14 @@ impl CardRepository {
         output.flush().await?;
         drop(output);
         let download_sha256 = format!("{:x}", download_hasher.finalize());
+        report(DataUpdateProgress {
+            phase: "aliases".into(),
+            completed_units: 0,
+            total_units: None,
+            progress: 0.54,
+            detail: "Indexing current alternate printing names from Scryfall".into(),
+        });
+        let display_alias_catalog = fetch_display_alias_catalog(&client).await?;
 
         if next_database_path.exists() {
             std::fs::remove_file(&next_database_path)?;
@@ -345,16 +406,14 @@ impl CardRepository {
         let mut next_connection = Connection::open(&next_database_path)?;
         initialize_schema(&next_connection)?;
         let transaction = next_connection.transaction()?;
-        let input = BufReader::new(File::open(&download_path)?);
         let mut processed = 0u64;
         let mut accepted = 0u64;
         {
             let mut statement = transaction.prepare(UPSERT_CARD_SQL)?;
             let mut insert_alias = transaction.prepare(
-                "INSERT INTO card_aliases(alias, normalized_name) VALUES (?1, ?2)
-                 ON CONFLICT(alias) DO UPDATE SET normalized_name = excluded.normalized_name",
+                "INSERT OR IGNORE INTO card_aliases(alias, normalized_name) VALUES (?1, ?2)",
             )?;
-            deserialize_card_array(input, |raw| {
+            deserialize_card_snapshot(File::open(&download_path)?, payload_format, |raw| {
                 processed += 1;
                 let Some((card, aliases)) = deck_card_with_face_aliases(raw) else {
                     return Ok(());
@@ -383,6 +442,8 @@ impl CardRepository {
                 Ok(())
             })?;
         }
+        let (alias_count, excluded_alias_extras, unresolved_alias_identities) =
+            install_display_alias_catalog(&transaction, &display_alias_catalog)?;
         let stored: u64 =
             transaction.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
         let excluded_extras = processed.saturating_sub(accepted);
@@ -415,6 +476,36 @@ impl CardRepository {
             &transaction,
             "card_data_ingestor_version",
             SCRYFALL_CARD_INGESTOR_VERSION,
+        )?;
+        set_metadata(
+            &transaction,
+            "card_data_alias_catalog_version",
+            CARD_ALIAS_RESOLUTION_VERSION,
+        )?;
+        set_metadata(
+            &transaction,
+            "card_data_alias_catalog_sha256",
+            &display_alias_catalog.sha256,
+        )?;
+        set_metadata(
+            &transaction,
+            "card_data_alias_catalog_record_count",
+            &display_alias_catalog.total_records.to_string(),
+        )?;
+        set_metadata(
+            &transaction,
+            "card_data_alias_count",
+            &alias_count.to_string(),
+        )?;
+        set_metadata(
+            &transaction,
+            "card_data_alias_catalog_excluded_extra_count",
+            &excluded_alias_extras.to_string(),
+        )?;
+        set_metadata(
+            &transaction,
+            "card_data_alias_catalog_unresolved_identity_count",
+            &unresolved_alias_identities.to_string(),
         )?;
         transaction.commit()?;
         if stored < MINIMUM_FULL_SNAPSHOT_CARDS {
@@ -467,7 +558,7 @@ impl CardRepository {
             total_units: Some(stored),
             progress: 1.0,
             detail: format!(
-                "{stored} deck-card identities are ready for offline analysis ({excluded_extras} non-deck game pieces excluded)."
+                "{stored} deck-card identities and {alias_count} alternate names are ready for offline analysis ({excluded_extras} snapshot extras and {excluded_alias_extras} alias-catalog extras excluded)."
             ),
         });
         self.status()
@@ -479,7 +570,8 @@ impl CardRepository {
         let current = self.update_check_local_state()?;
         let client = http_client()?;
         let metadata = fetch_bulk_metadata(&client).await?;
-        let download_url = reqwest::Url::parse(&metadata.download_uri).map_err(|_| {
+        let (download_uri, _) = metadata.preferred_download()?;
+        let download_url = reqwest::Url::parse(download_uri).map_err(|_| {
             CardDataError::Message("Scryfall returned an invalid download URL.".into())
         })?;
         validate_bulk_download_url(&download_url)?;
@@ -533,10 +625,22 @@ impl CardRepository {
             connection.query_row("SELECT COUNT(*) FROM cards", [], |row| row.get(0))?;
         let last_updated = metadata(&connection, "card_data_updated_at")?;
         let snapshot_sha256 = metadata(&connection, "card_data_snapshot_sha256")?;
+        let schema_version = metadata(&connection, "schema_version")?
+            .unwrap_or_else(|| CARD_DATA_SCHEMA_VERSION.into());
         let ingestor_version = metadata(&connection, "card_data_ingestor_version")?;
-        let full_snapshot_is_current = ingestor_version.as_deref()
-            == Some(SCRYFALL_CARD_INGESTOR_VERSION)
-            && snapshot_sha256.is_some();
+        let alias_catalog_version = metadata(&connection, "card_data_alias_catalog_version")?;
+        let alias_catalog_sha256 = metadata(&connection, "card_data_alias_catalog_sha256")?;
+        let alias_catalog_record_count =
+            metadata(&connection, "card_data_alias_catalog_record_count")?
+                .and_then(|value| value.parse::<u64>().ok());
+        let full_snapshot_is_current = full_snapshot_metadata_is_current(
+            &schema_version,
+            ingestor_version.as_deref(),
+            snapshot_sha256.as_deref(),
+            alias_catalog_version.as_deref(),
+            alias_catalog_sha256.as_deref(),
+            alias_catalog_record_count,
+        );
         Ok(CardDataUpdateLocalState {
             state: card_data_state(card_count, full_snapshot_is_current),
             last_updated,
@@ -576,6 +680,27 @@ fn card_data_state(card_count: u64, full_snapshot_is_current: bool) -> DataState
     } else {
         DataState::Ready
     }
+}
+
+fn full_snapshot_metadata_is_current(
+    schema_version: &str,
+    ingestor_version: Option<&str>,
+    snapshot_sha256: Option<&str>,
+    alias_catalog_version: Option<&str>,
+    alias_catalog_sha256: Option<&str>,
+    alias_catalog_record_count: Option<u64>,
+) -> bool {
+    let valid_sha256 = |value: Option<&str>| {
+        value.is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    };
+    schema_version == CARD_DATA_SCHEMA_VERSION
+        && ingestor_version == Some(SCRYFALL_CARD_INGESTOR_VERSION)
+        && valid_sha256(snapshot_sha256)
+        && alias_catalog_version == Some(CARD_ALIAS_RESOLUTION_VERSION)
+        && valid_sha256(alias_catalog_sha256)
+        && alias_catalog_record_count.is_some_and(|count| count > 0)
 }
 
 fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
@@ -686,11 +811,29 @@ fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     }
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS card_aliases (
-            alias TEXT PRIMARY KEY NOT NULL,
+            alias TEXT NOT NULL,
             normalized_name TEXT NOT NULL,
+            PRIMARY KEY(alias, normalized_name),
             FOREIGN KEY(normalized_name) REFERENCES cards(normalized_name) ON DELETE CASCADE
-         );
-         CREATE INDEX IF NOT EXISTS card_aliases_card ON card_aliases(normalized_name);",
+         );",
+    )?;
+    if !card_alias_schema_is_current(connection)? {
+        connection.execute_batch(
+            "ALTER TABLE card_aliases RENAME TO card_aliases_legacy;
+             CREATE TABLE card_aliases (
+                alias TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                PRIMARY KEY(alias, normalized_name),
+                FOREIGN KEY(normalized_name) REFERENCES cards(normalized_name) ON DELETE CASCADE
+             );
+             INSERT OR IGNORE INTO card_aliases(alias, normalized_name)
+             SELECT alias, normalized_name FROM card_aliases_legacy;
+             DROP TABLE card_aliases_legacy;",
+        )?;
+    }
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS card_aliases_card ON card_aliases(normalized_name)",
+        [],
     )?;
     // Older snapshots keyed every Scryfall Oracle object by normalized name.
     // A same-named token could therefore overwrite the physical card (Storm
@@ -731,6 +874,19 @@ fn column_exists(
         }
     }
     Ok(false)
+}
+
+fn card_alias_schema_is_current(connection: &Connection) -> Result<bool, rusqlite::Error> {
+    let mut statement = connection.prepare("PRAGMA table_info(card_aliases)")?;
+    let columns = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+    })?;
+    let primary_key = columns
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|(_, position)| *position > 0)
+        .collect::<Vec<_>>();
+    Ok(primary_key == [("alias".to_string(), 1), ("normalized_name".to_string(), 2)])
 }
 
 fn seed_basic_lands(connection: &Connection) -> Result<(), rusqlite::Error> {
@@ -781,8 +937,8 @@ fn seed_basic_lands(connection: &Connection) -> Result<(), rusqlite::Error> {
             commander_legality: None,
             legal_commander: true,
             unreviewed_fields: BTreeMap::new(),
-            // Legacy compatibility records predate a complete upstream schema-6
-            // capture and therefore remain strict-gate blockers.
+            // Bundled compatibility records predate a complete upstream
+            // field capture and therefore remain strict-gate blockers.
             source_schema_version: String::new(),
             updated_at: now.clone(),
         };
@@ -1014,9 +1170,410 @@ struct MissingIdentifier {
 }
 
 #[derive(Debug, Deserialize)]
+struct ScryfallDisplayAliasPage {
+    total_cards: usize,
+    has_more: bool,
+    next_page: Option<String>,
+    #[serde(default)]
+    data: Vec<ScryfallDisplayAliasCard>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScryfallDisplayAliasCard {
+    id: String,
+    name: String,
+    oracle_id: Option<String>,
+    #[serde(default)]
+    layout: String,
+    #[serde(default)]
+    type_line: String,
+    flavor_name: Option<String>,
+    printed_name: Option<String>,
+    #[serde(default)]
+    card_faces: Vec<ScryfallDisplayAliasFace>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScryfallDisplayAliasFace {
+    oracle_id: Option<String>,
+    name: Option<String>,
+    flavor_name: Option<String>,
+    printed_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DisplayAliasCatalogRecord {
+    printing_id: String,
+    canonical_name: String,
+    oracle_ids: Vec<String>,
+    layout: String,
+    type_line: String,
+    aliases: Vec<String>,
+}
+
+#[derive(Debug)]
+struct DisplayAliasCatalog {
+    records: Vec<DisplayAliasCatalogRecord>,
+    sha256: String,
+    total_records: usize,
+}
+
+async fn fetch_scryfall_named_exact(
+    client: &reqwest::Client,
+    name: &str,
+) -> Result<Option<ScryfallCard>, CardDataError> {
+    let mut endpoint = reqwest::Url::parse(SCRYFALL_NAMED_URL)
+        .expect("the built-in Scryfall named endpoint is valid");
+    endpoint.query_pairs_mut().append_pair("exact", name);
+    let response = client.get(endpoint).send().await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    Ok(Some(response.error_for_status()?.json().await?))
+}
+
+async fn fetch_display_alias_catalog(
+    client: &reqwest::Client,
+) -> Result<DisplayAliasCatalog, CardDataError> {
+    let mut next_page = Some(
+        reqwest::Url::parse(SCRYFALL_DISPLAY_ALIAS_URL)
+            .expect("the built-in Scryfall display-alias endpoint is valid"),
+    );
+    let mut expected_total = None;
+    let mut printing_ids = HashSet::new();
+    let mut records = Vec::new();
+    let mut pages = 0usize;
+
+    while let Some(endpoint) = next_page.take() {
+        pages += 1;
+        if pages > MAXIMUM_DISPLAY_ALIAS_PAGES {
+            return Err(CardDataError::Message(format!(
+                "Scryfall's display-name catalog exceeded the {MAXIMUM_DISPLAY_ALIAS_PAGES}-page safety limit."
+            )));
+        }
+        validate_display_alias_page_url(&endpoint)?;
+        if pages > 1 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let response = client.get(endpoint).send().await?.error_for_status()?;
+        let page: ScryfallDisplayAliasPage = read_bounded_json_response(
+            response,
+            MAXIMUM_DISPLAY_ALIAS_PAGE_BYTES,
+            "display-name catalog page",
+        )
+        .await?;
+
+        match expected_total {
+            Some(total) if total != page.total_cards => {
+                return Err(CardDataError::Message(
+                    "Scryfall's display-name catalog changed total size during pagination; the current database was left unchanged."
+                        .into(),
+                ));
+            }
+            None => expected_total = Some(page.total_cards),
+            _ => {}
+        }
+        if page.total_cards > MAXIMUM_DISPLAY_ALIAS_RECORDS {
+            return Err(CardDataError::Message(format!(
+                "Scryfall's display-name catalog exceeded the {MAXIMUM_DISPLAY_ALIAS_RECORDS}-record safety limit."
+            )));
+        }
+
+        for raw in page.data {
+            if raw.id.trim().is_empty() || !printing_ids.insert(raw.id.clone()) {
+                return Err(CardDataError::Message(
+                    "Scryfall's display-name catalog contained a missing or duplicate printing id; the current database was left unchanged."
+                        .into(),
+                ));
+            }
+            let mut oracle_ids = raw
+                .oracle_id
+                .iter()
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .collect::<Vec<_>>();
+            if oracle_ids.is_empty() {
+                oracle_ids.extend(
+                    raw.card_faces
+                        .iter()
+                        .filter_map(|face| face.oracle_id.as_ref())
+                        .filter(|value| !value.trim().is_empty())
+                        .cloned(),
+                );
+            }
+            oracle_ids.sort();
+            oracle_ids.dedup();
+
+            let mut aliases = Vec::new();
+            aliases.extend(raw.flavor_name.iter().cloned());
+            aliases.extend(raw.printed_name.iter().cloned());
+            for face in &raw.card_faces {
+                aliases.extend(face.name.iter().cloned());
+                aliases.extend(face.flavor_name.iter().cloned());
+                aliases.extend(face.printed_name.iter().cloned());
+            }
+            let mut aliases = deduplicate_aliases(aliases);
+            aliases.sort();
+            records.push(DisplayAliasCatalogRecord {
+                printing_id: raw.id,
+                canonical_name: raw.name,
+                oracle_ids,
+                layout: raw.layout,
+                type_line: raw.type_line,
+                aliases,
+            });
+        }
+
+        next_page = match (page.has_more, page.next_page) {
+            (true, Some(next)) => Some(reqwest::Url::parse(&next).map_err(|_| {
+                CardDataError::Message(
+                    "Scryfall returned an invalid display-name catalog page URL.".into(),
+                )
+            })?),
+            (true, None) => {
+                return Err(CardDataError::Message(
+                    "Scryfall ended display-name catalog pagination without a next page; the current database was left unchanged."
+                        .into(),
+                ));
+            }
+            (false, None) => None,
+            (false, Some(_)) => {
+                return Err(CardDataError::Message(
+                    "Scryfall returned a next display-name page after marking the catalog complete; the current database was left unchanged."
+                        .into(),
+                ));
+            }
+        };
+    }
+
+    let total_records = expected_total.unwrap_or_default();
+    if records.len() != total_records || printing_ids.len() != total_records {
+        return Err(CardDataError::Message(format!(
+            "Scryfall's display-name catalog declared {total_records} records but delivered {} unique records; the current database was left unchanged.",
+            printing_ids.len()
+        )));
+    }
+    records.sort_by(|left, right| left.printing_id.cmp(&right.printing_id));
+    let sha256 = sha256_hex(&serde_json::to_vec(&(
+        CARD_ALIAS_RESOLUTION_VERSION,
+        SCRYFALL_DISPLAY_ALIAS_URL,
+        &records,
+    ))?);
+    Ok(DisplayAliasCatalog {
+        records,
+        sha256,
+        total_records,
+    })
+}
+
+fn install_display_alias_catalog(
+    transaction: &rusqlite::Transaction<'_>,
+    catalog: &DisplayAliasCatalog,
+) -> Result<(u64, u64, u64), CardDataError> {
+    let targets_by_oracle = deck_card_targets_by_oracle_identity(transaction)?;
+    let mut insert_alias = transaction
+        .prepare("INSERT OR IGNORE INTO card_aliases(alias, normalized_name) VALUES (?1, ?2)")?;
+    let mut excluded_non_deck = 0u64;
+    let mut unresolved_identity_count = 0u64;
+
+    for record in &catalog.records {
+        if !is_deck_card_identity(&record.layout, &record.type_line) {
+            excluded_non_deck += 1;
+            continue;
+        }
+        let canonical = normalize_card_name(&record.canonical_name);
+        let mut targets = BTreeSet::new();
+        let mut missing_identity = record.oracle_ids.is_empty();
+        for oracle_id in &record.oracle_ids {
+            let Some(identity_targets) = targets_by_oracle.get(oracle_id.trim()) else {
+                missing_identity = true;
+                continue;
+            };
+            for target in identity_targets {
+                targets.insert(target.clone());
+            }
+        }
+        if missing_identity || targets.len() != 1 || !targets.contains(&canonical) {
+            unresolved_identity_count = unresolved_identity_count.saturating_add(1);
+            continue;
+        }
+        let target = targets
+            .into_iter()
+            .next()
+            .expect("one alias catalog target was established");
+        for alias in &record.aliases {
+            let normalized_alias = normalize_card_name(alias);
+            if !normalized_alias.is_empty() && normalized_alias != target {
+                insert_alias.execute([&normalized_alias, &target])?;
+            }
+        }
+    }
+
+    let alias_count = transaction.query_row("SELECT COUNT(*) FROM card_aliases", [], |row| {
+        row.get::<_, u64>(0)
+    })?;
+    Ok((alias_count, excluded_non_deck, unresolved_identity_count))
+}
+
+fn deck_card_targets_by_oracle_identity(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<BTreeMap<String, BTreeSet<String>>, CardDataError> {
+    let mut statement = transaction.prepare(
+        "SELECT normalized_name, oracle_id, faces_json
+         FROM cards
+         ORDER BY normalized_name",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut targets = BTreeMap::<String, BTreeSet<String>>::new();
+    while let Some(row) = rows.next()? {
+        let normalized_name: String = row.get(0)?;
+        let root_oracle_id: Option<String> = row.get(1)?;
+        let faces_json: String = row.get(2)?;
+        let faces = serde_json::from_str::<Vec<CardFaceDefinition>>(&faces_json)?;
+        for oracle_id in root_oracle_id
+            .iter()
+            .chain(faces.iter().filter_map(|face| face.oracle_id.as_ref()))
+            .map(|oracle_id| oracle_id.trim())
+            .filter(|oracle_id| !oracle_id.is_empty())
+        {
+            targets
+                .entry(oracle_id.to_string())
+                .or_default()
+                .insert(normalized_name.clone());
+        }
+    }
+    Ok(targets)
+}
+
+async fn read_bounded_json_response<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    maximum_bytes: usize,
+    label: &str,
+) -> Result<T, CardDataError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum_bytes as u64)
+    {
+        return Err(CardDataError::Message(format!(
+            "Scryfall's {label} exceeded the {maximum_bytes}-byte safety limit."
+        )));
+    }
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(0)
+            .min(maximum_bytes),
+    );
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > maximum_bytes {
+            return Err(CardDataError::Message(format!(
+                "Scryfall's {label} exceeded the {maximum_bytes}-byte safety limit."
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&body)?)
+}
+
+fn validate_display_alias_page_url(url: &reqwest::Url) -> Result<(), CardDataError> {
+    if url.scheme() != "https"
+        || url.host_str() != Some("api.scryfall.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/cards/search"
+    {
+        return Err(CardDataError::Message(
+            "Scryfall returned a display-name catalog URL outside its trusted HTTPS search endpoint."
+                .into(),
+        ));
+    }
+    let mut query = BTreeMap::<String, String>::new();
+    for (key, value) in url.query_pairs() {
+        if query.insert(key.into_owned(), value.into_owned()).is_some() {
+            return Err(CardDataError::Message(
+                "Scryfall returned duplicate display-name catalog query fields.".into(),
+            ));
+        }
+    }
+    for (field, expected) in [
+        ("q", "has:flavor_name"),
+        ("unique", "prints"),
+        ("order", "name"),
+        ("include_variations", "true"),
+        ("include_extras", "true"),
+    ] {
+        if query.get(field).map(String::as_str) != Some(expected) {
+            return Err(CardDataError::Message(format!(
+                "Scryfall changed the required `{field}` display-name catalog query field."
+            )));
+        }
+    }
+    for (field, value) in &query {
+        let valid = match field.as_str() {
+            "q" | "unique" | "order" | "include_variations" | "include_extras" => true,
+            "format" => value == "json",
+            "include_multilingual" => value == "false",
+            "page" => value
+                .parse::<usize>()
+                .is_ok_and(|page| (2..=MAXIMUM_DISPLAY_ALIAS_PAGES).contains(&page)),
+            _ => false,
+        };
+        if !valid {
+            return Err(CardDataError::Message(format!(
+                "Scryfall returned an unexpected `{field}` display-name catalog query field."
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BulkPayloadFormat {
+    JsonArray,
+    JsonLinesGzip,
+}
+
+impl BulkPayloadFormat {
+    fn temporary_filename(self) -> &'static str {
+        match self {
+            Self::JsonArray => "oracle-cards.download.json",
+            Self::JsonLinesGzip => "oracle-cards.download.jsonl.gz",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct BulkDataMetadata {
-    download_uri: String,
+    #[serde(default)]
+    download_uri: Option<String>,
+    #[serde(default)]
+    jsonl_download_uri: Option<String>,
     updated_at: Option<String>,
+}
+
+impl BulkDataMetadata {
+    fn preferred_download(&self) -> Result<(&str, BulkPayloadFormat), CardDataError> {
+        if let Some(uri) = self
+            .jsonl_download_uri
+            .as_deref()
+            .filter(|uri| !uri.trim().is_empty())
+        {
+            return Ok((uri, BulkPayloadFormat::JsonLinesGzip));
+        }
+        if let Some(uri) = self
+            .download_uri
+            .as_deref()
+            .filter(|uri| !uri.trim().is_empty())
+        {
+            return Ok((uri, BulkPayloadFormat::JsonArray));
+        }
+        Err(CardDataError::Message(
+            "Scryfall's bulk-data manifest did not include a supported download URL.".into(),
+        ))
+    }
 }
 
 async fn fetch_bulk_metadata(client: &reqwest::Client) -> Result<BulkDataMetadata, CardDataError> {
@@ -1054,6 +1611,8 @@ async fn fetch_bulk_metadata(client: &reqwest::Client) -> Result<BulkDataMetadat
 #[derive(Debug, Deserialize)]
 struct ScryfallCard {
     name: String,
+    flavor_name: Option<String>,
+    printed_name: Option<String>,
     oracle_id: Option<String>,
     #[serde(default)]
     layout: String,
@@ -1099,6 +1658,8 @@ struct ScryfallCardFace {
     #[serde(default)]
     layout: String,
     name: Option<String>,
+    flavor_name: Option<String>,
+    printed_name: Option<String>,
     #[serde(default, rename = "cmc")]
     mana_value: Option<f32>,
     mana_cost: Option<String>,
@@ -1356,25 +1917,65 @@ impl From<ScryfallCard> for CardDefinition {
 }
 
 fn card_with_face_aliases(raw: ScryfallCard) -> (CardDefinition, Vec<String>) {
-    let aliases = raw
-        .card_faces
-        .iter()
-        .filter_map(|face| face.name.clone())
-        .collect::<Vec<_>>();
+    let aliases = scryfall_card_aliases(&raw);
     (CardDefinition::from(raw), aliases)
 }
 
+fn scryfall_card_aliases(raw: &ScryfallCard) -> Vec<String> {
+    let mut aliases = Vec::new();
+    aliases.extend(raw.flavor_name.iter().cloned());
+    aliases.extend(raw.printed_name.iter().cloned());
+    for face in &raw.card_faces {
+        aliases.extend(face.name.iter().cloned());
+        aliases.extend(face.flavor_name.iter().cloned());
+        aliases.extend(face.printed_name.iter().cloned());
+    }
+    deduplicate_aliases(aliases)
+}
+
+fn deduplicate_aliases(aliases: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    aliases
+        .into_iter()
+        .filter(|alias| {
+            let normalized = normalize_card_name(alias);
+            !normalized.is_empty() && seen.insert(normalized)
+        })
+        .collect()
+}
+
 fn deck_card_with_face_aliases(raw: ScryfallCard) -> Option<(CardDefinition, Vec<String>)> {
+    is_deck_card_identity(&raw.layout, &raw.type_line).then(|| card_with_face_aliases(raw))
+}
+
+fn revalidate_scryfall_named_exact_response(
+    requested_name: &str,
+    raw: ScryfallCard,
+) -> Option<(CardDefinition, Vec<String>)> {
+    let (card, mut aliases) = deck_card_with_face_aliases(raw)?;
+    let requested = normalize_card_name(requested_name);
+    let returned_name_matches = !requested.is_empty()
+        && (card.normalized_name == requested
+            || aliases
+                .iter()
+                .any(|alias| normalize_card_name(alias) == requested));
+    if !returned_name_matches {
+        return None;
+    }
+    aliases.push(requested_name.to_string());
+    Some((card, deduplicate_aliases(aliases)))
+}
+
+fn is_deck_card_identity(layout: &str, type_line: &str) -> bool {
     let non_deck_layout = matches!(
-        raw.layout.trim().to_ascii_lowercase().as_str(),
+        layout.trim().to_ascii_lowercase().as_str(),
         "token" | "double_faced_token" | "emblem" | "art_series"
     );
-    let token_type = raw
-        .type_line
+    let token_type = type_line
         .trim_start()
         .to_ascii_lowercase()
         .starts_with("token ");
-    (!non_deck_layout && !token_type).then(|| card_with_face_aliases(raw))
+    !non_deck_layout && !token_type
 }
 
 fn scryfall_collection_lookup_name(name: &str) -> &str {
@@ -1424,6 +2025,32 @@ fn deserialize_card_array(
     Ok(count)
 }
 
+fn deserialize_card_json_lines(
+    reader: impl std::io::Read,
+    mut callback: impl FnMut(ScryfallCard) -> Result<(), String>,
+) -> Result<u64, CardDataError> {
+    let mut count = 0u64;
+    for card in serde_json::Deserializer::from_reader(reader).into_iter::<ScryfallCard>() {
+        callback(card?).map_err(CardDataError::Message)?;
+        count = count.saturating_add(1);
+    }
+    Ok(count)
+}
+
+fn deserialize_card_snapshot(
+    input: File,
+    format: BulkPayloadFormat,
+    callback: impl FnMut(ScryfallCard) -> Result<(), String>,
+) -> Result<u64, CardDataError> {
+    match format {
+        BulkPayloadFormat::JsonArray => deserialize_card_array(BufReader::new(input), callback),
+        BulkPayloadFormat::JsonLinesGzip => {
+            let decoder = GzDecoder::new(BufReader::new(input));
+            deserialize_card_json_lines(BufReader::new(decoder), callback)
+        }
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     const MIB: f64 = 1024.0 * 1024.0;
     if bytes < 1024 * 1024 {
@@ -1431,4 +2058,8 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{:.1} MB", bytes as f64 / MIB)
     }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }

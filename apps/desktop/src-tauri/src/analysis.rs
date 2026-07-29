@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -12,8 +12,9 @@ use crate::combo_store::{
 };
 use crate::comprehensive_rules::ComprehensiveRulesSnapshot;
 use crate::domain::{
-    AnalysisOptions, AnalysisProgress, AnalysisReport, AnalysisStage, AnalyzeRequest, DeckIntent,
-    InteractionProfile, KnownLine, KnownLineOutcome, LineRequirement, MulliganPolicy, PilotPolicy,
+    AnalysisOptions, AnalysisProgress, AnalysisReport, AnalysisStage, AnalyzeRequest,
+    CardDefinition, DeckEntry, DeckIntent, InteractionProfile, KnownLine, KnownLineOutcome,
+    LineRequirement, MulliganPolicy, PilotPolicy,
 };
 use crate::execution_coverage::{
     CombinedCardRecord, CoverageSnapshotProvenance, ExecutionMetric,
@@ -56,6 +57,14 @@ pub struct AnalysisSnapshots {
 
 struct InternalAnalysisOptions {
     cache: Option<AnalysisCache>,
+}
+
+#[derive(Debug)]
+struct ResolvedDeckIdentity {
+    entries: Vec<DeckEntry>,
+    commander_names: Vec<String>,
+    canonical_text: String,
+    unique_card_count: usize,
 }
 
 const ALLOWED_PRODUCTION_SIMULATION_COUNTS: [u32; 3] = [1_000, 5_000, 10_000];
@@ -170,12 +179,12 @@ async fn analyze_internal(
         )));
     }
 
-    let commander_names = if request.commander_names.is_empty() {
+    let submitted_commander_names = if request.commander_names.is_empty() {
         parsed.commanders.clone()
     } else {
         request.commander_names.clone()
     };
-    if commander_names.is_empty() {
+    if submitted_commander_names.is_empty() {
         return Err(AnalysisError::Validation(
             "Select at least one commander before analysis.".into(),
         ));
@@ -191,21 +200,99 @@ async fn analyze_internal(
         &format!(
             "{} cards parsed; {} commander{} selected",
             parsed.card_count,
-            commander_names.len(),
-            if commander_names.len() == 1 { "" } else { "s" }
+            submitted_commander_names.len(),
+            if submitted_commander_names.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
         ),
     );
     ensure_not_cancelled(&cancellation)?;
 
-    let status_before_resolution = repository.status()?;
     let combo_status = combo_store.status().ok();
+    let unique_names = parsed
+        .entries
+        .iter()
+        .map(|entry| (normalize_card_name(&entry.name), entry.name.clone()))
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect::<Vec<_>>();
+    let mut resolution_names = unique_names.clone();
+    resolution_names.extend(submitted_commander_names.iter().cloned());
+    let mut definitions = repository.get_many(&resolution_names)?;
+    let missing = resolution_names
+        .iter()
+        .filter(|name| !definitions.contains_key(&normalize_card_name(name)))
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    emit(
+        &report,
+        &request.run_id,
+        AnalysisStage::ResolvingCards,
+        "Resolve card identities",
+        resolved_name_count(&unique_names, &definitions),
+        unique_names.len() as u32,
+        0.10,
+        if missing.is_empty() {
+            "All card identities loaded from the local database"
+        } else if !request.options.allow_online_card_resolution {
+            "Online identity resolution is disabled; unresolved cards will remain visible as coverage gaps"
+        } else {
+            "Resolving missing cards and adding them to the local cache"
+        },
+    );
+
+    if !missing.is_empty() && request.options.allow_online_card_resolution {
+        match repository.resolve_missing(&missing).await {
+            Ok((_resolved, _not_found)) => {
+                // Re-read by the deck's requested names so multiface aliases
+                // (for example either side of "Fire // Ice") map correctly.
+                definitions = repository.get_many(&resolution_names)?;
+            }
+            Err(error) => {
+                emit(
+                    &report,
+                    &request.run_id,
+                    AnalysisStage::ResolvingCards,
+                    "Resolve card identities",
+                    resolved_name_count(&unique_names, &definitions),
+                    unique_names.len() as u32,
+                    0.17,
+                    &format!("Offline analysis: {error}"),
+                );
+            }
+        }
+    }
+    ensure_not_cancelled(&cancellation)?;
+
+    let unresolved_names = unique_names
+        .iter()
+        .filter(|name| !definitions.contains_key(&normalize_card_name(name)))
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let resolved_cards = parsed
+        .entries
+        .iter()
+        .filter(|entry| definitions.contains_key(&normalize_card_name(&entry.name)))
+        .map(|entry| entry.quantity as u32)
+        .sum::<u32>();
+    let resolved_identity =
+        resolve_deck_identity(&parsed.entries, &submitted_commander_names, &definitions)?;
+    definitions = canonical_definition_index(&definitions)?;
+    let analysis_card_status = repository.status()?;
+
     if let Some(cache) = &cache
         && let Ok(key) = cache.key(
-            &parsed.canonical_text,
-            &commander_names,
+            &resolved_identity.canonical_text,
+            &resolved_identity.commander_names,
             &request.options,
             AnalysisCacheData {
-                card_data: &status_before_resolution,
+                card_data: &analysis_card_status,
                 combo_data: combo_status.as_ref(),
                 policy_data: &policy_snapshot,
                 semantic_data: &semantic_snapshot,
@@ -223,10 +310,13 @@ async fn analyze_internal(
             1,
             1,
             0.96,
-            "Deck, options, card, combo, policy, rules, and model versions exactly match a local report",
+            "Resolved deck, options, card, combo, policy, rules, and model versions exactly match a local report",
         );
         let mut cached_report = cached.report;
         cached_report.run_id = request.run_id.clone();
+        cached_report.deck.commanders = submitted_commander_names.clone();
+        cached_report.deck.canonical_deck = parsed.canonical_text.clone();
+        cached_report.deck.canonical_deck_sha256 = sha256_hex(&parsed.canonical_text);
         cached_report.elapsed_ms = started.elapsed().as_millis();
         cached_report.cache.hit = true;
         cached_report.cache.created_at = cached.created_at;
@@ -249,76 +339,6 @@ async fn analyze_internal(
         return Ok(cached_report);
     }
 
-    let unique_names = parsed
-        .entries
-        .iter()
-        .map(|entry| entry.name.clone())
-        .collect::<Vec<_>>();
-    let mut definitions = repository.get_many(&unique_names)?;
-    let missing = unique_names
-        .iter()
-        .filter(|name| !definitions.contains_key(&normalize_card_name(name)))
-        .cloned()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    emit(
-        &report,
-        &request.run_id,
-        AnalysisStage::ResolvingCards,
-        "Resolve card identities",
-        definitions.len() as u32,
-        unique_names.len() as u32,
-        0.10,
-        if missing.is_empty() {
-            "All card identities loaded from the local database"
-        } else if !request.options.allow_online_card_resolution {
-            "Online identity resolution is disabled; unresolved cards will remain visible as coverage gaps"
-        } else {
-            "Resolving missing cards and adding them to the local cache"
-        },
-    );
-
-    let mut remote_unresolved = Vec::new();
-    if !missing.is_empty() && request.options.allow_online_card_resolution {
-        match repository.resolve_missing(&missing).await {
-            Ok((_resolved, not_found)) => {
-                // Re-read by the deck's requested names so multiface aliases
-                // (for example either side of "Fire // Ice") map correctly.
-                definitions = repository.get_many(&unique_names)?;
-                remote_unresolved = not_found;
-            }
-            Err(error) => {
-                remote_unresolved = missing.clone();
-                emit(
-                    &report,
-                    &request.run_id,
-                    AnalysisStage::ResolvingCards,
-                    "Resolve card identities",
-                    definitions.len() as u32,
-                    unique_names.len() as u32,
-                    0.17,
-                    &format!("Offline analysis: {error}"),
-                );
-            }
-        }
-    }
-    ensure_not_cancelled(&cancellation)?;
-
-    let unresolved_names = unique_names
-        .iter()
-        .filter(|name| !definitions.contains_key(&normalize_card_name(name)))
-        .cloned()
-        .chain(remote_unresolved)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let resolved_cards = parsed
-        .entries
-        .iter()
-        .filter(|entry| definitions.contains_key(&normalize_card_name(&entry.name)))
-        .map(|entry| entry.quantity as u32)
-        .sum::<u32>();
     let policy_definitions = definitions
         .values()
         .cloned()
@@ -328,9 +348,9 @@ async fn analyze_internal(
         .collect::<Vec<_>>();
     let mut policy = crate::rules::evaluate_commander_policy(
         &policy_snapshot.package,
-        &parsed.entries,
+        &resolved_identity.entries,
         &policy_definitions,
-        &commander_names,
+        &resolved_identity.commander_names,
     );
     emit(
         &report,
@@ -346,11 +366,12 @@ async fn analyze_internal(
         ),
     );
 
-    let selected_commanders = commander_names
+    let selected_commanders = resolved_identity
+        .commander_names
         .iter()
         .map(|name| normalize_card_name(name))
         .collect::<HashSet<_>>();
-    let combo_cards = parsed
+    let combo_cards = resolved_identity
         .entries
         .iter()
         .map(|entry| {
@@ -418,21 +439,20 @@ async fn analyze_internal(
         AnalysisStage::Compiling,
         "Compile semantic model",
         0,
-        parsed.unique_card_count as u32,
+        resolved_identity.unique_card_count as u32,
         0.24,
         "Classifying mana, interaction, engines, payoffs, and known lines",
     );
     let (compiled, semantic_override_summary) = compile_deck_with_rules_and_semantic_overrides(
-        &parsed.entries,
+        &resolved_identity.entries,
         &definitions,
-        &commander_names,
+        &resolved_identity.commander_names,
         &spellbook_lines,
         &semantic_snapshot.package,
         comprehensive_rules.as_ref(),
     );
-    let analysis_card_status = repository.status()?;
     let mut coverage_records = std::collections::BTreeMap::<String, CombinedCardRecord>::new();
-    for entry in &parsed.entries {
+    for entry in &resolved_identity.entries {
         let normalized = normalize_card_name(&entry.name);
         if let Some(definition) = definitions.get(&normalized) {
             let record = CombinedCardRecord::from(definition);
@@ -471,15 +491,18 @@ async fn analyze_internal(
         &coverage_records.into_values().collect::<Vec<_>>(),
     )?;
     let compact_execution_coverage = execution_coverage.compact_projection()?;
-    let mana_model =
-        build_mana_model_with_commanders(&parsed.entries, &definitions, &commander_names);
+    let mana_model = build_mana_model_with_commanders(
+        &resolved_identity.entries,
+        &definitions,
+        &resolved_identity.commander_names,
+    );
     emit(
         &report,
         &request.run_id,
         AnalysisStage::Compiling,
         "Compile semantic model",
-        parsed.unique_card_count as u32,
-        parsed.unique_card_count as u32,
+        resolved_identity.unique_card_count as u32,
+        resolved_identity.unique_card_count as u32,
         0.30,
         &format!(
             "{:.0}% weighted semantic coverage; {} strategic plan{} detected",
@@ -496,7 +519,7 @@ async fn analyze_internal(
     let seed = request
         .options
         .seed
-        .unwrap_or_else(|| deterministic_seed(&parsed.canonical_text));
+        .unwrap_or_else(|| deterministic_seed(&resolved_identity.canonical_text));
     let opening_deck = compiled.clone();
     let opening_mana = mana_model.clone();
     let opening_options = request.options.clone();
@@ -599,8 +622,8 @@ async fn analyze_internal(
         run_id: &request.run_id,
         deck: &compiled,
         card_count: parsed.card_count,
-        unique_card_count: parsed.unique_card_count,
-        commander_names: commander_names.clone(),
+        unique_card_count: resolved_identity.unique_card_count,
+        commander_names: submitted_commander_names.clone(),
         resolved_cards,
         unresolved_cards: unresolved_names,
         canonical_deck: parsed.canonical_text.clone(),
@@ -768,8 +791,8 @@ async fn analyze_internal(
     report_result.cache.key_version = CACHE_KEY_VERSION.into();
     if let Some(cache) = &cache
         && let Ok(cache_key) = cache.key(
-            &parsed.canonical_text,
-            &commander_names,
+            &resolved_identity.canonical_text,
+            &resolved_identity.commander_names,
             &request.options,
             AnalysisCacheData {
                 card_data: &status,
@@ -798,6 +821,142 @@ async fn analyze_internal(
         ),
     );
     Ok(report_result)
+}
+
+fn resolve_deck_identity(
+    submitted_entries: &[DeckEntry],
+    submitted_commanders: &[String],
+    submitted_definitions: &HashMap<String, CardDefinition>,
+) -> Result<ResolvedDeckIdentity, AnalysisError> {
+    let mut seen_commanders = HashSet::new();
+    let commander_names = submitted_commanders
+        .iter()
+        .filter_map(|submitted_name| {
+            let normalized = normalize_card_name(submitted_name);
+            let resolved_name = submitted_definitions
+                .get(&normalized)
+                .map(|definition| definition.name.clone())
+                .unwrap_or_else(|| submitted_name.clone());
+            let resolved_normalized = normalize_card_name(&resolved_name);
+            seen_commanders
+                .insert(resolved_normalized)
+                .then_some(resolved_name)
+        })
+        .collect::<Vec<_>>();
+    let selected_commanders = commander_names
+        .iter()
+        .map(|name| normalize_card_name(name))
+        .collect::<HashSet<_>>();
+
+    let mut aggregated = BTreeMap::<String, DeckEntry>::new();
+    for submitted_entry in submitted_entries {
+        let submitted_normalized = normalize_card_name(&submitted_entry.name);
+        let definition = submitted_definitions.get(&submitted_normalized);
+        let resolved_name = definition
+            .map(|definition| definition.name.clone())
+            .unwrap_or_else(|| submitted_entry.name.clone());
+        let resolved_normalized = definition
+            .map(|definition| definition.normalized_name.clone())
+            .filter(|normalized| !normalized.is_empty())
+            .unwrap_or_else(|| normalize_card_name(&resolved_name));
+        let is_commander =
+            submitted_entry.is_commander || selected_commanders.contains(&resolved_normalized);
+
+        if let Some(existing) = aggregated.get_mut(&resolved_normalized) {
+            existing.quantity = existing
+                .quantity
+                .checked_add(submitted_entry.quantity)
+                .ok_or_else(|| {
+                    AnalysisError::Validation(format!(
+                        "The total quantity for {} exceeds the supported decklist range.",
+                        existing.name
+                    ))
+                })?;
+            existing.is_commander |= is_commander;
+            existing.line_number = existing.line_number.min(submitted_entry.line_number);
+        } else {
+            aggregated.insert(
+                resolved_normalized,
+                DeckEntry {
+                    quantity: submitted_entry.quantity,
+                    name: resolved_name,
+                    line_number: submitted_entry.line_number,
+                    is_commander,
+                },
+            );
+        }
+    }
+
+    let commander_order = commander_names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (normalize_card_name(name), index))
+        .collect::<HashMap<_, _>>();
+    let mut entries = aggregated.into_values().collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        let left_name = normalize_card_name(&left.name);
+        let right_name = normalize_card_name(&right.name);
+        let left_rank = commander_order.get(&left_name).copied();
+        let right_rank = commander_order.get(&right_name).copied();
+        match (left_rank, right_rank) {
+            (Some(left_rank), Some(right_rank)) => left_rank.cmp(&right_rank),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left_name.cmp(&right_name),
+        }
+    });
+
+    let canonical_text = entries
+        .iter()
+        .map(|entry| (normalize_card_name(&entry.name), u32::from(entry.quantity)))
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .map(|(name, quantity)| format!("{quantity} {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let unique_card_count = entries.len();
+
+    Ok(ResolvedDeckIdentity {
+        entries,
+        commander_names,
+        canonical_text,
+        unique_card_count,
+    })
+}
+
+fn canonical_definition_index(
+    submitted_definitions: &HashMap<String, CardDefinition>,
+) -> Result<HashMap<String, CardDefinition>, AnalysisError> {
+    let mut canonical = HashMap::<String, CardDefinition>::new();
+    for definition in submitted_definitions.values() {
+        let normalized = if definition.normalized_name.is_empty() {
+            normalize_card_name(&definition.name)
+        } else {
+            definition.normalized_name.clone()
+        };
+        if let Some(existing) = canonical.get(&normalized)
+            && existing != definition
+        {
+            return Err(AnalysisError::Validation(format!(
+                "Local card data returned conflicting records for {}.",
+                definition.name
+            )));
+        }
+        canonical
+            .entry(normalized)
+            .or_insert_with(|| definition.clone());
+    }
+    Ok(canonical)
+}
+
+fn resolved_name_count(
+    submitted_names: &[String],
+    submitted_definitions: &HashMap<String, CardDefinition>,
+) -> u32 {
+    submitted_names
+        .iter()
+        .filter(|name| submitted_definitions.contains_key(&normalize_card_name(name)))
+        .count() as u32
 }
 
 fn insert_unique_coverage_record(
