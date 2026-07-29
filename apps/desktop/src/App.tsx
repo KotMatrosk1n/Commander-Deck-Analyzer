@@ -240,6 +240,7 @@ function App() {
         cardCount: 0,
         source: "Local card data",
         message: "Card data status is unavailable.",
+        schemaVersion: "unavailable",
       });
     });
     getComboDataStatus().then(setComboStatus).catch((reason) => {

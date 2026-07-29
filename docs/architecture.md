@@ -6,8 +6,8 @@ TypeScript interface and a Rust analysis core.
 ## Runtime flow
 
 1. The desktop interface accepts a decklist and analysis settings.
-2. The Rust boundary parses the list and resolves card definitions from local
-   application data.
+2. The Rust boundary parses the list and resolves submitted display names to
+   canonical Oracle identities from local application data.
 3. The analyzer compiles card roles, mechanics, known lines, mana access, and
    executable behavior into a deterministic deck model.
 4. Simulation and scoring produce an analysis report with coverage and
@@ -35,6 +35,10 @@ user-requested and recorded with source and version information.
 Simulation claims are limited by execution coverage. Unsupported or ambiguous
 card behavior remains visible in the report and cannot silently count as fully
 modeled evidence.
+
+Submitted display names remain presentation data. Canonical Oracle identity
+drives policy checks, combo matching, simulation, coverage, scoring inputs, and
+cache identity. Ambiguous identity remains unresolved.
 
 ## Local-first behavior
 

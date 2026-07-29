@@ -888,6 +888,11 @@ pub struct DataStatus {
     pub source: String,
     pub message: String,
     pub snapshot_sha256: Option<String>,
+    pub schema_version: String,
+    pub ingestor_version: Option<String>,
+    pub alias_catalog_version: Option<String>,
+    pub alias_catalog_sha256: Option<String>,
+    pub alias_catalog_record_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

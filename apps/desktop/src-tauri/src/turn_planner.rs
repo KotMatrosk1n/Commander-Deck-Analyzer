@@ -13,7 +13,7 @@
 use std::cmp::Ordering;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
-pub const TURN_PLANNER_VERSION: &str = "bounded-beam-0.6";
+pub const TURN_PLANNER_VERSION: &str = "bounded-beam-0.7";
 
 /// Fixed lexicographic objective for every planner integration.
 ///

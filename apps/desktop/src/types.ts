@@ -795,6 +795,11 @@ export interface DataStatus {
   source: string;
   message: string;
   snapshotSha256?: string;
+  schemaVersion: string;
+  ingestorVersion?: string;
+  aliasCatalogVersion?: string;
+  aliasCatalogSha256?: string;
+  aliasCatalogRecordCount?: number;
 }
 
 export interface DataUpdateProgress {

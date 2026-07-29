@@ -9,6 +9,15 @@ Scryfall supplies card identities, Oracle information, and optional bulk card
 data. A full update is user-requested. Missing-card resolution is optional and
 disabled by default.
 
+Each requested bulk update builds a versioned display-name catalog from trusted
+root and face records. Printed names, flavor names, root names, and face names
+are accepted only when Scryfall proves the same Oracle identity. Canonical root
+names take priority, and ambiguous or unproven aliases remain unresolved.
+
+The submitted display name stays in the report. Canonical Oracle identity is
+used for card definitions, policy checks, combo matching, execution coverage,
+simulation, scoring inputs, and cache identity.
+
 ## Deck imports
 
 The app can retrieve a single public deck after the user submits a supported

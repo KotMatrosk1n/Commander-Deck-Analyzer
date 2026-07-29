@@ -37,7 +37,7 @@ use crate::strict_engine::STRICT_ENGINE_VERSION;
 use crate::turn_planner::TURN_PLANNER_VERSION;
 
 const CACHE_SCHEMA_VERSION: &str = "1";
-pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-42";
+pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-46";
 const ANALYSIS_IMPLEMENTATION_SHA256: &str = env!("CDA_ANALYSIS_IMPLEMENTATION_SHA256");
 const MAX_CACHE_ENTRIES: usize = 64;
 const ALLOWED_PRODUCTION_SIMULATION_COUNTS: [u32; 3] = [1_000, 5_000, 10_000];
@@ -131,6 +131,11 @@ struct CardDataFingerprint<'a> {
     last_updated: &'a Option<String>,
     source: &'a str,
     snapshot_sha256: &'a Option<String>,
+    schema_version: &'a str,
+    ingestor_version: Option<&'a str>,
+    alias_catalog_version: Option<&'a str>,
+    alias_catalog_sha256: Option<&'a str>,
+    alias_catalog_record_count: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -246,6 +251,11 @@ impl AnalysisCache {
                 last_updated: &data.card_data.last_updated,
                 source: &data.card_data.source,
                 snapshot_sha256: &data.card_data.snapshot_sha256,
+                schema_version: &data.card_data.schema_version,
+                ingestor_version: data.card_data.ingestor_version.as_deref(),
+                alias_catalog_version: data.card_data.alias_catalog_version.as_deref(),
+                alias_catalog_sha256: data.card_data.alias_catalog_sha256.as_deref(),
+                alias_catalog_record_count: data.card_data.alias_catalog_record_count,
             },
             combo_data: ComboDataFingerprint {
                 ready: data.combo_data.is_some_and(|status| status.ready),
@@ -568,6 +578,27 @@ fn validate_cache_identity(
         data.card_data.snapshot_sha256.as_deref(),
         "card data snapshot",
     )?;
+    if data.card_data.schema_version.trim().is_empty() {
+        return Err(AnalysisCacheError::IncompleteIdentity(
+            "card data schema version",
+        ));
+    }
+    optional_sha256(
+        data.card_data.alias_catalog_sha256.as_deref(),
+        "card alias catalog",
+    )?;
+    let alias_identity_fields = [
+        data.card_data.alias_catalog_version.is_some(),
+        data.card_data.alias_catalog_sha256.is_some(),
+        data.card_data.alias_catalog_record_count.is_some(),
+    ];
+    if alias_identity_fields.iter().any(|present| *present)
+        && alias_identity_fields.iter().any(|present| !*present)
+    {
+        return Err(AnalysisCacheError::IncompleteIdentity(
+            "card alias catalog metadata",
+        ));
+    }
 
     if let Some(combo) = data.combo_data {
         if combo.ready && combo.snapshot_sha256.is_none() {
