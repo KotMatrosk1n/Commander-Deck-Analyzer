@@ -29,7 +29,7 @@ formatting, locked compile, and strict lint. It then builds one NSIS installer
 and adds these assets to the draft:
 
 ```text
-Commander Deck Analyzer_X.Y.Z_x64-setup.exe
+Commander.Deck.Analyzer_X.Y.Z_x64-setup.exe
 SHA256SUMS.txt
 ```
 

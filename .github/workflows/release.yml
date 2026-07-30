@@ -132,11 +132,19 @@ jobs:
             throw "Expected an unsigned installer, found $($signature.Status)."
           }
 
-          $checksumPath = Join-Path $bundleDirectory "SHA256SUMS.txt"
-          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $($installer.Name)" | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
+          $releaseName = "Commander.Deck.Analyzer_$($env:RELEASE_VERSION)_x64-setup.exe"
+          $releasePath = Join-Path $bundleDirectory $releaseName
+          if (Test-Path -LiteralPath $releasePath) {
+            throw "Refusing to replace existing release asset $releaseName."
+          }
+          Move-Item -LiteralPath $installer.FullName -Destination $releasePath
+          $releaseInstaller = Get-Item -LiteralPath $releasePath
 
-          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          $checksumPath = Join-Path $bundleDirectory "SHA256SUMS.txt"
+          $hash = (Get-FileHash -LiteralPath $releaseInstaller.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $releaseName" | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
+
+          "installer=$($releaseInstaller.FullName)" >> $env:GITHUB_OUTPUT
           "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
           "signing_status=$($signature.Status)" >> $env:GITHUB_OUTPUT
           "Authenticode status: $($signature.Status)" >> $env:GITHUB_STEP_SUMMARY
@@ -196,7 +204,7 @@ jobs:
             throw "The reviewed source commit is no longer part of main."
           }
 
-          $installerName = "Commander Deck Analyzer_$($env:RELEASE_VERSION)_x64-setup.exe"
+          $installerName = "Commander.Deck.Analyzer_$($env:RELEASE_VERSION)_x64-setup.exe"
           $installer = Get-Item -LiteralPath (Join-Path $PWD "release-assets/$installerName")
           $checksum = Get-Item -LiteralPath (Join-Path $PWD "release-assets/SHA256SUMS.txt")
           $files = @(Get-ChildItem -LiteralPath (Join-Path $PWD "release-assets") -File)
