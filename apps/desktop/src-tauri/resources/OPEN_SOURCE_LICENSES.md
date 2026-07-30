@@ -7,8 +7,8 @@ This inventory records package metadata and the license or notice files distribu
 ## Generation Scope
 
 * Windows target: `x86_64-pc-windows-msvc`.
-* Cargo.lock SHA 256: `005a5aa1b82c8ce5bbf34f454a05fdf2ab211e17e0edf0c733ef3e5a8fb9e0c0`.
-* package-lock.json SHA 256: `b73f35b8be7bba95e99550133554bdd7236d05f2cb61fdb700c3fbe111f062d4`.
+* Cargo.lock normalized text SHA 256: `3a2a515173d3b37aecf3283f10812c1024bdea31581a2ae99c802694aaec9359`.
+* package-lock.json normalized text SHA 256: `2b32cc0e53f16314f1cbad01d80ad52da7bb0b0d602ec2bf369751e0213ddbbd`.
 * Included 299 Cargo packages and 6 npm packages, with 205 distinct license or notice texts.
 * The Cargo inventory follows normal dependency edges for the Windows target.
 * The npm inventory includes packages marked for production by the lockfile.
