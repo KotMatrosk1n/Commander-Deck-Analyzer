@@ -779,7 +779,7 @@ fn capability_follows_instruction_break(
 fn normalize_oracle_for_capabilities(oracle_text: &str) -> String {
     oracle_text
         .replace('’', "'")
-        .replace(['\u{2014}', '\u{2013}', '\u{2212}', '\u{2011}'], "-")
+        .replace(['\u{2014}', '\u{2013}', '−', '‑'], "-")
         .to_ascii_lowercase()
 }
 

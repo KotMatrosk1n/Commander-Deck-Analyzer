@@ -9,32 +9,73 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::ability_program::ExecutableAbilityProgramV1;
+use crate::ability_program::{ExecutableAbilityProgramV1, normalize_oracle_clause_for_receipt};
 use crate::alternative_cast_runtime::{
     AlternativeCastCardInput, CompiledAlternativeCast, compile_alternative_cast_runtime,
 };
+use crate::bounded_oracle_runtime::{
+    BoundedOracleCardContext, BoundedOracleClause, ClauseAddress, OracleClauseInput,
+    OracleFaceInput, Timing as BoundedOracleTiming, compile_bounded_oracle_clause_with_context,
+    compile_bounded_oracle_face, normalize_oracle_clause,
+};
 use crate::characteristic_oracle_runtime::{
-    CharacteristicOracleInput, CharacteristicOwnershipRequest,
+    AttractionLightsProcedure, CharacteristicOracleInput, CharacteristicOwnershipRequest,
     CombatKeyword as OracleCombatKeyword, CompiledCharacteristicOracle, CompiledCharacteristicView,
-    CompiledDynamicCharacteristic as OracleDynamicCharacteristic,
-    DevotionColor as OracleDevotionColor, SourceCardType as OracleSourceCardType,
-    compile_characteristic_oracle_ownership,
+    CompiledDynamicCharacteristic as OracleDynamicCharacteristic, DefenseInitializationProcedure,
+    DevotionColor as OracleDevotionColor, EvaluatedPrintedStat, ExactColorSetProcedure,
+    ExactManaValueProcedure, ExactRational, ExactTypeLineProcedure, LoyaltyInitializationInputs,
+    LoyaltyInitializationProcedure, PrintedStatInputs, PrintedStatProcedure,
+    SourceCardType as OracleSourceCardType, StandardCardType, StandardSupertype,
+    VanguardModifierProcedure, compile_characteristic_oracle_ownership,
+    compile_exact_attraction_lights_procedure, compile_exact_color_set_procedure,
+    compile_exact_defense_initialization_procedure, compile_exact_loyalty_initialization_procedure,
+    compile_exact_mana_value_procedure, compile_exact_printed_stat_procedure,
+    compile_exact_type_line_procedure, compile_exact_vanguard_modifier_procedure,
 };
 use crate::continuous_trigger_runtime::{
     CompiledContinuousTrigger, ContinuousTriggerCardInput, ContinuousTriggerFaceInput,
     compile_continuous_trigger_runtime,
 };
 use crate::domain::CardDefinition;
+use crate::dynamic_characteristic_runtime::{
+    DynamicCharacteristicProcedure, DynamicCharacteristicState, DynamicCharacteristicSubject,
+    DynamicRuntimeValue, compile_dynamic_loyalty_procedure, compile_dynamic_printed_stat_procedure,
+};
+use crate::graveyard_transform_keyword_runtime::{
+    CardLayout as GraveyardTransformCardLayout, FaceId as GraveyardTransformFaceId,
+    FaceSemanticContext as GraveyardTransformFaceSemanticContext,
+    ManaColor as GraveyardTransformManaColor,
+    SourceSemanticContext as GraveyardTransformSourceSemanticContext,
+    TransformSemanticContext as GraveyardTransformSemanticContext,
+    normalize_face_oracle_text_for_semantics,
+};
+use crate::level_progression_runtime::{
+    LevelProgressionFaceInput, LevelProgressionProgram, compile_level_progression_face,
+};
 use crate::mana::{ManaColorMask, parse_mana_cost};
 use crate::mana_network_runtime::{ExactManaNetworkProgram, classify_exact_mana_network_program};
+use crate::mechanic_runtime::{
+    MechanicClauseInput, MechanicOccurrenceInput, MechanicProgram, PrintedMechanic,
+    compile_mechanic_program,
+};
 use crate::object_lifecycle_runtime::{
     CompiledObjectLifecycle, ObjectLifecycleCardInput, compile_object_lifecycle_runtime,
+};
+use crate::oracle_clause_backend::{
+    CompiledOracleClause, DelegatedKeywordClause, OracleClauseBackendInput,
+    OracleClauseCardContext, OracleClauseSemanticContext,
+    compile_oracle_clause_backend_with_semantic_context,
+};
+use crate::oracle_clause_syntax::{
+    OracleClauseSyntaxError, OracleClauseSyntaxInput, OracleSyntaxProvenance,
+    OracleSyntaxSemanticContext, RecognizedOracleClauseSyntax, recognize_oracle_clause_syntax,
+    validate_oracle_clause_line,
 };
 use crate::utility_modal_runtime::{
     CompiledUtilityModal, UtilityModalCardInput, compile_utility_modal_runtime,
 };
 
-pub(crate) const EFFECT_DESCRIPTOR_VERSION: &str = "oracle-effects-0.13";
+pub(crate) const EFFECT_DESCRIPTOR_VERSION: &str = "oracle-effects-0.39";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EffectMagnitude {
@@ -184,6 +225,115 @@ pub struct HandZoneCharacteristics {
     pub type_line: String,
     pub card_types: CardTypeProfile,
     pub colors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct StructuralCharacteristicProfile {
+    pub layout: String,
+    pub type_line: Option<ExactTypeLineProcedure>,
+    pub mana_value: Option<ExactManaValueProcedure>,
+    pub colors: Option<ExactColorSetProcedure>,
+    pub color_indicator: Option<ExactColorSetProcedure>,
+    pub power: Option<PrintedStatProcedure>,
+    pub toughness: Option<PrintedStatProcedure>,
+    pub loyalty: Option<LoyaltyInitializationProcedure>,
+    pub dynamic_power: Option<DynamicCharacteristicProcedure>,
+    pub dynamic_toughness: Option<DynamicCharacteristicProcedure>,
+    pub dynamic_loyalty: Option<DynamicCharacteristicProcedure>,
+    pub defense: Option<DefenseInitializationProcedure>,
+    pub hand_modifier: Option<VanguardModifierProcedure>,
+    pub life_modifier: Option<VanguardModifierProcedure>,
+    pub attraction_lights: Option<AttractionLightsProcedure>,
+}
+
+impl StructuralCharacteristicProfile {
+    pub(crate) fn card_types(&self) -> Option<CardTypeProfile> {
+        let procedure = self.type_line.as_ref()?;
+        Some(CardTypeProfile {
+            is_land: procedure.has_card_type(StandardCardType::Land),
+            is_basic_land: procedure.has_supertype(StandardSupertype::Basic)
+                && procedure.has_card_type(StandardCardType::Land),
+            is_creature: procedure.has_card_type(StandardCardType::Creature),
+            is_artifact: procedure.has_card_type(StandardCardType::Artifact),
+            is_battle: procedure.has_card_type(StandardCardType::Battle),
+            is_enchantment: procedure.has_card_type(StandardCardType::Enchantment),
+            is_instant: procedure.has_card_type(StandardCardType::Instant),
+            is_kindred: procedure.has_card_type(StandardCardType::Kindred),
+            is_planeswalker: procedure.has_card_type(StandardCardType::Planeswalker),
+            is_sorcery: procedure.has_card_type(StandardCardType::Sorcery),
+        })
+    }
+
+    pub(crate) fn fixed_power(&self) -> Option<ExactRational> {
+        finite_printed_stat(self.resolved_power()?)
+    }
+
+    pub(crate) fn fixed_toughness(&self) -> Option<ExactRational> {
+        finite_printed_stat(self.resolved_toughness()?)
+    }
+
+    pub(crate) fn resolved_power(&self) -> Option<EvaluatedPrintedStat> {
+        self.power?.evaluate(PrintedStatInputs::default())
+    }
+
+    pub(crate) fn dynamic_power_with<R: DynamicCharacteristicState>(
+        &self,
+        state: &R,
+    ) -> Option<DynamicRuntimeValue> {
+        self.dynamic_power.as_ref()?.evaluate(state)
+    }
+
+    pub(crate) fn resolved_toughness(&self) -> Option<EvaluatedPrintedStat> {
+        self.toughness?.evaluate(PrintedStatInputs::default())
+    }
+
+    pub(crate) fn dynamic_toughness_with<R: DynamicCharacteristicState>(
+        &self,
+        state: &R,
+    ) -> Option<DynamicRuntimeValue> {
+        self.dynamic_toughness.as_ref()?.evaluate(state)
+    }
+
+    pub(crate) fn initial_loyalty(&self) -> Option<u16> {
+        self.loyalty?
+            .initial_counters(LoyaltyInitializationInputs::default())
+    }
+
+    pub(crate) fn dynamic_initial_loyalty_with<R: DynamicCharacteristicState>(
+        &self,
+        state: &R,
+    ) -> Option<DynamicRuntimeValue> {
+        self.dynamic_loyalty.as_ref()?.evaluate(state)
+    }
+
+    pub(crate) fn initial_defense(&self) -> Option<u16> {
+        Some(self.defense?.counters)
+    }
+}
+
+fn finite_printed_stat(value: EvaluatedPrintedStat) -> Option<ExactRational> {
+    match value {
+        EvaluatedPrintedStat::Finite(value) => Some(value),
+        EvaluatedPrintedStat::Infinite => None,
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct StructuralCharacteristics {
+    pub root: StructuralCharacteristicProfile,
+    pub faces: Vec<StructuralCharacteristicProfile>,
+}
+
+impl StructuralCharacteristics {
+    pub(crate) fn battlefield_profile(
+        &self,
+        face_index: Option<usize>,
+    ) -> &StructuralCharacteristicProfile {
+        face_index
+            .and_then(|face_index| self.faces.get(face_index))
+            .or_else(|| self.faces.first())
+            .unwrap_or(&self.root)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,6 +538,7 @@ pub enum ManaProductionKind {
 pub struct EffectDescriptor {
     pub card_types: CardTypeProfile,
     pub hand_zone: HandZoneCharacteristics,
+    pub(crate) structural_characteristics: StructuralCharacteristics,
     pub(crate) printed_keywords: PrintedKeywordProfile,
     pub(crate) printed_devotion_pips: [u16; 5],
     pub(crate) dynamic_creature_characteristic: Option<DynamicCreatureCharacteristic>,
@@ -397,6 +548,27 @@ pub struct EffectDescriptor {
     pub(crate) mana_network: Option<ExactManaNetworkProgram>,
     pub(crate) object_lifecycle: Option<CompiledObjectLifecycle>,
     pub(crate) utility_modal: Option<CompiledUtilityModal>,
+    /// Complete occurrence-addressed Oracle clauses accepted by the generic
+    /// bounded executor. Unsupported clauses are absent and therefore remain
+    /// strict coverage blockers.
+    pub(crate) bounded_oracle: Vec<BoundedOracleClause>,
+    /// Exact delegated keyword clauses retained separately from the native
+    /// bounded executor. Recognition alone does not make these clauses live.
+    pub(crate) delegated_oracle: Vec<DelegatedKeywordClause>,
+    /// Lossless syntax retained for every nonempty Oracle line. Syntax
+    /// recognition, including a successful result, never authorizes execution
+    /// and never replaces either executable program collection above.
+    pub(crate) oracle_syntax: Vec<RetainedOracleClauseSyntax>,
+    /// Every normalized source clause for each exact face, retained even when
+    /// a specialized compiler represents the complete root as one program.
+    /// Bounded receipts use this source partition to preserve the original
+    /// occurrence address and never infer sibling coverage from a collapsed
+    /// specialized program.
+    pub(crate) bounded_oracle_source_roots: Vec<BoundedOracleSourceRoot>,
+    /// Exact printed-mechanic procedures compiled from occurrence-addressed
+    /// Oracle clauses. A bounded clause cannot advertise a mechanic capability
+    /// unless the corresponding program is retained here.
+    pub(crate) mechanic_programs: Vec<MechanicProgram>,
     pub draw_cards: EffectMagnitude,
     pub impulse_access: EffectMagnitude,
     pub tutor_scope: TutorScope,
@@ -422,6 +594,28 @@ pub struct EffectDescriptor {
     pub confidence: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoundedOracleSourceRoot {
+    pub face_index: u16,
+    pub type_line: String,
+    pub normalized_clauses: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RetainedOracleClauseSyntax {
+    /// Exact only when the retained source supplied real face records or one
+    /// unambiguous single-face Oracle root. Legacy `//` combined text has no
+    /// exact occurrence address.
+    pub(crate) address: Option<ClauseAddress>,
+    /// The exact trimmed Oracle line used by the lossless syntax recognizer.
+    /// Its syntax digest therefore depends on text, not card metadata.
+    pub(crate) syntax_line: String,
+    /// The existing compiler-normalized form retained for later binding to
+    /// executable programs whose self references are name independent.
+    pub(crate) normalized_line: String,
+    pub(crate) recognition: Result<RecognizedOracleClauseSyntax, OracleClauseSyntaxError>,
+}
+
 impl EffectDescriptor {
     pub fn has_printed_keyword(&self, keyword: &str) -> bool {
         PrintedKeyword::from_name(keyword)
@@ -437,9 +631,819 @@ impl EffectDescriptor {
     }
 }
 
+fn retain_oracle_clause_syntax(card: &CardDefinition) -> Vec<RetainedOracleClauseSyntax> {
+    let mut retained = Vec::new();
+    if card.faces.is_empty() {
+        append_oracle_face_syntax(
+            &mut retained,
+            0,
+            &card.name,
+            &card.type_line,
+            &card.oracle_text,
+            !has_legacy_combined_oracle_root(card),
+        );
+    } else {
+        for (face_index, face) in card.faces.iter().enumerate() {
+            let Some(face_index) = u16::try_from(face_index).ok() else {
+                continue;
+            };
+            append_oracle_face_syntax(
+                &mut retained,
+                face_index,
+                &face.name,
+                &face.type_line,
+                &face.oracle_text,
+                true,
+            );
+        }
+    }
+    retained
+}
+
+fn append_oracle_face_syntax(
+    retained: &mut Vec<RetainedOracleClauseSyntax>,
+    face_index: u16,
+    source_name: &str,
+    source_type_line: &str,
+    oracle_text: &str,
+    address_is_exact: bool,
+) {
+    for (clause_index, oracle_clause) in oracle_text
+        .lines()
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty() && *clause != "//")
+        .enumerate()
+    {
+        let Ok(clause_index) = u16::try_from(clause_index) else {
+            continue;
+        };
+        let address = ClauseAddress {
+            face_index,
+            clause_index,
+        };
+        let normalized_line = normalize_oracle_clause(oracle_clause, source_name, source_type_line);
+        let recognition = recognize_effect_oracle_clause_syntax(
+            oracle_clause,
+            source_name,
+            address_is_exact.then_some(address),
+        );
+        retained.push(RetainedOracleClauseSyntax {
+            address: address_is_exact.then_some(address),
+            syntax_line: oracle_clause.to_owned(),
+            normalized_line,
+            recognition,
+        });
+    }
+}
+
+fn recognize_effect_oracle_clause_syntax(
+    oracle_clause: &str,
+    source_name: &str,
+    address: Option<ClauseAddress>,
+) -> Result<RecognizedOracleClauseSyntax, OracleClauseSyntaxError> {
+    recognize_oracle_clause_syntax(OracleClauseSyntaxInput {
+        normalized_line: oracle_clause,
+        semantic_context: OracleSyntaxSemanticContext::CardFace,
+        provenance: OracleSyntaxProvenance {
+            source_name: Some(source_name),
+            face_index: address.map(|address| address.face_index),
+            clause_index: address.map(|address| address.clause_index),
+            ..OracleSyntaxProvenance::default()
+        },
+    })
+}
+
+fn has_legacy_combined_oracle_root(card: &CardDefinition) -> bool {
+    card.faces.is_empty()
+        && (layout_requires_exact_oracle_faces(&card.layout)
+            || card.oracle_text.lines().any(|line| line.trim() == "//"))
+}
+
+fn layout_requires_exact_oracle_faces(layout: &str) -> bool {
+    matches!(
+        layout.trim().to_ascii_lowercase().as_str(),
+        "split"
+            | "transform"
+            | "adventure"
+            | "modal_dfc"
+            | "flip"
+            | "reversible_card"
+            | "double_faced_token"
+            | "prepare"
+    )
+}
+
+fn compile_bounded_oracle_clauses(card: &CardDefinition) -> Vec<BoundedOracleClause> {
+    if has_legacy_combined_oracle_root(card) || card.layout.eq_ignore_ascii_case("leveler") {
+        return Vec::new();
+    }
+    let mut compiled = Vec::new();
+    let card_context = BoundedOracleCardContext {
+        layout: &card.layout,
+        face_count: card.faces.len().max(1),
+    };
+    if card.faces.is_empty() {
+        compiled.extend(compile_bounded_oracle_face_clauses(
+            0,
+            &card.name,
+            &card.type_line,
+            &card.oracle_text,
+            card_context,
+        ));
+    } else {
+        for (face_index, face) in card.faces.iter().enumerate() {
+            let Some(face_index) = u16::try_from(face_index).ok() else {
+                continue;
+            };
+            compiled.extend(compile_bounded_oracle_face_clauses(
+                face_index,
+                &face.name,
+                &face.type_line,
+                &face.oracle_text,
+                card_context,
+            ));
+        }
+    }
+    compiled.sort_by_key(|clause| clause.address());
+    compiled
+}
+
+fn exact_integral_graveyard_transform_mana_value(value: Option<f32>) -> Option<u32> {
+    let value = f64::from(value?);
+    (value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= f64::from(u32::MAX))
+        .then_some(value as u32)
+}
+
+fn graveyard_transform_colors(values: &[String]) -> Option<BTreeSet<GraveyardTransformManaColor>> {
+    values
+        .iter()
+        .map(|value| match value.trim().to_ascii_uppercase().as_str() {
+            "W" => Some(GraveyardTransformManaColor::White),
+            "U" => Some(GraveyardTransformManaColor::Blue),
+            "B" => Some(GraveyardTransformManaColor::Black),
+            "R" => Some(GraveyardTransformManaColor::Red),
+            "G" => Some(GraveyardTransformManaColor::Green),
+            "C" => Some(GraveyardTransformManaColor::Colorless),
+            _ => None,
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn graveyard_transform_face_semantic_context(
+    name: &str,
+    type_line: &str,
+    oracle_text: &str,
+    mana_cost: Option<&str>,
+    colors: &[String],
+    color_indicator: &[String],
+    root_mana_value: u32,
+    power: Option<&str>,
+    toughness: Option<&str>,
+    loyalty: Option<&str>,
+    defense: Option<&str>,
+) -> Option<GraveyardTransformFaceSemanticContext> {
+    Some(GraveyardTransformFaceSemanticContext {
+        normalized_oracle_text: normalize_face_oracle_text_for_semantics(oracle_text, name),
+        type_line: type_line.to_owned(),
+        mana_cost: mana_cost.unwrap_or_default().to_owned(),
+        colors: graveyard_transform_colors(colors)?,
+        color_indicator: graveyard_transform_colors(color_indicator)?,
+        root_mana_value,
+        power: power.map(str::to_owned),
+        toughness: toughness.map(str::to_owned),
+        loyalty: loyalty.map(str::to_owned),
+        defense: defense.map(str::to_owned),
+    })
+}
+
+/// Build one optional content-only context per addressed Oracle face.
+///
+/// No snapshot identity, row position, update timestamp, Oracle ID, or display
+/// metadata enters these values. A context is absent unless the physical-card
+/// relationship and every rules-relevant characteristic are complete.
+fn graveyard_transform_semantic_contexts(
+    card: &CardDefinition,
+) -> Vec<Option<GraveyardTransformSourceSemanticContext>> {
+    let face_count = card.faces.len().max(1);
+    let mut contexts = vec![None; face_count];
+    match card.layout.trim().to_ascii_lowercase().as_str() {
+        "normal" if card.faces.is_empty() => {
+            contexts[0] = Some(GraveyardTransformSourceSemanticContext::SingleFace {
+                layout: GraveyardTransformCardLayout::Normal,
+                type_line: card.type_line.clone(),
+                normalized_oracle_text: normalize_face_oracle_text_for_semantics(
+                    &card.oracle_text,
+                    &card.name,
+                ),
+            });
+        }
+        "normal" if card.faces.len() == 1 => {
+            let face = &card.faces[0];
+            contexts[0] = Some(GraveyardTransformSourceSemanticContext::SingleFace {
+                layout: GraveyardTransformCardLayout::Normal,
+                type_line: face.type_line.clone(),
+                normalized_oracle_text: normalize_face_oracle_text_for_semantics(
+                    &face.oracle_text,
+                    &face.name,
+                ),
+            });
+        }
+        "transform" if card.faces.len() == 2 => {
+            let root_mana_value = match card.root_mana_value {
+                Some(value) => exact_integral_graveyard_transform_mana_value(Some(value)),
+                None => exact_integral_graveyard_transform_mana_value(card.faces[0].mana_value),
+            };
+            let Some(root_mana_value) = root_mana_value else {
+                return contexts;
+            };
+            let front = &card.faces[0];
+            let back = &card.faces[1];
+            let Some(front) = graveyard_transform_face_semantic_context(
+                &front.name,
+                &front.type_line,
+                &front.oracle_text,
+                front.mana_cost.as_deref(),
+                &front.colors,
+                &front.color_indicator,
+                root_mana_value,
+                front.power.as_deref(),
+                front.toughness.as_deref(),
+                front.loyalty.as_deref(),
+                front.defense.as_deref(),
+            ) else {
+                return contexts;
+            };
+            let Some(back) = graveyard_transform_face_semantic_context(
+                &back.name,
+                &back.type_line,
+                &back.oracle_text,
+                back.mana_cost.as_deref(),
+                &back.colors,
+                &back.color_indicator,
+                root_mana_value,
+                back.power.as_deref(),
+                back.toughness.as_deref(),
+                back.loyalty.as_deref(),
+                back.defense.as_deref(),
+            ) else {
+                return contexts;
+            };
+            contexts[0] = Some(GraveyardTransformSourceSemanticContext::Transform(
+                GraveyardTransformSemanticContext {
+                    layout: GraveyardTransformCardLayout::Transform,
+                    keyword_face: GraveyardTransformFaceId::Front,
+                    front,
+                    back,
+                },
+            ));
+        }
+        _ => {}
+    }
+    contexts
+}
+
+fn level_progression_semantic_contexts(
+    card: &CardDefinition,
+) -> Vec<Option<LevelProgressionProgram>> {
+    let face_count = card.faces.len().max(1);
+    let mut contexts = vec![None; face_count];
+    if card.layout != "leveler" || face_count != 1 {
+        return contexts;
+    }
+
+    let input = if card.faces.is_empty() {
+        LevelProgressionFaceInput {
+            exact_oracle_text: card.oracle_text.clone(),
+            exact_layout: card.layout.clone(),
+            exact_type_line: card.type_line.clone(),
+            printed_power: card.power.as_deref().and_then(|value| value.parse().ok()),
+            printed_toughness: card
+                .toughness
+                .as_deref()
+                .and_then(|value| value.parse().ok()),
+        }
+    } else {
+        let face = &card.faces[0];
+        LevelProgressionFaceInput {
+            exact_oracle_text: face.oracle_text.clone(),
+            exact_layout: card.layout.clone(),
+            exact_type_line: face.type_line.clone(),
+            printed_power: face.power.as_deref().and_then(|value| value.parse().ok()),
+            printed_toughness: face
+                .toughness
+                .as_deref()
+                .and_then(|value| value.parse().ok()),
+        }
+    };
+    contexts[0] = compile_level_progression_face(input).ok();
+    contexts
+}
+
+fn compile_additional_oracle_clauses(
+    card: &CardDefinition,
+    bounded_oracle: &[BoundedOracleClause],
+) -> (Vec<BoundedOracleClause>, Vec<DelegatedKeywordClause>) {
+    if has_legacy_combined_oracle_root(card) {
+        return (Vec::new(), Vec::new());
+    }
+    let bounded_addresses = bounded_oracle
+        .iter()
+        .map(BoundedOracleClause::address)
+        .collect::<BTreeSet<_>>();
+    let mut bounded = Vec::new();
+    let mut delegated = Vec::new();
+    let card_context = OracleClauseCardContext {
+        layout: &card.layout,
+        face_count: card.faces.len().max(1),
+    };
+    let graveyard_transform_contexts = graveyard_transform_semantic_contexts(card);
+    let level_progression_contexts = level_progression_semantic_contexts(card);
+
+    if card.faces.is_empty() {
+        let keywords = card.keywords.iter().map(String::as_str).collect::<Vec<_>>();
+        append_additional_oracle_clauses(
+            &mut bounded,
+            &mut delegated,
+            &bounded_addresses,
+            0,
+            &card.name,
+            &card.type_line,
+            exact_nonnegative_u32(card.root_mana_value.unwrap_or(card.mana_value)),
+            &card.oracle_text,
+            &keywords,
+            card_context,
+            graveyard_transform_contexts[0].as_ref(),
+            level_progression_contexts[0].as_ref(),
+        );
+    } else {
+        for (face_index, face) in card.faces.iter().enumerate() {
+            let Some(face_index) = u16::try_from(face_index).ok() else {
+                continue;
+            };
+            let mut keywords = card.keywords.iter().map(String::as_str).collect::<Vec<_>>();
+            keywords.extend(face.keywords.iter().map(String::as_str));
+            append_additional_oracle_clauses(
+                &mut bounded,
+                &mut delegated,
+                &bounded_addresses,
+                face_index,
+                &face.name,
+                &face.type_line,
+                face.mana_value.and_then(exact_nonnegative_u32),
+                &face.oracle_text,
+                &keywords,
+                card_context,
+                graveyard_transform_contexts
+                    .get(usize::from(face_index))
+                    .and_then(Option::as_ref),
+                level_progression_contexts
+                    .get(usize::from(face_index))
+                    .and_then(Option::as_ref),
+            );
+        }
+    }
+
+    bounded.sort_by_key(BoundedOracleClause::address);
+    delegated.sort_by_key(DelegatedKeywordClause::address);
+    (bounded, delegated)
+}
+
+// Kept explicit because this compiler boundary carries independent source evidence.
+#[allow(clippy::too_many_arguments)]
+fn append_additional_oracle_clauses(
+    bounded: &mut Vec<BoundedOracleClause>,
+    delegated: &mut Vec<DelegatedKeywordClause>,
+    bounded_addresses: &BTreeSet<crate::bounded_oracle_runtime::ClauseAddress>,
+    face_index: u16,
+    source_name: &str,
+    source_type_line: &str,
+    source_mana_value: Option<u32>,
+    oracle_text: &str,
+    printed_keywords: &[&str],
+    card_context: OracleClauseCardContext<'_>,
+    graveyard_transform_context: Option<&GraveyardTransformSourceSemanticContext>,
+    level_progression_context: Option<&LevelProgressionProgram>,
+) {
+    for (clause_index, oracle_clause) in oracle_text
+        .lines()
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty() && *clause != "//")
+        .enumerate()
+    {
+        let Ok(clause_index) = u16::try_from(clause_index) else {
+            continue;
+        };
+        let address = crate::bounded_oracle_runtime::ClauseAddress {
+            face_index,
+            clause_index,
+        };
+        if bounded_addresses.contains(&address) {
+            continue;
+        }
+        let input = OracleClauseBackendInput {
+            face_index,
+            clause_index,
+            source_name,
+            source_type_line,
+            oracle_clause,
+            printed_keywords,
+        };
+        match compile_oracle_clause_backend_with_semantic_context(
+            input,
+            OracleClauseSemanticContext {
+                card: card_context,
+                graveyard_transform: graveyard_transform_context,
+                level_progression: level_progression_context,
+                source_mana_value,
+                complete_face_oracle_text: Some(oracle_text),
+            },
+        ) {
+            Ok(CompiledOracleClause::Bounded(clause)) => bounded.push(clause),
+            Ok(CompiledOracleClause::Delegated(clause)) => delegated.push(clause),
+            Err(_) => {}
+        }
+    }
+}
+
+fn exact_nonnegative_u32(value: f32) -> Option<u32> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 {
+        return None;
+    }
+    let integer = value as u32;
+    (integer as f32 == value).then_some(integer)
+}
+
+fn compile_bounded_oracle_source_roots(card: &CardDefinition) -> Vec<BoundedOracleSourceRoot> {
+    if has_legacy_combined_oracle_root(card) {
+        return Vec::new();
+    }
+    let mut roots = Vec::new();
+    if card.faces.is_empty() {
+        roots.push(bounded_oracle_source_root(
+            0,
+            &card.name,
+            &card.type_line,
+            &card.oracle_text,
+        ));
+    } else {
+        for (face_index, face) in card.faces.iter().enumerate() {
+            let Some(face_index) = u16::try_from(face_index).ok() else {
+                continue;
+            };
+            roots.push(bounded_oracle_source_root(
+                face_index,
+                &face.name,
+                &face.type_line,
+                &face.oracle_text,
+            ));
+        }
+    }
+    roots
+}
+
+fn bounded_oracle_source_root(
+    face_index: u16,
+    source_name: &str,
+    type_line: &str,
+    oracle_text: &str,
+) -> BoundedOracleSourceRoot {
+    BoundedOracleSourceRoot {
+        face_index,
+        type_line: type_line.to_owned(),
+        normalized_clauses: oracle_text
+            .lines()
+            .map(str::trim)
+            .filter(|clause| !clause.is_empty() && *clause != "//")
+            .map(|clause| normalize_oracle_clause_for_receipt(clause, source_name, type_line))
+            .collect(),
+    }
+}
+
+fn compile_bounded_oracle_face_clauses(
+    face_index: u16,
+    source_name: &str,
+    source_type_line: &str,
+    oracle_text: &str,
+    card_context: BoundedOracleCardContext<'_>,
+) -> Vec<BoundedOracleClause> {
+    let oracle_clauses = oracle_text
+        .lines()
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty() && *clause != "//")
+        .collect::<Vec<_>>();
+    if oracle_clauses.is_empty() {
+        return Vec::new();
+    }
+
+    if let Ok(face) = compile_bounded_oracle_face(OracleFaceInput {
+        face_index,
+        source_name,
+        source_type_line,
+        oracle_clauses: &oracle_clauses,
+    }) {
+        return face.clauses;
+    }
+
+    oracle_clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(clause_index, oracle_clause)| {
+            let clause = compile_bounded_oracle_clause_with_context(
+                OracleClauseInput {
+                    face_index,
+                    clause_index: u16::try_from(clause_index).ok()?,
+                    source_name,
+                    source_type_line,
+                    oracle_clause,
+                },
+                card_context,
+            )
+            .ok()?;
+            (!matches!(
+                clause.timing(),
+                BoundedOracleTiming::ModalHeader { .. }
+                    | BoundedOracleTiming::TriggeredModalHeader { .. }
+                    | BoundedOracleTiming::ModalBranch { .. }
+            ))
+            .then_some(clause)
+        })
+        .collect()
+}
+
+const BOUNDED_PRINTED_MECHANICS: [PrintedMechanic; 23] = [
+    PrintedMechanic::Cycling,
+    PrintedMechanic::Typecycling,
+    PrintedMechanic::Enchant,
+    PrintedMechanic::Food,
+    PrintedMechanic::Prowess,
+    PrintedMechanic::Channel,
+    PrintedMechanic::Treasure,
+    PrintedMechanic::Scry,
+    PrintedMechanic::Landfall,
+    PrintedMechanic::Double,
+    PrintedMechanic::Paradigm,
+    PrintedMechanic::Transform,
+    PrintedMechanic::Surveil,
+    PrintedMechanic::Crew,
+    PrintedMechanic::Ward,
+    PrintedMechanic::SplitSecond,
+    PrintedMechanic::Evoke,
+    PrintedMechanic::Manifest,
+    PrintedMechanic::Partner,
+    PrintedMechanic::Ferocious,
+    PrintedMechanic::Dash,
+    PrintedMechanic::Gift,
+    PrintedMechanic::Mobilize,
+];
+
+#[derive(Clone, Copy)]
+struct MechanicSourceClause<'a> {
+    face_index: u16,
+    clause_index: u16,
+    source_name: &'a str,
+    source_type_line: &'a str,
+    oracle_clause: &'a str,
+}
+
+impl<'a> MechanicSourceClause<'a> {
+    fn input(self) -> MechanicClauseInput<'a> {
+        MechanicClauseInput {
+            face_index: self.face_index,
+            clause_index: self.clause_index,
+            source_name: self.source_name,
+            source_type_line: self.source_type_line,
+            oracle_clause: self.oracle_clause,
+        }
+    }
+}
+
+fn compile_mechanic_programs(card: &CardDefinition) -> Vec<MechanicProgram> {
+    if has_legacy_combined_oracle_root(card) {
+        return Vec::new();
+    }
+    let mut clauses = Vec::new();
+    if card.faces.is_empty() {
+        for (clause_index, oracle_clause) in card
+            .oracle_text
+            .lines()
+            .map(str::trim)
+            .filter(|clause| !clause.is_empty() && *clause != "//")
+            .enumerate()
+        {
+            let Ok(clause_index) = u16::try_from(clause_index) else {
+                continue;
+            };
+            if validate_oracle_clause_line(oracle_clause).is_err() {
+                continue;
+            }
+            clauses.push(MechanicSourceClause {
+                face_index: 0,
+                clause_index,
+                source_name: &card.name,
+                source_type_line: &card.type_line,
+                oracle_clause,
+            });
+        }
+    } else {
+        for (face_index, face) in card.faces.iter().enumerate() {
+            let Ok(face_index) = u16::try_from(face_index) else {
+                continue;
+            };
+            for (clause_index, oracle_clause) in face
+                .oracle_text
+                .lines()
+                .map(str::trim)
+                .filter(|clause| !clause.is_empty() && *clause != "//")
+                .enumerate()
+            {
+                let Ok(clause_index) = u16::try_from(clause_index) else {
+                    continue;
+                };
+                if validate_oracle_clause_line(oracle_clause).is_err() {
+                    continue;
+                }
+                clauses.push(MechanicSourceClause {
+                    face_index,
+                    clause_index,
+                    source_name: &face.name,
+                    source_type_line: &face.type_line,
+                    oracle_clause,
+                });
+            }
+        }
+    }
+
+    let mut printed_keywords = card.keywords.clone();
+    for face in &card.faces {
+        printed_keywords.extend(face.keywords.iter().cloned());
+    }
+    printed_keywords.sort_by_key(|keyword| keyword.trim().to_ascii_lowercase());
+    printed_keywords.dedup_by(|left, right| left.trim().eq_ignore_ascii_case(right.trim()));
+
+    let mut programs = Vec::new();
+    for primary in &clauses {
+        for mechanic in BOUNDED_PRINTED_MECHANICS {
+            if !printed_keywords.iter().any(|keyword| {
+                keyword
+                    .trim()
+                    .eq_ignore_ascii_case(mechanic.printed_label())
+            }) {
+                continue;
+            }
+            let base = MechanicOccurrenceInput {
+                mechanic,
+                marker_label: None,
+                layout: &card.layout,
+                printed_keywords: &printed_keywords,
+                primary: primary.input(),
+                companion: None,
+            };
+            if mechanic == PrintedMechanic::Transform {
+                for companion in clauses.iter().filter(|candidate| {
+                    candidate.face_index != primary.face_index
+                        || candidate.clause_index != primary.clause_index
+                }) {
+                    let input = MechanicOccurrenceInput {
+                        companion: Some(companion.input()),
+                        ..base
+                    };
+                    if let Ok(program) = compile_mechanic_program(input) {
+                        programs.push(program);
+                        break;
+                    }
+                }
+            } else if let Ok(program) = compile_mechanic_program(base) {
+                programs.push(program);
+            }
+        }
+        for marker_label in &printed_keywords {
+            let input = MechanicOccurrenceInput {
+                mechanic: PrintedMechanic::AbilityWord,
+                marker_label: Some(marker_label),
+                layout: &card.layout,
+                printed_keywords: &printed_keywords,
+                primary: primary.input(),
+                companion: None,
+            };
+            if let Ok(program) = compile_mechanic_program(input) {
+                programs.push(program);
+            }
+        }
+    }
+    programs.sort_by_key(|program| (program.primary_address(), program.mechanic()));
+    programs.dedup_by(|left, right| {
+        left.primary_address() == right.primary_address() && left.mechanic() == right.mechanic()
+    });
+    programs
+}
+
+// Kept explicit because each printed field is independently audited into the profile.
+#[allow(clippy::too_many_arguments)]
+fn compile_structural_characteristic_profile(
+    layout: &str,
+    oracle_text: &str,
+    type_line: &str,
+    mana_value: Option<f32>,
+    colors: &[String],
+    color_indicator: &[String],
+    power: Option<&str>,
+    toughness: Option<&str>,
+    loyalty: Option<&str>,
+    defense: Option<&str>,
+    hand_modifier: Option<&str>,
+    life_modifier: Option<&str>,
+    attraction_lights: &[u8],
+) -> StructuralCharacteristicProfile {
+    let power = power.and_then(|value| compile_exact_printed_stat_procedure(layout, value));
+    let toughness = toughness.and_then(|value| compile_exact_printed_stat_procedure(layout, value));
+    let loyalty = loyalty.and_then(compile_exact_loyalty_initialization_procedure);
+    StructuralCharacteristicProfile {
+        layout: layout.trim().to_ascii_lowercase(),
+        type_line: compile_exact_type_line_procedure(type_line),
+        mana_value: mana_value.and_then(compile_exact_mana_value_procedure),
+        colors: compile_exact_color_set_procedure(colors),
+        color_indicator: compile_exact_color_set_procedure(color_indicator),
+        power,
+        toughness,
+        loyalty,
+        dynamic_power: power.and_then(|procedure| {
+            compile_dynamic_printed_stat_procedure(
+                layout,
+                oracle_text,
+                procedure,
+                DynamicCharacteristicSubject::Power,
+            )
+        }),
+        dynamic_toughness: toughness.and_then(|procedure| {
+            compile_dynamic_printed_stat_procedure(
+                layout,
+                oracle_text,
+                procedure,
+                DynamicCharacteristicSubject::Toughness,
+            )
+        }),
+        dynamic_loyalty: loyalty
+            .and_then(|procedure| compile_dynamic_loyalty_procedure(oracle_text, procedure)),
+        defense: defense.and_then(compile_exact_defense_initialization_procedure),
+        hand_modifier: hand_modifier.and_then(compile_exact_vanguard_modifier_procedure),
+        life_modifier: life_modifier.and_then(compile_exact_vanguard_modifier_procedure),
+        attraction_lights: compile_exact_attraction_lights_procedure(attraction_lights),
+    }
+}
+
+fn compile_structural_characteristics(card: &CardDefinition) -> StructuralCharacteristics {
+    let root = compile_structural_characteristic_profile(
+        &card.layout,
+        &card.oracle_text,
+        &card.type_line,
+        card.root_mana_value,
+        &card.colors,
+        &card.color_indicator,
+        card.power.as_deref(),
+        card.toughness.as_deref(),
+        card.loyalty.as_deref(),
+        card.defense.as_deref(),
+        card.hand_modifier.as_deref(),
+        card.life_modifier.as_deref(),
+        &card.attraction_lights,
+    );
+    let faces = card
+        .faces
+        .iter()
+        .map(|face| {
+            let layout = if face.layout.trim().is_empty() {
+                card.layout.as_str()
+            } else {
+                face.layout.as_str()
+            };
+            compile_structural_characteristic_profile(
+                layout,
+                &face.oracle_text,
+                &face.type_line,
+                face.mana_value,
+                &face.colors,
+                &face.color_indicator,
+                face.power.as_deref(),
+                face.toughness.as_deref(),
+                face.loyalty.as_deref(),
+                face.defense.as_deref(),
+                face.hand_modifier.as_deref(),
+                face.life_modifier.as_deref(),
+                &face.attraction_lights,
+            )
+        })
+        .collect();
+    StructuralCharacteristics { root, faces }
+}
+
 pub fn compile_effect_descriptor(card: &CardDefinition) -> EffectDescriptor {
     let oracle = normalize_oracle(&card.oracle_text);
-    let card_types = compile_card_types(&card.type_line);
+    let structural_characteristics = compile_structural_characteristics(card);
+    let card_types = structural_characteristics
+        .root
+        .card_types()
+        .unwrap_or_else(|| compile_card_types(&card.type_line));
     let hand_zone = compile_hand_zone_characteristics(card);
     let printed_keywords = compile_printed_keyword_profile(&card.keywords);
     let printed_devotion_pips = exact_primary_face_devotion_pips(card);
@@ -491,10 +1495,19 @@ pub fn compile_effect_descriptor(card: &CardDefinition) -> EffectDescriptor {
         type_line: &card.type_line,
         oracle_text: &card.oracle_text,
     });
+    let oracle_syntax = retain_oracle_clause_syntax(card);
+    let mut bounded_oracle = compile_bounded_oracle_clauses(card);
+    let (additional_bounded, delegated_oracle) =
+        compile_additional_oracle_clauses(card, &bounded_oracle);
+    bounded_oracle.extend(additional_bounded);
+    bounded_oracle.sort_by_key(BoundedOracleClause::address);
+    let bounded_oracle_source_roots = compile_bounded_oracle_source_roots(card);
+    let mechanic_programs = compile_mechanic_programs(card);
     if oracle.is_empty() {
         return EffectDescriptor {
             card_types,
             hand_zone,
+            structural_characteristics,
             printed_keywords,
             printed_devotion_pips,
             dynamic_creature_characteristic,
@@ -503,6 +1516,11 @@ pub fn compile_effect_descriptor(card: &CardDefinition) -> EffectDescriptor {
             continuous_triggers,
             object_lifecycle,
             utility_modal,
+            bounded_oracle,
+            delegated_oracle,
+            oracle_syntax,
+            bounded_oracle_source_roots,
+            mechanic_programs,
             confidence: if card.type_line.to_ascii_lowercase().contains("land") {
                 0.96
             } else {
@@ -515,6 +1533,7 @@ pub fn compile_effect_descriptor(card: &CardDefinition) -> EffectDescriptor {
     let mut descriptor = EffectDescriptor {
         card_types,
         hand_zone,
+        structural_characteristics,
         printed_keywords,
         printed_devotion_pips,
         dynamic_creature_characteristic,
@@ -523,6 +1542,11 @@ pub fn compile_effect_descriptor(card: &CardDefinition) -> EffectDescriptor {
         continuous_triggers,
         object_lifecycle,
         utility_modal,
+        bounded_oracle,
+        delegated_oracle,
+        oracle_syntax,
+        bounded_oracle_source_roots,
+        mechanic_programs,
         repeatable: oracle.contains("whenever ")
             || oracle.contains("at the beginning of ")
             || oracle.contains("{t}:")
@@ -907,7 +1931,7 @@ struct TutorCompilation {
 
 pub(crate) fn compile_card_types(type_line: &str) -> CardTypeProfile {
     let normalized = type_line
-        .replace(['-', '-'], " ")
+        .replace(['\u{2014}', '-'], " ")
         .split_whitespace()
         .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>();

@@ -2165,7 +2165,7 @@ pub(crate) fn compile_executable_ability_program(
     } else if is_variable_creature_tutor_overrun_candidate(&normalized_oracle) {
         // The reviewed variable-X tutor and its conditional overrun are one
         // spell-resolution ability in current Oracle text. Some historical
-        // exports wrapped the second sentence onto a new line. Compile the
+        // fixtures wrapped the second sentence onto a new line. Compile the
         // complete normalized text atomically so presentation wrapping cannot
         // change behavior and no supported-looking subset can execute alone.
         vec![compile_clause(0, &normalized_oracle, input.type_line)]
@@ -2444,7 +2444,7 @@ fn entry_linked_permanent_family(
     if !type_line_has_card_type(type_line, "artifact") {
         return None;
     }
-    if lower.starts_with("imprint - when this permanent enters")
+    if lower.starts_with("imprint \u{2014} when this permanent enters")
         || lower.starts_with("imprint - when this permanent enters")
         || lower.contains("any of the exiled card's colors")
         || (lower.contains("when this permanent enters")
@@ -2467,8 +2467,8 @@ fn compile_imprint_colored_card_permanent(
     normalized_oracle: &str,
     type_line: &str,
 ) -> EntryLinkedPermanentCompilation {
-    const CURRENT: &str = "imprint - when this permanent enters, you may exile a nonartifact, nonland card from your hand. {t}: add one mana of any of the exiled card's colors";
-    const LEGACY: &str = "imprint - when this permanent enters the battlefield, you may exile a nonartifact, nonland card from your hand. {t}: add one mana of any of the exiled card's colors";
+    const CURRENT: &str = "imprint \u{2014} when this permanent enters, you may exile a nonartifact, nonland card from your hand. {t}: add one mana of any of the exiled card's colors";
+    const LEGACY: &str = "imprint \u{2014} when this permanent enters the battlefield, you may exile a nonartifact, nonland card from your hand. {t}: add one mana of any of the exiled card's colors";
     if !type_line_has_card_type(type_line, "artifact") || (lower != CURRENT && lower != LEGACY) {
         return unsupported_entry_linked_permanent(
             normalized_oracle,
@@ -3106,7 +3106,7 @@ fn compile_threshold_mana_replacement(
     normalized_oracle: &str,
     type_line: &str,
 ) -> AtomicTransactionCompilation {
-    const EXACT: &str = "add {b}{b}{b}. threshold - add {b}{b}{b}{b}{b} instead if seven or more cards are in your graveyard";
+    const EXACT: &str = "add {b}{b}{b}. threshold \u{2014} add {b}{b}{b}{b}{b} instead if seven or more cards are in your graveyard";
     if !is_instant_or_sorcery(type_line) || lower != EXACT {
         return unsupported_atomic_transaction(
             normalized_oracle,
@@ -3309,7 +3309,7 @@ pub(crate) fn normalize_oracle_clause_for_receipt(
 }
 
 fn strip_ability_word_prefix(clause: &str) -> &str {
-    let Some((label, rules_text)) = clause.split_once(" - ") else {
+    let Some((label, rules_text)) = clause.split_once(" \u{2014} ") else {
         return clause;
     };
     let label_is_ability_word = !label.trim().is_empty()
@@ -4030,7 +4030,7 @@ fn compile_reviewed_conditional_mana_clause(
             )
         }
         "{t}: add one mana of any color. activate only if you control three or more artifacts"
-        | "metalcraft - {t}: add one mana of any color. activate only if you control three or more artifacts" => {
+        | "metalcraft \u{2014} {t}: add one mana of any color. activate only if you control three or more artifacts" => {
             (
                 "artifact",
                 vec![AbilityEffect::AddMana(ManaEffect {
@@ -4556,13 +4556,14 @@ fn compile_static_creature_modifier_clause(
                 body,
                 "aura",
             )
-        } else {
-            let body = lower.strip_prefix("equipped creature ")?;
+        } else if let Some(body) = lower.strip_prefix("equipped creature ") {
             (
                 StaticCreatureModifierTarget::CreatureEquippedBySource,
                 body,
                 "equipment",
             )
+        } else {
+            return None;
         };
 
     if !type_line_has_card_type(type_line, required_subtype) {
@@ -6157,9 +6158,10 @@ fn parse_mill_effect(lower: &str) -> Option<MillEffect> {
 fn parse_tap_effect(lower: &str) -> Option<(bool, TargetSelector)> {
     let (tap, target) = if let Some(target) = lower.strip_prefix("tap ") {
         (true, target)
-    } else {
-        let target = lower.strip_prefix("untap ")?;
+    } else if let Some(target) = lower.strip_prefix("untap ") {
         (false, target)
+    } else {
+        return None;
     };
     let selector = match target {
         "this permanent" => TargetSelector::SelfPermanent,

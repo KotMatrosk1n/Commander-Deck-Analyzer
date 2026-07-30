@@ -58,6 +58,10 @@ import {
   updateComprehensiveRules,
 } from "./api";
 import { CreditsPanel } from "./CreditsPanel";
+import {
+  INTERACTION_PROFILE_OPTIONS,
+  interactionProfileLabel,
+} from "./interactionProfiles";
 import { ReportView } from "./ReportView";
 import type {
   AnalysisOptions,
@@ -73,6 +77,7 @@ import type {
   DataUpdateProgress,
   DeckParseResult,
   ImportResult,
+  InteractionProfile,
   KnowledgeUpdateCheck,
   PolicyPackageStatus,
   ReportTab,
@@ -108,6 +113,7 @@ const MAXIMUM_ANALYSIS_TURN = 12;
 interface AnalysisRunSettings {
   trials: AnalysisTrialCount;
   maximumTurn: number;
+  interactionProfile: InteractionProfile;
 }
 
 const DIALOG_FOCUSABLE_SELECTOR = [
@@ -125,7 +131,7 @@ const stageOrder: { id: AnalysisStage; label: string; description: string }[] = 
   { id: "compiling", label: "Compile semantic model", description: "Roles, plans, known combinations" },
   { id: "openingHands", label: "Simulate opening hands", description: "Fixed aggressive London mulligans" },
   { id: "goldfish", label: "Simulate baseline plans", description: "Bounded no-interference trajectories" },
-  { id: "interference", label: "Apply table interaction", description: "Standardized cEDH disruption and recovery" },
+  { id: "interference", label: "Evaluate disruption sensitivity", description: "Selected profile and independent recovery checkpoints" },
   { id: "scoring", label: "Build recommendation", description: "Evidence, uncertainty, coverage" },
 ];
 
@@ -156,6 +162,7 @@ function App() {
   const [analysisSettings, setAnalysisSettings] = useState<AnalysisRunSettings>({
     trials: DEFAULT_OPTIONS.gameSimulations,
     maximumTurn: DEFAULT_OPTIONS.maximumTurn,
+    interactionProfile: DEFAULT_OPTIONS.interactionProfile,
   });
   const [allowOnlineCardResolution, setAllowOnlineCardResolution] = useState(false);
   const options = useMemo<AnalysisOptions>(
@@ -164,6 +171,7 @@ function App() {
       openingHandSimulations: analysisSettings.trials,
       gameSimulations: analysisSettings.trials,
       maximumTurn: analysisSettings.maximumTurn,
+      interactionProfile: analysisSettings.interactionProfile,
       allowOnlineCardResolution,
     }),
     [allowOnlineCardResolution, analysisSettings],
@@ -410,6 +418,7 @@ function App() {
       openingHandSimulations: settings.trials,
       gameSimulations: settings.trials,
       maximumTurn: settings.maximumTurn,
+      interactionProfile: settings.interactionProfile,
       allowOnlineCardResolution,
     };
     setAnalysisSettings(settings);
@@ -838,7 +847,7 @@ function App() {
             <div className="analysis-actions">
               <div className="fixed-policy-summary">
                 <SlidersHorizontal size={16} />
-                <span><strong>Analysis setup</strong><small>Aggressive mulligans · {options.gameSimulations.toLocaleString()} trials · turns 1 to {options.maximumTurn}</small></span>
+                <span><strong>Analysis setup</strong><small>Aggressive mulligans · {interactionProfileLabel(options.interactionProfile)} · {options.gameSimulations.toLocaleString()} trials · turns 1 to {options.maximumTurn}</small></span>
               </div>
               {phase === "analyzing" ? (
                 <button className="cancel-button" onClick={() => void stopAnalysis()} type="button"><Square size={15} /> Cancel</button>
@@ -961,7 +970,7 @@ function EmptyResults() {
       <div className="empty-feature-grid">
         <div><BarChart3 size={18} /><strong>Consistency</strong><span>London mulligans and mana development</span></div>
         <div><Target size={18} /><strong>Plan speed</strong><span>Bounded, reproducible turn trajectories</span></div>
-        <div><ShieldCheck size={18} /><strong>Resilience</strong><span>Standardized interaction and recovery model</span></div>
+        <div><ShieldCheck size={18} /><strong>Resilience</strong><span>Selectable interaction and recovery model</span></div>
         <div><BookOpenCheck size={18} /><strong>Explainability</strong><span>Coverage, assumptions, and evidence</span></div>
       </div>
       <div className="privacy-note"><Database size={15} /> APIs update card identities and import public lists; analysis remains on this device.</div>
@@ -1037,6 +1046,8 @@ function AnalysisSetupDialog({
 }) {
   const [maximumTurn, setMaximumTurn] = useState(initialSettings.maximumTurn);
   const [trials, setTrials] = useState<AnalysisTrialCount>(initialSettings.trials);
+  const [interactionProfile, setInteractionProfile] =
+    useState<InteractionProfile>(initialSettings.interactionProfile);
   const dialogRef = useRef<HTMLElement>(null);
   const turnSliderRef = useRef<HTMLInputElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(
@@ -1079,14 +1090,14 @@ function AnalysisSetupDialog({
         <div className="confirmation-dialog-header">
           <div>
             <span className="eyebrow">Analysis setup</span>
-            <h2 id="analysis-setup-title">Choose this run’s workload</h2>
+            <h2 id="analysis-setup-title">Choose this run’s settings</h2>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close analysis setup" type="button"><X size={18} /></button>
         </div>
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            onConfirm({ trials, maximumTurn });
+            onConfirm({ trials, maximumTurn, interactionProfile });
           }}
         >
           <div className="analysis-setting">
@@ -1110,6 +1121,29 @@ function AnalysisSetupDialog({
             </div>
             <p>The selected horizon controls timing evidence and can change the estimated bracket.</p>
           </div>
+
+          <fieldset className="analysis-setting">
+            <legend>Interaction profile</legend>
+            <div className="interaction-options">
+              {INTERACTION_PROFILE_OPTIONS.map((option) => (
+                <label
+                  className={interactionProfile === option.value ? "selected" : ""}
+                  key={option.value}
+                >
+                  <input
+                    type="radio"
+                    name="analysis-interaction-profile"
+                    value={option.value}
+                    checked={interactionProfile === option.value}
+                    onChange={() => setInteractionProfile(option.value)}
+                  />
+                  <strong>{option.label}</strong>
+                  <span>{option.description}</span>
+                </label>
+              ))}
+            </div>
+            <p>Percentages are per eligible opportunity. The aggregate comparison uses this profile; eight fixed isolated stress scenarios remain separate diagnostics.</p>
+          </fieldset>
 
           <fieldset className="analysis-setting">
             <legend>Trials</legend>
@@ -1326,8 +1360,8 @@ function PrivacyPanel({
           <section className="fixed-policy-card" aria-label="Fixed analyzer policy">
             <Target size={18} />
             <div>
-              <strong>One objective policy for every deck</strong>
-              <p>Aggressive London mulligans, proactive route search, and standardized high-power interaction remain fixed. Trial count and turn horizon are chosen when analysis starts. Player-declared intent is not used.</p>
+              <strong>One sequencing policy for every deck</strong>
+              <p>Aggressive London mulligans and proactive route search remain fixed. Interaction profile, trial count, and turn horizon are chosen when analysis starts. Player-declared intent is not used.</p>
             </div>
           </section>
           <label className="privacy-toggle">

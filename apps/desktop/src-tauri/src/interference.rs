@@ -17,13 +17,17 @@ const INTERACTION_STREAM_TAG: u64 = 0x4f50_504f_4e45_4e54;
 // therefore owns a separate stream: adding a draw, spell, or payment decision
 // must never shift disruptive-interaction rolls (or vice versa).
 const TABLE_ACTIVITY_STREAM_TAG: u64 = 0x5441_424c_455f_4143;
+const EARLIEST_BOARD_WIPE_TURN: u8 = 5;
+const FINAL_MANA_PRESSURE_TURN: u8 = 4;
 pub(crate) const OPPONENTS_PER_COMMANDER_TABLE: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InteractionParameters {
+    pub(crate) earliest_turn: Option<u8>,
     pub(crate) engine_disruption_chance: f64,
     pub(crate) attempt_stop_chance: f64,
     pub(crate) wipe_chance: f64,
+    pub(crate) mana_pressure_chance: f64,
     pub(crate) mana_pressure: u8,
 }
 
@@ -34,6 +38,7 @@ pub(crate) struct OpponentEventRolls {
     commander_hit: f64,
     board_wipe: f64,
     attempt_stop: f64,
+    mana_pressure: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +96,7 @@ impl OpponentEventTimeline {
                 commander_hit: rng.random(),
                 board_wipe: rng.random(),
                 attempt_stop: rng.random(),
+                mana_pressure: rng.random(),
             })
             .collect();
         Self { turns }
@@ -335,8 +341,10 @@ fn payment_willingness_threshold(amount: u8) -> f64 {
 }
 
 impl OpponentEventRolls {
-    pub(crate) fn disrupts_engine(&self, profile: InteractionProfile) -> bool {
-        self.engine_disruption < interaction_parameters(profile).engine_disruption_chance
+    pub(crate) fn disrupts_engine(&self, profile: InteractionProfile, turn: u8) -> bool {
+        let parameters = interaction_parameters(profile);
+        interaction_is_live(parameters, turn)
+            && self.engine_disruption < parameters.engine_disruption_chance
     }
 
     pub(crate) fn protection_prevents_engine_disruption(&self) -> bool {
@@ -347,44 +355,79 @@ impl OpponentEventRolls {
         self.commander_hit < 0.45
     }
 
-    pub(crate) fn wipes_board(&self, profile: InteractionProfile) -> bool {
-        self.board_wipe < interaction_parameters(profile).wipe_chance
+    pub(crate) fn wipes_board(&self, profile: InteractionProfile, turn: u8) -> bool {
+        let parameters = interaction_parameters(profile);
+        turn >= EARLIEST_BOARD_WIPE_TURN
+            && interaction_is_live(parameters, turn)
+            && self.board_wipe < parameters.wipe_chance
     }
 
-    pub(crate) fn stops_attempt(&self, profile: InteractionProfile, protection_count: u8) -> bool {
-        self.attempt_stop
-            < interaction_parameters(profile).attempt_stop_chance
-                * protection_stop_multiplier(protection_count)
+    pub(crate) fn stops_attempt(
+        &self,
+        profile: InteractionProfile,
+        turn: u8,
+        protection_count: u8,
+    ) -> bool {
+        let parameters = interaction_parameters(profile);
+        interaction_is_live(parameters, turn)
+            && self.attempt_stop
+                < parameters.attempt_stop_chance * protection_stop_multiplier(protection_count)
+    }
+
+    pub(crate) fn mana_pressure(&self, profile: InteractionProfile, turn: u8) -> u8 {
+        let parameters = interaction_parameters(profile);
+        if turn <= FINAL_MANA_PRESSURE_TURN
+            && interaction_is_live(parameters, turn)
+            && self.mana_pressure < parameters.mana_pressure_chance
+        {
+            parameters.mana_pressure
+        } else {
+            0
+        }
     }
 }
 
 pub(crate) fn interaction_parameters(profile: InteractionProfile) -> InteractionParameters {
     match profile {
         InteractionProfile::None => InteractionParameters {
+            earliest_turn: None,
             engine_disruption_chance: 0.0,
             attempt_stop_chance: 0.0,
             wipe_chance: 0.0,
+            mana_pressure_chance: 0.0,
             mana_pressure: 0,
         },
         InteractionProfile::Light => InteractionParameters {
-            engine_disruption_chance: 0.05,
-            attempt_stop_chance: 0.18,
-            wipe_chance: 0.025,
+            earliest_turn: Some(3),
+            engine_disruption_chance: 0.03,
+            attempt_stop_chance: 0.08,
+            wipe_chance: 0.015,
+            mana_pressure_chance: 0.0,
             mana_pressure: 0,
         },
         InteractionProfile::Typical => InteractionParameters {
-            engine_disruption_chance: 0.10,
-            attempt_stop_chance: 0.42,
-            wipe_chance: 0.055,
-            mana_pressure: 0,
+            earliest_turn: Some(2),
+            engine_disruption_chance: 0.08,
+            attempt_stop_chance: 0.22,
+            wipe_chance: 0.04,
+            mana_pressure_chance: 0.03,
+            mana_pressure: 1,
         },
         InteractionProfile::HighPower => InteractionParameters {
-            engine_disruption_chance: 0.16,
-            attempt_stop_chance: 0.67,
-            wipe_chance: 0.075,
+            earliest_turn: Some(1),
+            engine_disruption_chance: 0.14,
+            attempt_stop_chance: 0.40,
+            wipe_chance: 0.06,
+            mana_pressure_chance: 0.08,
             mana_pressure: 1,
         },
     }
+}
+
+fn interaction_is_live(parameters: InteractionParameters, turn: u8) -> bool {
+    parameters
+        .earliest_turn
+        .is_some_and(|earliest_turn| turn >= earliest_turn)
 }
 
 fn protection_stop_multiplier(protection_count: u8) -> f64 {

@@ -229,23 +229,7 @@ fn compile_deck_internal(
         let mut colors = definition
             .map(|definition| definition.colors.clone())
             .unwrap_or_default();
-        let printed_power = definition.and_then(|definition| {
-            definition
-                .faces
-                .first()
-                .and_then(|face| face.power.as_deref())
-                .or(definition.power.as_deref())
-                .and_then(|power| power.trim().parse::<i16>().ok())
-        });
-        let printed_toughness = definition.and_then(|definition| {
-            definition
-                .faces
-                .first()
-                .and_then(|face| face.toughness.as_deref())
-                .or(definition.toughness.as_deref())
-                .and_then(|toughness| toughness.trim().parse::<i16>().ok())
-        });
-        let (mana_value, roles, semantic_confidence, effects, ability_profile, ability_program) =
+        let (mut mana_value, roles, semantic_confidence, effects, ability_profile, ability_program) =
             if let Some(definition) = definition {
                 let mut effects = compile_effect_descriptor(definition);
                 let (mana_value, mut roles, role_confidence) = classify_card(definition);
@@ -444,6 +428,20 @@ fn compile_deck_internal(
                     ExecutableAbilityProgramV1::unresolved(),
                 )
             };
+        let structural = effects.structural_characteristics.battlefield_profile(None);
+        if let Some(exact) = structural.mana_value {
+            mana_value = exact.as_number() as f32;
+        }
+        let printed_power = structural.fixed_power().and_then(|value| {
+            (value.denominator == 1)
+                .then(|| i16::try_from(value.numerator).ok())
+                .flatten()
+        });
+        let printed_toughness = structural.fixed_toughness().and_then(|value| {
+            (value.denominator == 1)
+                .then(|| i16::try_from(value.numerator).ok())
+                .flatten()
+        });
         if colors.is_empty()
             && effects.hand_zone.exact
             && !type_line.contains(" // ")

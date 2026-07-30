@@ -8,8 +8,9 @@ import type {
   PairedTurnDelayReport,
   TurnDistribution,
 } from "./types";
+import { isInteractionProfile } from "./interactionProfiles";
 
-export const CURRENT_SIMULATION_ENGINE_VERSION = "abstract-play-0.48";
+export const CURRENT_SIMULATION_ENGINE_VERSION = "abstract-play-0.54";
 export const CURRENT_TIMING_ENDPOINT_VERSION = "commander-timing-endpoints/v3";
 export const CURRENT_EFFECTIVE_HAND_STRENGTH_VERSION =
   "mtg-effective-hand-strength/v4";
@@ -20,9 +21,9 @@ export const CURRENT_ABILITY_PROGRAM_VERSION =
 export const CURRENT_TURN_PLANNER_VERSION = "bounded-beam-0.7";
 export const CURRENT_STRICT_ENGINE_VERSION = "strict-kernel-0.1";
 export const CURRENT_EXECUTION_COVERAGE_COMPILER_VERSION =
-  "execution-coverage-0.9";
+  "execution-coverage-1.7";
 export const CURRENT_BRACKET_MODEL_VERSION = "evidence-score-0.8-uncalibrated";
-export const CURRENT_CACHE_KEY_VERSION = "analysis-cache-46";
+export const CURRENT_CACHE_KEY_VERSION = "analysis-cache-49";
 const ALLOWED_TRIAL_COUNTS = [1000, 5000, 10000] as const;
 const MINIMUM_TURN_HORIZON = 2;
 const MAXIMUM_TURN_HORIZON = 12;
@@ -141,6 +142,11 @@ export function assertCurrentReportTimingSemantics(
   const openingHandSimulations = assumptions?.openingHandSimulations;
   const gameSimulations = assumptions?.gameSimulations;
   const maximumTurn = assumptions?.maximumTurn ?? Number.NaN;
+  if (!isInteractionProfile(assumptions?.interactionProfile)) {
+    throw new Error(
+      `This analysis report declares an unsupported interaction profile (${JSON.stringify(assumptions?.interactionProfile ?? "missing")}). Reanalyze the deck with one of the current profiles: none, light, typical, or highPower.`,
+    );
+  }
   if (
     !ALLOWED_TRIAL_COUNTS.includes(
       openingHandSimulations as (typeof ALLOWED_TRIAL_COUNTS)[number],
@@ -151,13 +157,12 @@ export function assertCurrentReportTimingSemantics(
     || maximumTurn > MAXIMUM_TURN_HORIZON
     || assumptions?.mulliganPolicy !== "aggressive"
     || assumptions?.pilotPolicy !== "race"
-    || assumptions?.interactionProfile !== "highPower"
     || assumptions?.declaredIntent !== "unspecified"
     || report.openingHands?.simulations !== openingHandSimulations
     || report.winSpeed?.simulations !== gameSimulations
   ) {
     throw new Error(
-      "This report was not produced with a supported analysis workload (equal 1,000, 5,000, or 10,000 opening-hand and paired-trajectory trials; a turn horizon from 2 through 12; aggressive mulligans; proactive route search; and standardized high-power response pressure). Reanalyze the deck.",
+      "This report was not produced with a supported analysis workload (equal 1,000, 5,000, or 10,000 opening-hand and paired-trajectory trials; a turn horizon from 2 through 12; aggressive mulligans; proactive route search; and a current selectable interaction profile). Reanalyze the deck.",
     );
   }
   if (
@@ -371,15 +376,17 @@ export function assertCurrentReportTimingSemantics(
     )
   ) {
     throw new Error(
-      "This analysis report is missing or inconsistent with the current eight-scenario response-pressure contract. Reanalyze the deck; scenario coverage, seeds, workloads, and paired-delay denominators must match the submitted analysis.",
+      "This analysis report is missing or inconsistent with the current independent eight-scenario response-pressure contract. Reanalyze the deck; scenario coverage, seeds, workloads, and paired-delay denominators must match the submitted analysis.",
     );
   }
 
   const early = report.winSpeed?.earlyTurnEvaluation;
   if (
     !early
-    || early.modelVersion !== "early-turn-route-skeleton/v5"
+    || early.modelVersion !== "early-turn-route-skeleton/v6"
+    || early.executionWitnessVersion !== "early-route-execution-witness/v1"
     || !Array.isArray(early.routes)
+    || !Array.isArray(early.executionWitnesses)
     || !Array.isArray(early.blockers)
     || early.fixedPolicy?.openingHandSize !== 7
     || early.fixedPolicy?.naturalDrawsBeforeTurnOne !== 1

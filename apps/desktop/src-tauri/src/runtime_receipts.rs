@@ -16,31 +16,56 @@ use crate::ability_program::{
     AtomicLibrarySearch, AtomicManaValueSubject, AtomicMovementCondition, AtomicSearchChooser,
     AtomicShuffleTiming, AtomicStateCondition, AtomicTrackedObject, AttachmentKind,
     BargainSacrificeKind, BargainSearchCastOrHandEffect, CardType as ProgramCardType,
-    CommanderEligibility, ControllerRelation, ControllerStateCondition, CounterKind, CounterTarget,
-    EXECUTABLE_ABILITY_PROGRAM_VERSION, EntryLinkedCardFilter, EntryLinkedManaOutput,
-    ExecutableAbility, ExecutableGraveyardReclamation, FixedManaProfile, GrantedAbilityKind,
-    GrantedSelfCost, GraveyardReclamationAllTargetsIllegalOutcome, GraveyardReclamationCastAction,
-    GraveyardReclamationCopyCondition, GraveyardReclamationCopyTiming,
-    GraveyardReclamationFlashbackCastStep, GraveyardReclamationObject,
-    GraveyardReclamationPendingTriggerOrder, GraveyardReclamationResolutionInstruction,
-    GraveyardReclamationResolutionOrder, GraveyardReclamationResolutionTargetLegality,
-    GraveyardReclamationRetargetLegality, GraveyardReclamationRetargetTiming,
-    GraveyardReclamationStackExitEvent, GraveyardReclamationStackPosition,
-    GraveyardReclamationTarget, GraveyardReclamationTargetSelection, LinkedEntryObject,
-    ManaCost as ProgramManaCost, ManaKind as ProgramManaKind, ObjectFilter as ProgramObjectFilter,
-    OpponentChoiceSearchSplitEffect, OracleCardInput, PermanentEntryProcedure, RandomSelection,
-    ReplacedSpellCost, ResourceKind, SpellCostReductionCondition, SpellCostReductionScope,
-    StaticCreatureModifierTarget, StaticModifierValue, TokenKind, TriggerEventKind,
-    TutorEffect as ProgramTutorEffect, TutorFilter, Zone as ProgramZone,
-    compile_executable_ability_program,
+    CommanderEligibility, ControllerRelation, ControllerStateCondition, CopyTargetChoice,
+    CounterKind, CounterTarget, EXECUTABLE_ABILITY_PROGRAM_VERSION, EntryLinkedCardFilter,
+    EntryLinkedManaOutput, ExecutableAbility, ExecutableGraveyardReclamation, FixedManaProfile,
+    GrantedAbilityKind, GrantedSelfCost, GraveyardReclamationAllTargetsIllegalOutcome,
+    GraveyardReclamationCastAction, GraveyardReclamationCopyCondition,
+    GraveyardReclamationCopyTiming, GraveyardReclamationFlashbackCastStep,
+    GraveyardReclamationObject, GraveyardReclamationPendingTriggerOrder,
+    GraveyardReclamationResolutionInstruction, GraveyardReclamationResolutionOrder,
+    GraveyardReclamationResolutionTargetLegality, GraveyardReclamationRetargetLegality,
+    GraveyardReclamationRetargetTiming, GraveyardReclamationStackExitEvent,
+    GraveyardReclamationStackPosition, GraveyardReclamationTarget,
+    GraveyardReclamationTargetSelection, LinkedEntryObject, ManaCost as ProgramManaCost,
+    ManaKind as ProgramManaKind, ObjectFilter as ProgramObjectFilter,
+    OpponentChoiceSearchSplitEffect, OracleCardInput, PermanentEntryProcedure, PlayerSelector,
+    RandomSelection, ReplacedSpellCost, ResourceKind, SpellCopyCount, SpellCostReductionCondition,
+    SpellCostReductionScope, StaticCreatureModifierTarget, StaticModifierValue, TokenKind,
+    TriggerEventKind, TutorEffect as ProgramTutorEffect, TutorFilter, Zone as ProgramZone,
+    compile_executable_ability_program, normalize_oracle_clause_for_receipt,
 };
 use crate::alternative_cast_runtime::{AlternativeCastRuntimeProgram, CompiledAlternativeCast};
+use crate::bounded_oracle_consumer::{
+    BOUNDED_ORACLE_CONSUMER_VERSION, clause_has_executable_contract,
+};
+use crate::bounded_oracle_runtime::{
+    BOUNDED_ORACLE_RUNTIME_VERSION, BoundedOracleClause, Effect as BoundedEffect,
+    Restriction as BoundedRestriction, Timing as BoundedTiming,
+    TokenSpecification as BoundedTokenSpecification, normalize_oracle_clause,
+};
+use crate::bounded_oracle_simulation::{
+    BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION, clause_has_live_bridge_contract,
+    printed_cost_has_live_bridge_contract,
+};
 use crate::characteristic_oracle_runtime::{
-    CharacteristicOracleProgram, CompiledCharacteristicOracle,
+    AttractionLightsProcedure, CharacteristicOracleProgram, CompiledCharacteristicOracle,
+    DefenseInitializationProcedure, ExactColorSetProcedure, ExactManaValueProcedure,
+    ExactTypeLineProcedure, LoyaltyInitializationProcedure, PrintedStatProcedure,
+    STRUCTURAL_CHARACTERISTIC_RUNTIME_VERSION, VanguardModifierProcedure,
+    compile_exact_attraction_lights_procedure, compile_exact_color_set_procedure,
+    compile_exact_defense_initialization_procedure, compile_exact_loyalty_initialization_procedure,
+    compile_exact_mana_value_procedure, compile_exact_printed_stat_procedure,
+    compile_exact_type_line_procedure, compile_exact_vanguard_modifier_procedure,
 };
 use crate::continuous_trigger_runtime::{
     CardSubtype as ContinuousCardSubtype, CompiledContinuousTrigger, ContinuousTriggerProgram,
     OracleOwnership as ContinuousOracleOwnership,
+};
+use crate::dynamic_characteristic_runtime::{
+    DYNAMIC_CHARACTERISTIC_RUNTIME_VERSION, DynamicCharacteristicProcedure,
+    DynamicCharacteristicSubject, compile_dynamic_loyalty_procedure,
+    compile_dynamic_printed_stat_procedure,
 };
 use crate::effects::{
     CardTypeProfile, DevotionColor, DynamicCreatureCharacteristic, PrintedKeyword,
@@ -48,6 +73,11 @@ use crate::effects::{
 };
 use crate::interaction_runtime::{
     InteractionAction, InteractionRuntimeProgram, compile_interaction_runtime_from_program,
+};
+use crate::keyword_rules_runtime::{
+    KEYWORD_RULES_EVIDENCE_VERSION, KEYWORD_RULES_RUNTIME_VERSION, KEYWORD_TRANSACTION_CONTRACT,
+    KeywordProgram, KeywordProgramInput, KeywordProgramKind, OfficialKeyword,
+    TransactionalRollbackContract, compile_keyword_program,
 };
 use crate::land_runtime::{
     BasicLandSubtype, ExactLandClauseEvidence, ExactLandRuntimeBindingInput,
@@ -61,9 +91,18 @@ use crate::mana_network_runtime::{
     GLOBAL_BASIC_LAND_SUBTYPE_GRANT_EXECUTOR_ID, MANA_NETWORK_RUNTIME_VERSION,
     SELF_BOUNCE_DUAL_LAND_EXECUTOR_ID,
 };
+use crate::mechanic_runtime::{
+    MECHANIC_RUNTIME_VERSION, MarkerDisposition, MechanicProcedure, MechanicProgram,
+    PrintedMechanic,
+};
 use crate::object_lifecycle_runtime::{
     CompiledObjectLifecycle, ObjectLifecycleProgram,
     OracleOwnership as ObjectLifecycleOracleOwnership, SourceZone as ObjectLifecycleSourceZone,
+};
+use crate::oracle_clause_backend::{DelegatedKeywordClause, ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION};
+use crate::printed_cost_runtime::{
+    PRINTED_COST_PAYMENT_BRIDGE_VERSION, PRINTED_COST_RUNTIME_VERSION, PrintedManaCost,
+    parse_printed_mana_cost, printed_mana_cost_has_exact_payment_contract,
 };
 use crate::restriction_protection_runtime::{
     CompiledRestrictionProtection, OracleOwnership as RestrictionOracleOwnership,
@@ -79,7 +118,7 @@ use crate::utility_modal_runtime::{
     SourceZone as UtilityModalSourceZone, UtilityModalRuntimeProgram,
 };
 
-pub(crate) const RUNTIME_RECEIPT_SCHEMA_VERSION: &str = "commander-runtime-capability-receipt/v3";
+pub(crate) const RUNTIME_RECEIPT_SCHEMA_VERSION: &str = "commander-runtime-capability-receipt/v5";
 pub(crate) const ATOMIC_TRANSACTION_EXECUTOR_VERSION: &str = "abstract-play-atomic-transaction/v2";
 pub(crate) const SPELL_RESOLUTION_MANA_EXECUTOR_VERSION: &str =
     "abstract-play-spell-resolution-mana/v1";
@@ -89,7 +128,7 @@ pub(crate) const SACRIFICE_SELF_MANA_EXECUTOR_VERSION: &str =
     "abstract-play-sacrifice-self-mana/v2";
 pub(crate) const GRAVEYARD_RECLAMATION_EXECUTOR_VERSION: &str =
     "abstract-play-graveyard-reclamation/v1";
-pub(crate) const CHARACTERISTIC_EXECUTOR_VERSION: &str = "abstract-play-compiled-characteristic/v2";
+pub(crate) const CHARACTERISTIC_EXECUTOR_VERSION: &str = "abstract-play-compiled-characteristic/v5";
 pub(crate) const CHARACTERISTIC_ORACLE_EXECUTOR_VERSION: &str =
     "abstract-play-characteristic-oracle/v1";
 pub(crate) const LIVE_ABILITY_EXECUTOR_VERSION: &str = "abstract-play-live-ability/v1";
@@ -104,6 +143,15 @@ pub(crate) const CONTINUOUS_TRIGGER_EXECUTOR_VERSION: &str = "abstract-play-cont
 pub(crate) const OBJECT_LIFECYCLE_EXECUTOR_VERSION: &str = "abstract-play-object-lifecycle/v1";
 pub(crate) const UTILITY_MODAL_EXECUTOR_VERSION: &str = "abstract-play-utility-modal/v1";
 pub(crate) const MANA_NETWORK_RUNTIME_EXECUTOR_VERSION: &str = MANA_NETWORK_RUNTIME_VERSION;
+pub(crate) const BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-bounded-oracle/v5";
+pub(crate) const FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-face-layout/v1";
+pub(crate) const PRINTED_COST_RUNTIME_EXECUTOR_ID: &str = "abstract-play.printed-mana-cost";
+pub(crate) const PRINTED_COST_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-printed-mana-cost/v1";
+pub(crate) const KEYWORD_RULES_RUNTIME_EXECUTOR_ID: &str =
+    "abstract-play.keyword-rules.transaction";
+pub(crate) const KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION: &str =
+    "abstract-play-keyword-rules-transaction/v1";
+pub(crate) const KEYWORD_RULES_EXECUTION_BRIDGE_VERSION: &str = "keyword-rules-execution-bridge/v1";
 
 const RUNTIME_KIND_ROLE_MASK: u32 =
     role::LAND | role::CREATURE | role::ARTIFACT | role::ENCHANTMENT | role::INSTANT_SORCERY;
@@ -279,10 +327,73 @@ pub(crate) enum RuntimeCapability {
     /// One exact, face-bound printed characteristic was compiled offline from
     /// the same typed parser used by the runtime consumer.
     ExactCompiledCharacteristic,
+    /// One exact, face-bound printed mana cost was accepted by the closed
+    /// printed-symbol parser without collapsing any payment alternative.
+    ExactPrintedManaCost,
+    /// Printed-cost payment stages mana, life, and land-drop resources and
+    /// commits them only after every declared choice can be paid.
+    TransactionalPrintedManaPayment,
+    /// The complete retained face envelope was compiled into the exact
+    /// zone, casting, and live transition procedure for its layout.
+    ExactFaceLayoutProgram,
     /// The complete root owns the exact printed Flashback keyword procedure.
     ExactFlashbackKeyword,
     /// The complete atomic transaction owns the exact printed Bargain keyword.
     ExactBargainKeyword,
+    /// The entry-linked permanent transaction owns the exact Imprint ability word.
+    ExactImprintAbilityWord,
+    /// The live conditional mana source owns the exact Metalcraft ability word.
+    ExactMetalcraftAbilityWord,
+    /// The atomic replacement transaction owns the exact Threshold ability word.
+    ExactThresholdAbilityWord,
+    /// The reviewed spell-resolution procedure owns the exact Mill keyword action.
+    ExactMillKeyword,
+    /// The reviewed cast-trigger procedure owns the exact Storm copy procedure.
+    ExactStormKeyword,
+    /// The marker is an exact printed ability word whose following Oracle
+    /// clause is independently owned by the same live bounded executor.
+    ExactAbilityWordMarker,
+    /// A complete occurrence-addressed clause is represented by the generic
+    /// bounded Oracle IR and consumed by its transactional state executor.
+    ExactBoundedOracleProgram,
+    /// The exact source restriction is consulted when determining whether the
+    /// source can legally be blocked in combat.
+    ExactCannotBeBlockedRestriction,
+    /// The exact static clause resolves the source's current legal Aura or
+    /// Equipment attachment through the live state bridge.
+    ExactAttachmentStaticEffect,
+    /// One exact keyword occurrence compiled into the official keyword rules
+    /// kernel. This capability proves the kernel program only. A coverage
+    /// metric must also bind the receipt to its production state adapter.
+    ExactKeywordRulesProgram,
+    /// The keyword kernel consumer commits the complete action or restores the
+    /// full pre-action state.
+    TransactionalKeywordRulesExecution,
+    /// One bounded resolution retains an extra-turn grant and its mandatory
+    /// delayed game-loss consequence as one transactional lifecycle.
+    ExactDelayedDrawbackLifecycle,
+    ExactChannelKeyword,
+    ExactCyclingKeyword,
+    ExactTypecyclingKeyword,
+    ExactTreasureKeyword,
+    ExactFoodKeyword,
+    ExactProwessKeyword,
+    ExactWardKeyword,
+    ExactSurveilKeyword,
+    ExactCrewKeyword,
+    ExactSplitSecondKeyword,
+    ExactEvokeKeyword,
+    ExactManifestKeyword,
+    ExactPartnerKeyword,
+    ExactTransformKeyword,
+    ExactParadigmKeyword,
+    ExactDoubleKeyword,
+    ExactProtectionKeyword,
+    ExactLandfallAbilityWord,
+    ExactFerociousAbilityWord,
+    ExactDashKeyword,
+    ExactGiftKeyword,
+    ExactMobilizeKeyword,
     /// The complete cast choice owns the exact printed Overload procedure.
     ExactOverloadKeyword,
     /// The complete cast choice owns the exact printed Escape procedure.
@@ -360,6 +471,532 @@ impl RuntimeSourceEvidence {
                 .covered_oracle_clauses
                 .windows(2)
                 .all(|pair| pair[0] < pair[1])
+    }
+}
+
+/// Exact retained metadata identity for one keyword in one face keyword profile.
+///
+/// Oracle-authoritative receipts leave the profile empty and bind the complete
+/// self-describing Oracle clause instead. Snapshot keyword metadata can
+/// corroborate that clause, but cannot invalidate it when the text is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeywordRulesOccurrenceEvidence {
+    pub face_index: u16,
+    pub keyword_occurrence_index: u16,
+    pub oracle_clause_index: u16,
+    pub normalized_keyword: String,
+    pub normalized_face_keywords: Vec<String>,
+    pub complete_keyword_profile_sha256: String,
+    pub printed_keyword_sha256: String,
+    pub oracle_fragment_sha256: Option<String>,
+    pub type_line_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeywordRulesAuthority {
+    SelfDescribingOracleClause,
+}
+
+/// A kernel execution receipt for one exact retained keyword occurrence.
+///
+/// This receipt proves that the official keyword kernel compiled the
+/// occurrence and exposes a transactional consumer for its action. It does not
+/// by itself prove that a report metric calls that consumer. Coverage must
+/// additionally bind the receipt to the production metric adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeywordRulesRuntimeReceipt {
+    pub binding: RuntimeExecutorBinding,
+    pub capabilities: Vec<RuntimeCapability>,
+    pub authority: KeywordRulesAuthority,
+    pub occurrence: KeywordRulesOccurrenceEvidence,
+    pub keyword: OfficialKeyword,
+    pub program: KeywordProgram,
+    pub official_rule_ids: Vec<String>,
+    pub kernel_runtime_version: &'static str,
+    pub kernel_evidence_version: &'static str,
+    pub execution_bridge_version: &'static str,
+    pub rollback_contract: TransactionalRollbackContract,
+    pub contract_sha256: String,
+}
+
+impl KeywordRulesRuntimeReceipt {
+    pub(crate) fn has_exact_contract(&self) -> bool {
+        let source = self.program.source();
+        let expected_rule_ids = self
+            .program
+            .official_rules()
+            .iter()
+            .map(|rule| rule.id().to_owned())
+            .collect::<Vec<_>>();
+        let authority_has_exact_contract = self.authority
+            == KeywordRulesAuthority::SelfDescribingOracleClause
+            && self.occurrence.keyword_occurrence_index == 0
+            && self.occurrence.normalized_face_keywords.is_empty()
+            && self.occurrence.complete_keyword_profile_sha256 == keyword_profile_sha256(&[])
+            && self.occurrence.oracle_fragment_sha256.is_some();
+        self.binding.receipt_schema_version == RUNTIME_RECEIPT_SCHEMA_VERSION
+            && self.binding.executor_id == KEYWORD_RULES_RUNTIME_EXECUTOR_ID
+            && self.binding.executor_version == KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION
+            && self.capabilities
+                == [
+                    RuntimeCapability::ExactKeywordRulesProgram,
+                    RuntimeCapability::TransactionalKeywordRulesExecution,
+                ]
+            && self.kernel_runtime_version == KEYWORD_RULES_RUNTIME_VERSION
+            && self.kernel_evidence_version == KEYWORD_RULES_EVIDENCE_VERSION
+            && self.execution_bridge_version == KEYWORD_RULES_EXECUTION_BRIDGE_VERSION
+            && self.rollback_contract == KEYWORD_TRANSACTION_CONTRACT
+            && self.program.runtime_version() == KEYWORD_RULES_RUNTIME_VERSION
+            && self.program.has_exact_contract()
+            && self.keyword == self.program.keyword()
+            && !self.occurrence.normalized_keyword.is_empty()
+            && authority_has_exact_contract
+            && self.occurrence.normalized_keyword
+                == normalize_keyword_label(self.keyword.printed_label())
+            && source.face_index == self.occurrence.face_index
+            && source.clause_index == self.occurrence.oracle_clause_index
+            && keyword_program_source_label_is_exact(
+                &self.program,
+                &self.occurrence.normalized_keyword,
+            )
+            && self.occurrence.printed_keyword_sha256
+                == sha256_hex(source.printed_keyword.trim().as_bytes())
+            && self.occurrence.oracle_fragment_sha256
+                == source
+                    .oracle_fragment
+                    .as_deref()
+                    .map(str::trim)
+                    .map(|fragment| sha256_hex(fragment.as_bytes()))
+            && is_sha256_hex(&self.occurrence.complete_keyword_profile_sha256)
+            && is_sha256_hex(&self.occurrence.printed_keyword_sha256)
+            && self
+                .occurrence
+                .oracle_fragment_sha256
+                .as_deref()
+                .is_none_or(is_sha256_hex)
+            && is_sha256_hex(&self.occurrence.type_line_sha256)
+            && self.official_rule_ids == expected_rule_ids
+            && self
+                .official_rule_ids
+                .iter()
+                .all(|rule_id| !rule_id.trim().is_empty())
+            && is_sha256_hex(&self.contract_sha256)
+            && self.contract_sha256 == keyword_rules_contract_sha256(self)
+    }
+
+    pub(crate) fn matches_face_keyword(&self, face_index: u16, normalized_keyword: &str) -> bool {
+        let normalized_keyword = normalize_keyword_label(normalized_keyword);
+        self.has_exact_contract()
+            && self.occurrence.face_index == face_index
+            && (self.occurrence.normalized_keyword == normalized_keyword
+                || normalize_keyword_label(&self.program.source().printed_keyword)
+                    == normalized_keyword)
+    }
+}
+
+/// Exact coverage binding for one delegated keyword clause.
+///
+/// The inner receipt proves only the keyword kernel contract. This wrapper
+/// additionally binds that program to one occurrence-addressed Oracle clause
+/// and to the delegated backend contract. It still does not prove that any
+/// production trajectory calls the keyword executor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExactKeywordRulesRuntimeReceipt {
+    pub keyword_rules: KeywordRulesRuntimeReceipt,
+    pub delegated_clause: DelegatedKeywordClause,
+    pub source_evidence: RuntimeSourceEvidence,
+    pub contract_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExactKeywordRulesReceiptInput<'a> {
+    pub face_index: u16,
+    pub face_name: &'a str,
+    pub type_line: &'a str,
+    pub oracle_text: &'a str,
+    pub oracle_clauses: &'a [String],
+    pub delegated_clause: &'a DelegatedKeywordClause,
+}
+
+impl ExactKeywordRulesRuntimeReceipt {
+    pub(crate) fn has_exact_contract(&self) -> bool {
+        let address = self.delegated_clause.address();
+        let Some(selected_digest) = self
+            .source_evidence
+            .normalized_oracle_clause_sha256s
+            .get(usize::from(address.clause_index))
+            .cloned()
+        else {
+            return false;
+        };
+        let covered = self.source_evidence.covered_oracle_clauses.as_slice();
+        self.keyword_rules.has_exact_contract()
+            && self.keyword_rules.authority == KeywordRulesAuthority::SelfDescribingOracleClause
+            && self.delegated_clause.runtime_version() == ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION
+            && self.delegated_clause.keyword_program() == &self.keyword_rules.program
+            && self.delegated_clause.keyword_program().has_exact_contract()
+            && self
+                .delegated_clause
+                .required_live_bridge_capabilities()
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+            && !self
+                .delegated_clause
+                .required_live_bridge_capabilities()
+                .is_empty()
+            && address.face_index == self.keyword_rules.occurrence.face_index
+            && address.clause_index == self.keyword_rules.occurrence.oracle_clause_index
+            && self.source_evidence.ability_program_version == EXECUTABLE_ABILITY_PROGRAM_VERSION
+            && self.source_evidence.has_exact_clause_contract()
+            && self.source_evidence.type_line_sha256
+                == self.keyword_rules.occurrence.type_line_sha256
+            && covered
+                == [RuntimeOracleClauseEvidence {
+                    face_index: address.face_index,
+                    clause_index: address.clause_index,
+                    normalized_clause_sha256: selected_digest,
+                }]
+            && self.source_evidence.source_evidence_sha256
+                == exact_keyword_rules_source_evidence_sha256(
+                    &self.source_evidence,
+                    &self.delegated_clause,
+                )
+            && is_sha256_hex(&self.contract_sha256)
+            && self.contract_sha256 == exact_keyword_rules_contract_sha256(self)
+    }
+}
+
+fn compile_oracle_keyword_rules_runtime_receipt(
+    face_index: u16,
+    oracle_clause_index: u16,
+    printed_keyword: &str,
+    type_line: &str,
+    oracle_fragment: &str,
+) -> Option<KeywordRulesRuntimeReceipt> {
+    let type_line = type_line.trim();
+    let printed_keyword = printed_keyword.trim();
+    let oracle_fragment = oracle_fragment.trim();
+    if type_line.is_empty() || printed_keyword.is_empty() || oracle_fragment.is_empty() {
+        return None;
+    }
+    let program = compile_keyword_program(KeywordProgramInput {
+        face_index,
+        clause_index: oracle_clause_index,
+        printed_keyword,
+        oracle_fragment: Some(oracle_fragment),
+    })
+    .ok()?;
+    let normalized_keyword = normalize_keyword_label(program.keyword().printed_label());
+    if !keyword_program_source_label_is_exact(&program, &normalized_keyword) {
+        return None;
+    }
+    let official_rule_ids = program
+        .official_rules()
+        .iter()
+        .map(|rule| rule.id().to_owned())
+        .collect::<Vec<_>>();
+    let occurrence = KeywordRulesOccurrenceEvidence {
+        face_index,
+        keyword_occurrence_index: 0,
+        oracle_clause_index,
+        normalized_keyword,
+        normalized_face_keywords: Vec::new(),
+        complete_keyword_profile_sha256: keyword_profile_sha256(&[]),
+        printed_keyword_sha256: sha256_hex(printed_keyword.as_bytes()),
+        oracle_fragment_sha256: Some(sha256_hex(oracle_fragment.as_bytes())),
+        type_line_sha256: sha256_hex(type_line.as_bytes()),
+    };
+    let mut receipt = KeywordRulesRuntimeReceipt {
+        binding: RuntimeExecutorBinding {
+            receipt_schema_version: RUNTIME_RECEIPT_SCHEMA_VERSION,
+            executor_id: KEYWORD_RULES_RUNTIME_EXECUTOR_ID,
+            executor_version: KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION,
+        },
+        capabilities: vec![
+            RuntimeCapability::ExactKeywordRulesProgram,
+            RuntimeCapability::TransactionalKeywordRulesExecution,
+        ],
+        authority: KeywordRulesAuthority::SelfDescribingOracleClause,
+        occurrence,
+        keyword: program.keyword(),
+        program,
+        official_rule_ids,
+        kernel_runtime_version: KEYWORD_RULES_RUNTIME_VERSION,
+        kernel_evidence_version: KEYWORD_RULES_EVIDENCE_VERSION,
+        execution_bridge_version: KEYWORD_RULES_EXECUTION_BRIDGE_VERSION,
+        rollback_contract: KEYWORD_TRANSACTION_CONTRACT,
+        contract_sha256: String::new(),
+    };
+    receipt.contract_sha256 = keyword_rules_contract_sha256(&receipt);
+    receipt.has_exact_contract().then_some(receipt)
+}
+
+fn keyword_program_source_label_is_exact(
+    program: &KeywordProgram,
+    normalized_official_keyword: &str,
+) -> bool {
+    let normalized_source = normalize_keyword_label(&program.source().printed_keyword);
+    match program.kind() {
+        KeywordProgramKind::Landwalk(landwalk) => {
+            normalized_source == normalize_keyword_label(landwalk.quality.printed_label())
+        }
+        _ => normalized_source == normalized_official_keyword,
+    }
+}
+
+pub(crate) fn compile_exact_keyword_rules_runtime_receipt(
+    input: ExactKeywordRulesReceiptInput<'_>,
+) -> Option<ExactKeywordRulesRuntimeReceipt> {
+    let address = input.delegated_clause.address();
+    if address.face_index != input.face_index
+        || usize::from(address.clause_index) >= input.oracle_clauses.len()
+    {
+        return None;
+    }
+    let raw_clause = input
+        .oracle_clauses
+        .get(usize::from(address.clause_index))?
+        .trim();
+    if raw_clause.is_empty() {
+        return None;
+    }
+    let delegated_normalized_clause =
+        normalize_oracle_clause(raw_clause, input.face_name, input.type_line);
+    if delegated_normalized_clause != input.delegated_clause.normalized_clause() {
+        return None;
+    }
+    let keyword_rules = compile_oracle_keyword_rules_runtime_receipt(
+        input.face_index,
+        address.clause_index,
+        &input
+            .delegated_clause
+            .keyword_program()
+            .source()
+            .printed_keyword,
+        input.type_line,
+        raw_clause,
+    )?;
+    if keyword_rules.program != *input.delegated_clause.keyword_program() {
+        return None;
+    }
+
+    let normalized_oracle =
+        normalize_oracle_clause_for_receipt(input.oracle_text, input.face_name, input.type_line);
+    if normalized_oracle.trim().is_empty() {
+        return None;
+    }
+    let normalized_oracle_clause_sha256s = input
+        .oracle_clauses
+        .iter()
+        .map(|clause| normalize_oracle_clause_for_receipt(clause, input.face_name, input.type_line))
+        .map(|clause| sha256_hex(clause.as_bytes()))
+        .collect::<Vec<_>>();
+    if normalized_oracle_clause_sha256s.is_empty()
+        || normalized_oracle_clause_sha256s
+            .iter()
+            .any(|digest| !is_sha256_hex(digest))
+    {
+        return None;
+    }
+    let selected_digest = normalized_oracle_clause_sha256s
+        .get(usize::from(address.clause_index))?
+        .clone();
+    let mut source_evidence = RuntimeSourceEvidence {
+        ability_program_version: EXECUTABLE_ABILITY_PROGRAM_VERSION,
+        normalized_oracle_sha256: sha256_hex(normalized_oracle.as_bytes()),
+        normalized_oracle_clause_sha256s,
+        covered_oracle_clauses: vec![RuntimeOracleClauseEvidence {
+            face_index: address.face_index,
+            clause_index: address.clause_index,
+            normalized_clause_sha256: selected_digest,
+        }],
+        type_line_sha256: sha256_hex(input.type_line.trim().as_bytes()),
+        relevant_type_role_mask: runtime_kind_role_mask_for_type_line(input.type_line),
+        source_evidence_sha256: String::new(),
+    };
+    source_evidence.source_evidence_sha256 =
+        exact_keyword_rules_source_evidence_sha256(&source_evidence, input.delegated_clause);
+    let mut receipt = ExactKeywordRulesRuntimeReceipt {
+        keyword_rules,
+        delegated_clause: input.delegated_clause.clone(),
+        source_evidence,
+        contract_sha256: String::new(),
+    };
+    receipt.contract_sha256 = exact_keyword_rules_contract_sha256(&receipt);
+    receipt.has_exact_contract().then_some(receipt)
+}
+
+fn exact_keyword_rules_source_evidence_sha256(
+    source_evidence: &RuntimeSourceEvidence,
+    delegated_clause: &DelegatedKeywordClause,
+) -> String {
+    let mut hasher = Sha256::new();
+    for part in [
+        RUNTIME_RECEIPT_SCHEMA_VERSION.as_bytes(),
+        KEYWORD_RULES_RUNTIME_EXECUTOR_ID.as_bytes(),
+        KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION.as_bytes(),
+        source_evidence.ability_program_version.as_bytes(),
+        ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION.as_bytes(),
+        delegated_clause.semantic_digest().as_bytes(),
+        source_evidence.normalized_oracle_sha256.as_bytes(),
+        source_evidence.type_line_sha256.as_bytes(),
+    ] {
+        hash_framed(&mut hasher, part);
+    }
+    hash_framed(
+        &mut hasher,
+        &source_evidence.relevant_type_role_mask.to_be_bytes(),
+    );
+    for digest in &source_evidence.normalized_oracle_clause_sha256s {
+        hash_framed(&mut hasher, digest.as_bytes());
+    }
+    for clause in &source_evidence.covered_oracle_clauses {
+        hash_framed(&mut hasher, &clause.face_index.to_be_bytes());
+        hash_framed(&mut hasher, &clause.clause_index.to_be_bytes());
+        hash_framed(&mut hasher, clause.normalized_clause_sha256.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn exact_keyword_rules_contract_sha256(receipt: &ExactKeywordRulesRuntimeReceipt) -> String {
+    let mut hasher = Sha256::new();
+    for part in [
+        receipt.keyword_rules.contract_sha256.as_bytes(),
+        receipt.delegated_clause.runtime_version().as_bytes(),
+        receipt.delegated_clause.semantic_digest().as_bytes(),
+        receipt.source_evidence.source_evidence_sha256.as_bytes(),
+    ] {
+        hash_framed(&mut hasher, part);
+    }
+    for capability in receipt.delegated_clause.required_live_bridge_capabilities() {
+        hash_framed(&mut hasher, capability.stable_id().as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn normalize_keyword_label(keyword: &str) -> String {
+    keyword
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn keyword_profile_sha256(profile: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    hash_framed(&mut hasher, &(profile.len() as u64).to_be_bytes());
+    for keyword in profile {
+        hash_framed(&mut hasher, keyword.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn keyword_rules_contract_sha256(receipt: &KeywordRulesRuntimeReceipt) -> String {
+    let mut hasher = Sha256::new();
+    for part in [
+        receipt.binding.receipt_schema_version.as_bytes(),
+        receipt.binding.executor_id.as_bytes(),
+        receipt.binding.executor_version.as_bytes(),
+        receipt.kernel_runtime_version.as_bytes(),
+        receipt.kernel_evidence_version.as_bytes(),
+        receipt.execution_bridge_version.as_bytes(),
+        receipt.occurrence.normalized_keyword.as_bytes(),
+        receipt
+            .occurrence
+            .complete_keyword_profile_sha256
+            .as_bytes(),
+        receipt.occurrence.printed_keyword_sha256.as_bytes(),
+        receipt.occurrence.type_line_sha256.as_bytes(),
+    ] {
+        hash_framed(&mut hasher, part);
+    }
+    hash_framed(&mut hasher, &receipt.occurrence.face_index.to_be_bytes());
+    hash_framed(&mut hasher, format!("{:?}", receipt.authority).as_bytes());
+    hash_framed(
+        &mut hasher,
+        &receipt.occurrence.keyword_occurrence_index.to_be_bytes(),
+    );
+    hash_framed(
+        &mut hasher,
+        &receipt.occurrence.oracle_clause_index.to_be_bytes(),
+    );
+    for keyword in &receipt.occurrence.normalized_face_keywords {
+        hash_framed(&mut hasher, keyword.as_bytes());
+    }
+    if let Some(oracle_fragment_sha256) = &receipt.occurrence.oracle_fragment_sha256 {
+        hash_framed(&mut hasher, oracle_fragment_sha256.as_bytes());
+    }
+    for capability in &receipt.capabilities {
+        hash_framed(&mut hasher, format!("{capability:?}").as_bytes());
+    }
+    for rule_id in &receipt.official_rule_ids {
+        hash_framed(&mut hasher, rule_id.as_bytes());
+    }
+    hash_framed(&mut hasher, format!("{:?}", receipt.keyword).as_bytes());
+    hash_framed(&mut hasher, format!("{:?}", receipt.program).as_bytes());
+    hash_framed(
+        &mut hasher,
+        format!("{:?}", receipt.rollback_contract).as_bytes(),
+    );
+    format!("{:x}", hasher.finalize())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrintedCostRuntimeReceipt {
+    pub binding: RuntimeExecutorBinding,
+    pub capabilities: Vec<RuntimeCapability>,
+    pub source_evidence: RuntimeSourceEvidence,
+    pub face_index: u16,
+    pub type_line: String,
+    pub program: PrintedManaCost,
+    pub printed_cost_runtime_version: &'static str,
+    pub payment_bridge_version: &'static str,
+    pub contract_sha256: String,
+}
+
+impl PrintedCostRuntimeReceipt {
+    pub(crate) fn has_exact_contract(&self) -> bool {
+        let [face] = self.program.faces.as_slice() else {
+            return false;
+        };
+        let printed_sha256 = sha256_hex(self.program.raw.as_bytes());
+        let type_line_sha256 = sha256_hex(self.type_line.as_bytes());
+        let expected_contract_sha256 = printed_cost_contract_sha256(
+            self.face_index,
+            &self.type_line,
+            &self.program,
+            self.printed_cost_runtime_version,
+            self.payment_bridge_version,
+        );
+        self.binding.receipt_schema_version == RUNTIME_RECEIPT_SCHEMA_VERSION
+            && self.binding.executor_id == PRINTED_COST_RUNTIME_EXECUTOR_ID
+            && self.binding.executor_version == PRINTED_COST_RUNTIME_EXECUTOR_VERSION
+            && self.capabilities
+                == [
+                    RuntimeCapability::ExactPrintedManaCost,
+                    RuntimeCapability::TransactionalPrintedManaPayment,
+                ]
+            && self.printed_cost_runtime_version == PRINTED_COST_RUNTIME_VERSION
+            && self.payment_bridge_version == PRINTED_COST_PAYMENT_BRIDGE_VERSION
+            && face.has_mana_cost
+            && face.raw == self.program.raw
+            && printed_mana_cost_has_exact_payment_contract(&self.program)
+            && printed_cost_has_live_bridge_contract(&self.program)
+            && self.source_evidence.ability_program_version == EXECUTABLE_ABILITY_PROGRAM_VERSION
+            && self.source_evidence.normalized_oracle_sha256 == printed_sha256
+            && self.source_evidence.normalized_oracle_clause_sha256s == [printed_sha256.clone()]
+            && self.source_evidence.covered_oracle_clauses
+                == [RuntimeOracleClauseEvidence {
+                    face_index: self.face_index,
+                    clause_index: 0,
+                    normalized_clause_sha256: printed_sha256,
+                }]
+            && self.source_evidence.type_line_sha256 == type_line_sha256
+            && self.source_evidence.relevant_type_role_mask == 0
+            && self.source_evidence.source_evidence_sha256 == expected_contract_sha256
+            && self.source_evidence.has_exact_clause_contract()
+            && self.contract_sha256 == expected_contract_sha256
+            && is_sha256_hex(&self.contract_sha256)
     }
 }
 
@@ -506,6 +1143,65 @@ pub(crate) struct RestrictionProtectionRuntimeReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BoundedOracleRuntimeReceipt {
+    pub binding: RuntimeExecutorBinding,
+    pub capabilities: Vec<RuntimeCapability>,
+    pub source_evidence: RuntimeSourceEvidence,
+    pub clause: BoundedOracleClause,
+    /// Snapshot-stable program identity supplied by the bounded Oracle
+    /// compiler. Occurrence address and source evidence remain separate
+    /// provenance and must never be folded into this digest.
+    pub clause_semantic_sha256: String,
+    pub consumer_version: &'static str,
+    pub simulation_bridge_version: &'static str,
+    pub mechanic_programs: Vec<MechanicProgram>,
+    pub mechanic_contract_sha256: String,
+}
+
+impl BoundedOracleRuntimeReceipt {
+    pub(crate) fn has_exact_contract(&self) -> bool {
+        let address = self.clause.address();
+        self.binding.receipt_schema_version == RUNTIME_RECEIPT_SCHEMA_VERSION
+            && self.binding.executor_version == BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION
+            && self.binding.executor_id == bounded_oracle_executor_id(&self.clause)
+            && self.consumer_version == BOUNDED_ORACLE_CONSUMER_VERSION
+            && self.simulation_bridge_version == BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION
+            && clause_has_executable_contract(&self.clause)
+            && clause_has_live_bridge_contract(&self.clause)
+            && bounded_mechanic_programs_have_exact_contract(&self.clause, &self.mechanic_programs)
+            && self.capabilities
+                == bounded_oracle_capabilities(
+                    &self.clause,
+                    &self.mechanic_programs,
+                    &self.source_evidence,
+                )
+            && is_sha256_hex(&self.mechanic_contract_sha256)
+            && self.mechanic_contract_sha256
+                == bounded_mechanic_contract_sha256(&self.mechanic_programs)
+            && self.clause.runtime_version() == BOUNDED_ORACLE_RUNTIME_VERSION
+            && is_sha256_hex(&self.clause_semantic_sha256)
+            && self.clause_semantic_sha256 == self.clause.semantic_digest()
+            && self.source_evidence.ability_program_version == EXECUTABLE_ABILITY_PROGRAM_VERSION
+            && self.source_evidence.has_exact_clause_contract()
+            && self.source_evidence.covered_oracle_clauses.len() == 1
+            && self.source_evidence.covered_oracle_clauses[0].face_index == address.face_index
+            && self.source_evidence.covered_oracle_clauses[0].clause_index == address.clause_index
+    }
+
+    pub(crate) fn owns_exact_ability_word(&self, marker: &str) -> bool {
+        self.has_exact_contract()
+            && self.mechanic_programs.iter().any(|program| {
+                matches!(
+                    program.procedure(),
+                    MechanicProcedure::AbilityWord(procedure)
+                        if procedure.marker == PrintedMechanic::AbilityWord
+                            && procedure.printed_label.eq_ignore_ascii_case(marker.trim())
+                )
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReviewedRuntimeProgram {
     AlternativeCast(CompiledAlternativeCast),
     CharacteristicOracle(CompiledCharacteristicOracle),
@@ -584,6 +1280,9 @@ pub(crate) enum LiveAbilityShape {
     TemporaryPowerToughnessTrigger,
     BecomeMonarchTrigger,
     AllCreatureTypes,
+    TableResourceTrigger,
+    MillResolution,
+    StormCopyTrigger,
 }
 
 impl LiveAbilityShape {
@@ -612,6 +1311,9 @@ impl LiveAbilityShape {
             }
             Self::BecomeMonarchTrigger => "abstract-play.ability.trigger.become-monarch",
             Self::AllCreatureTypes => "abstract-play.ability.static.all-creature-types",
+            Self::TableResourceTrigger => "abstract-play.ability.trigger.table-resource",
+            Self::MillResolution => "abstract-play.ability.resolution.mill",
+            Self::StormCopyTrigger => "abstract-play.ability.trigger.storm-copy",
         }
     }
 }
@@ -649,8 +1351,17 @@ impl LiveAbilityRuntimeReceipt {
 
 fn live_ability_capabilities(shape: LiveAbilityShape) -> Vec<RuntimeCapability> {
     let mut capabilities = vec![RuntimeCapability::ExactOracleClauseSet];
-    if shape == LiveAbilityShape::EquipmentAttach {
-        capabilities.push(RuntimeCapability::ExactEquipKeyword);
+    match shape {
+        LiveAbilityShape::EquipmentAttach => {
+            capabilities.push(RuntimeCapability::ExactEquipKeyword);
+        }
+        LiveAbilityShape::MillResolution => {
+            capabilities.push(RuntimeCapability::ExactMillKeyword);
+        }
+        LiveAbilityShape::StormCopyTrigger => {
+            capabilities.push(RuntimeCapability::ExactStormKeyword);
+        }
+        _ => {}
     }
     capabilities
 }
@@ -751,6 +1462,11 @@ pub(crate) enum CharacteristicSubject {
     ColorIndicator,
     Power,
     Toughness,
+    Loyalty,
+    Defense,
+    HandModifier,
+    LifeModifier,
+    AttractionLights,
     CardTypeProfile,
     PrintedCombatKeyword(String),
 }
@@ -758,15 +1474,18 @@ pub(crate) enum CharacteristicSubject {
 impl CharacteristicSubject {
     pub(crate) fn executor_id(&self) -> &'static str {
         match self {
-            Self::FaceRelationship => {
-                "abstract-play.characteristic.modal-double-faced-relationship"
-            }
+            Self::FaceRelationship => "abstract-play.characteristic.double-faced-relationship",
             Self::ManaCost => "abstract-play.characteristic.mana-cost",
             Self::ManaValue => "abstract-play.characteristic.mana-value",
             Self::Colors => "abstract-play.characteristic.colors",
             Self::ColorIndicator => "abstract-play.characteristic.color-indicator",
             Self::Power => "abstract-play.characteristic.power",
             Self::Toughness => "abstract-play.characteristic.toughness",
+            Self::Loyalty => "abstract-play.characteristic.loyalty",
+            Self::Defense => "abstract-play.characteristic.defense",
+            Self::HandModifier => "abstract-play.characteristic.hand-modifier",
+            Self::LifeModifier => "abstract-play.characteristic.life-modifier",
+            Self::AttractionLights => "abstract-play.characteristic.attraction-lights",
             Self::CardTypeProfile => "abstract-play.characteristic.card-type-profile",
             Self::PrintedCombatKeyword(keyword) => match keyword.as_str() {
                 "deathtouch" => "abstract-play.characteristic.printed-combat-keyword.deathtouch",
@@ -793,6 +1512,7 @@ impl CharacteristicSubject {
                 "cumulative upkeep" => {
                     "abstract-play.characteristic.printed-keyword.cumulative-upkeep"
                 }
+                "devoid" => "abstract-play.characteristic.printed-keyword.devoid",
                 _ => "abstract-play.characteristic.printed-combat-keyword.unsupported",
             },
         }
@@ -807,33 +1527,47 @@ pub(crate) enum ExactManaCostShape {
         generic_value: u16,
         pip_appearances: [u16; 6],
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExactColorSet {
-    pub mask: u8,
+    /// A fully parsed single-face cost that contains variable or hybrid
+    /// symbols. The mana model consumes the same ordered symbols when it
+    /// enumerates legal payments, so this is an executable characteristic,
+    /// not a flattened mana-value approximation.
+    Structured {
+        symbols: Vec<String>,
+        generic_value: u16,
+        pip_appearances: [u16; 6],
+        variable_symbols: u16,
+        hybrid_symbols: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypedCharacteristic {
     FaceRelationship(CharacteristicFaceBinding),
     ManaCost(ExactManaCostShape),
-    ManaValue(u16),
-    Colors(ExactColorSet),
-    ColorIndicator(ExactColorSet),
+    ManaValue(ExactManaValueProcedure),
+    Colors(ExactColorSetProcedure),
+    ColorIndicator(ExactColorSetProcedure),
     Power {
-        value: i16,
+        procedure: PrintedStatProcedure,
+        dynamic: Option<DynamicCharacteristicProcedure>,
     },
     Toughness {
-        value: i16,
+        procedure: PrintedStatProcedure,
+        dynamic: Option<DynamicCharacteristicProcedure>,
     },
     ToughnessEqualsDevotion {
         color: DevotionColor,
     },
+    Loyalty {
+        procedure: LoyaltyInitializationProcedure,
+        dynamic: Option<DynamicCharacteristicProcedure>,
+    },
+    Defense(DefenseInitializationProcedure),
+    HandModifier(VanguardModifierProcedure),
+    LifeModifier(VanguardModifierProcedure),
+    AttractionLights(AttractionLightsProcedure),
     CardTypeProfile {
-        profile: CardTypeProfile,
-        supertype_mask: u8,
-        subtypes: Vec<String>,
+        procedure: ExactTypeLineProcedure,
     },
     PrintedCombatKeyword {
         keyword: PrintedKeyword,
@@ -862,6 +1596,14 @@ impl TypedCharacteristic {
                     Self::ToughnessEqualsDevotion { .. },
                     CharacteristicSubject::Toughness
                 )
+                | (Self::Loyalty { .. }, CharacteristicSubject::Loyalty)
+                | (Self::Defense(_), CharacteristicSubject::Defense)
+                | (Self::HandModifier(_), CharacteristicSubject::HandModifier)
+                | (Self::LifeModifier(_), CharacteristicSubject::LifeModifier)
+                | (
+                    Self::AttractionLights(_),
+                    CharacteristicSubject::AttractionLights
+                )
                 | (
                     Self::CardTypeProfile { .. },
                     CharacteristicSubject::CardTypeProfile
@@ -887,40 +1629,53 @@ impl TypedCharacteristic {
                 "mana-cost:fixed:{}:{generic_value}:{pip_appearances:?}",
                 symbols.join(",")
             ),
-            Self::ManaValue(value) => format!("mana-value:{value}"),
-            Self::Colors(colors) => format!("colors:{:02x}", colors.mask),
-            Self::ColorIndicator(colors) => format!("color-indicator:{:02x}", colors.mask),
-            Self::Power { value } => format!("power:{value}"),
-            Self::Toughness { value } => format!("toughness:{value}"),
+            Self::ManaCost(ExactManaCostShape::Structured {
+                symbols,
+                generic_value,
+                pip_appearances,
+                variable_symbols,
+                hybrid_symbols,
+            }) => format!(
+                "mana-cost:structured:{}:{generic_value}:{pip_appearances:?}:x{variable_symbols}:hybrid{hybrid_symbols}",
+                symbols.join(",")
+            ),
+            Self::ManaValue(procedure) => procedure.canonical_evidence_payload(),
+            Self::Colors(procedure) => procedure.canonical_evidence_payload("colors"),
+            Self::ColorIndicator(procedure) => {
+                procedure.canonical_evidence_payload("color-indicator")
+            }
+            Self::Power { procedure, dynamic } => format!(
+                "{}:{}",
+                procedure.canonical_evidence_payload("power"),
+                dynamic.as_ref().map_or_else(
+                    || "dynamic=none".into(),
+                    |value| value.canonical_evidence_payload()
+                )
+            ),
+            Self::Toughness { procedure, dynamic } => format!(
+                "{}:{}",
+                procedure.canonical_evidence_payload("toughness"),
+                dynamic.as_ref().map_or_else(
+                    || "dynamic=none".into(),
+                    |value| value.canonical_evidence_payload()
+                )
+            ),
             Self::ToughnessEqualsDevotion { color } => {
                 format!("toughness:devotion:{}", color.as_name())
             }
-            Self::CardTypeProfile {
-                profile,
-                supertype_mask,
-                subtypes,
-            } => format!(
-                "card-type-profile:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{supertype_mask}:{}",
-                profile.is_land,
-                profile.is_basic_land,
-                profile.is_creature,
-                profile.is_artifact,
-                profile.is_battle,
-                profile.is_enchantment,
-                profile.is_instant,
-                profile.is_kindred,
-                profile.is_planeswalker,
-                profile.is_sorcery,
-                profile.is_land
-                    || profile.is_creature
-                    || profile.is_artifact
-                    || profile.is_battle
-                    || profile.is_enchantment
-                    || profile.is_instant
-                    || profile.is_planeswalker
-                    || profile.is_sorcery,
-                subtypes.join(","),
+            Self::Loyalty { procedure, dynamic } => format!(
+                "{}:{}",
+                procedure.canonical_evidence_payload(),
+                dynamic.as_ref().map_or_else(
+                    || "dynamic=none".into(),
+                    |value| value.canonical_evidence_payload()
+                )
             ),
+            Self::Defense(procedure) => procedure.canonical_evidence_payload(),
+            Self::HandModifier(procedure) => procedure.canonical_evidence_payload("hand-modifier"),
+            Self::LifeModifier(procedure) => procedure.canonical_evidence_payload("life-modifier"),
+            Self::AttractionLights(procedure) => procedure.canonical_evidence_payload(),
+            Self::CardTypeProfile { procedure } => procedure.canonical_evidence_payload(),
             Self::PrintedCombatKeyword {
                 keyword,
                 complete_profile_sha256,
@@ -929,6 +1684,44 @@ impl TypedCharacteristic {
                 "printed-keyword:{keyword:?}:{complete_profile_sha256}:{}",
                 runtime_clause_sha256.as_deref().unwrap_or("characteristic")
             ),
+        }
+    }
+
+    fn has_live_consumer_without_additional_input(&self) -> bool {
+        match self {
+            Self::Power {
+                procedure: PrintedStatProcedure::Fixed(_) | PrintedStatProcedure::Infinite,
+                ..
+            }
+            | Self::Toughness {
+                procedure: PrintedStatProcedure::Fixed(_) | PrintedStatProcedure::Infinite,
+                ..
+            } => true,
+            Self::Power {
+                dynamic: Some(_), ..
+            }
+            | Self::Toughness {
+                dynamic: Some(_), ..
+            } => true,
+            Self::Power { .. } | Self::Toughness { .. } => false,
+            Self::Loyalty { procedure, dynamic } => {
+                !procedure.requires_live_input() || dynamic.is_some()
+            }
+            Self::FaceRelationship(_)
+            | Self::ManaCost(_)
+            | Self::ManaValue(_)
+            | Self::Colors(_)
+            | Self::ColorIndicator(_)
+            | Self::ToughnessEqualsDevotion { .. }
+            | Self::Defense(_)
+            | Self::HandModifier(_)
+            | Self::LifeModifier(_)
+            | Self::AttractionLights(_)
+            | Self::CardTypeProfile { .. } => true,
+            // This receipt proves retained characteristic metadata only.
+            // Functional keyword execution requires a separate
+            // `KeywordRulesRuntimeReceipt` plus a production metric adapter.
+            Self::PrintedCombatKeyword { .. } => false,
         }
     }
 }
@@ -967,6 +1760,13 @@ impl CharacteristicRuntimeReceipt {
             && is_sha256_hex(&self.source_evidence.type_line_sha256)
             && is_sha256_hex(&self.source_evidence.source_evidence_sha256)
     }
+
+    pub(crate) fn has_live_consumer_without_additional_input(&self) -> bool {
+        self.has_exact_contract()
+            && self
+                .characteristic
+                .has_live_consumer_without_additional_input()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -974,22 +1774,35 @@ pub(crate) enum CharacteristicFaceBinding {
     NormalSingleFace,
     ModalDoubleFacedFront,
     ModalDoubleFacedBack,
+    TransformDoubleFacedFront,
+    TransformDoubleFacedBack,
+    ExactFace(u16),
 }
 
 impl CharacteristicFaceBinding {
     fn matches_face_index(self, face_index: u16) -> bool {
         matches!(
             (self, face_index),
-            (Self::NormalSingleFace | Self::ModalDoubleFacedFront, 0)
-                | (Self::ModalDoubleFacedBack, 1)
-        )
+            (
+                Self::NormalSingleFace
+                    | Self::ModalDoubleFacedFront
+                    | Self::TransformDoubleFacedFront,
+                0
+            ) | (
+                Self::ModalDoubleFacedBack | Self::TransformDoubleFacedBack,
+                1
+            ) | (Self::ExactFace(_), _)
+        ) && !matches!(self, Self::ExactFace(expected) if expected != face_index)
     }
 
-    fn evidence_tag(self) -> &'static str {
+    fn evidence_tag(self) -> String {
         match self {
-            Self::NormalSingleFace => "normal-single-face",
-            Self::ModalDoubleFacedFront => "modal-double-faced-front",
-            Self::ModalDoubleFacedBack => "modal-double-faced-back",
+            Self::NormalSingleFace => "normal-single-face".into(),
+            Self::ModalDoubleFacedFront => "modal-double-faced-front".into(),
+            Self::ModalDoubleFacedBack => "modal-double-faced-back".into(),
+            Self::TransformDoubleFacedFront => "transform-double-faced-front".into(),
+            Self::TransformDoubleFacedBack => "transform-double-faced-back".into(),
+            Self::ExactFace(face_index) => format!("exact-face-{face_index}"),
         }
     }
 }
@@ -998,6 +1811,7 @@ impl CharacteristicFaceBinding {
 pub(crate) struct CharacteristicFaceInput<'a> {
     pub face_index: u16,
     pub face_binding: Option<CharacteristicFaceBinding>,
+    pub layout: &'a str,
     pub name: &'a str,
     pub oracle_text: &'a str,
     pub mana_cost: Option<&'a str>,
@@ -1006,6 +1820,11 @@ pub(crate) struct CharacteristicFaceInput<'a> {
     pub color_indicator: &'a [String],
     pub power: Option<&'a str>,
     pub toughness: Option<&'a str>,
+    pub loyalty: Option<&'a str>,
+    pub defense: Option<&'a str>,
+    pub hand_modifier: Option<&'a str>,
+    pub life_modifier: Option<&'a str>,
+    pub attraction_lights: &'a [u8],
     pub type_line: Option<&'a str>,
     pub keywords: &'a [String],
     pub root_alignment: CharacteristicRootAlignment,
@@ -1019,6 +1838,11 @@ pub(crate) struct CharacteristicRootAlignment {
     pub color_indicator: bool,
     pub power: bool,
     pub toughness: bool,
+    pub loyalty: bool,
+    pub defense: bool,
+    pub hand_modifier: bool,
+    pub life_modifier: bool,
+    pub attraction_lights: bool,
     pub type_line: bool,
     pub keywords: bool,
 }
@@ -1031,6 +1855,11 @@ impl CharacteristicRootAlignment {
         color_indicator: true,
         power: true,
         toughness: true,
+        loyalty: true,
+        defense: true,
+        hand_modifier: true,
+        life_modifier: true,
+        attraction_lights: true,
         type_line: true,
         keywords: true,
     };
@@ -1070,7 +1899,9 @@ pub(crate) fn compile_characteristic_runtime_receipts(
         ));
     }
     if input.root_alignment.mana_value
-        && let Some(mana_value) = exact_mana_value(input.mana_value)
+        && let Some(mana_value) = input
+            .mana_value
+            .and_then(compile_exact_mana_value_procedure)
     {
         characteristics.push((
             CharacteristicSubject::ManaValue,
@@ -1078,7 +1909,7 @@ pub(crate) fn compile_characteristic_runtime_receipts(
         ));
     }
     if input.root_alignment.colors
-        && let Some(colors) = exact_color_set(input.colors)
+        && let Some(colors) = compile_exact_color_set_procedure(input.colors)
     {
         characteristics.push((
             CharacteristicSubject::Colors,
@@ -1086,7 +1917,7 @@ pub(crate) fn compile_characteristic_runtime_receipts(
         ));
     }
     if input.root_alignment.color_indicator
-        && let Some(color_indicator) = exact_color_set(input.color_indicator)
+        && let Some(color_indicator) = compile_exact_color_set_procedure(input.color_indicator)
     {
         characteristics.push((
             CharacteristicSubject::ColorIndicator,
@@ -1094,34 +1925,32 @@ pub(crate) fn compile_characteristic_runtime_receipts(
         ));
     }
     if input.root_alignment.type_line
-        && let Some((type_profile, supertype_mask, subtypes)) = exact_card_type_profile(type_line)
+        && let Some(procedure) = compile_exact_type_line_procedure(type_line)
     {
         characteristics.push((
             CharacteristicSubject::CardTypeProfile,
-            TypedCharacteristic::CardTypeProfile {
-                profile: type_profile,
-                supertype_mask,
-                subtypes,
-            },
+            TypedCharacteristic::CardTypeProfile { procedure },
         ));
     }
 
     if input.root_alignment.power
-        && compiled_type_profile.is_creature
-        && let Some(power) = exact_printed_integer(input.power)
+        && let Some(procedure) = input
+            .power
+            .and_then(|value| compile_exact_printed_stat_procedure(input.layout, value))
     {
+        let dynamic = compile_dynamic_printed_stat_procedure(
+            input.layout,
+            input.oracle_text,
+            procedure,
+            DynamicCharacteristicSubject::Power,
+        );
         characteristics.push((
             CharacteristicSubject::Power,
-            TypedCharacteristic::Power { value: power },
+            TypedCharacteristic::Power { procedure, dynamic },
         ));
     }
-    if input.root_alignment.toughness && compiled_type_profile.is_creature {
-        if let Some(toughness) = exact_printed_integer(input.toughness) {
-            characteristics.push((
-                CharacteristicSubject::Toughness,
-                TypedCharacteristic::Toughness { value: toughness },
-            ));
-        } else if let Some(DynamicCreatureCharacteristic::ToughnessEqualsDevotion(color)) =
+    if input.root_alignment.toughness {
+        if let Some(DynamicCreatureCharacteristic::ToughnessEqualsDevotion(color)) =
             compile_dynamic_creature_characteristic(
                 input.name,
                 type_line,
@@ -1133,7 +1962,70 @@ pub(crate) fn compile_characteristic_runtime_receipts(
                 CharacteristicSubject::Toughness,
                 TypedCharacteristic::ToughnessEqualsDevotion { color },
             ));
+        } else if let Some(procedure) = input
+            .toughness
+            .and_then(|value| compile_exact_printed_stat_procedure(input.layout, value))
+        {
+            let dynamic = compile_dynamic_printed_stat_procedure(
+                input.layout,
+                input.oracle_text,
+                procedure,
+                DynamicCharacteristicSubject::Toughness,
+            );
+            characteristics.push((
+                CharacteristicSubject::Toughness,
+                TypedCharacteristic::Toughness { procedure, dynamic },
+            ));
         }
+    }
+    if input.root_alignment.loyalty
+        && let Some(procedure) = input
+            .loyalty
+            .and_then(compile_exact_loyalty_initialization_procedure)
+    {
+        let dynamic = compile_dynamic_loyalty_procedure(input.oracle_text, procedure);
+        characteristics.push((
+            CharacteristicSubject::Loyalty,
+            TypedCharacteristic::Loyalty { procedure, dynamic },
+        ));
+    }
+    if input.root_alignment.defense
+        && let Some(procedure) = input
+            .defense
+            .and_then(compile_exact_defense_initialization_procedure)
+    {
+        characteristics.push((
+            CharacteristicSubject::Defense,
+            TypedCharacteristic::Defense(procedure),
+        ));
+    }
+    if input.root_alignment.hand_modifier
+        && let Some(procedure) = input
+            .hand_modifier
+            .and_then(compile_exact_vanguard_modifier_procedure)
+    {
+        characteristics.push((
+            CharacteristicSubject::HandModifier,
+            TypedCharacteristic::HandModifier(procedure),
+        ));
+    }
+    if input.root_alignment.life_modifier
+        && let Some(procedure) = input
+            .life_modifier
+            .and_then(compile_exact_vanguard_modifier_procedure)
+    {
+        characteristics.push((
+            CharacteristicSubject::LifeModifier,
+            TypedCharacteristic::LifeModifier(procedure),
+        ));
+    }
+    if input.root_alignment.attraction_lights
+        && let Some(procedure) = compile_exact_attraction_lights_procedure(input.attraction_lights)
+    {
+        characteristics.push((
+            CharacteristicSubject::AttractionLights,
+            TypedCharacteristic::AttractionLights(procedure),
+        ));
     }
 
     let canonical_keywords = if input.root_alignment.keywords {
@@ -1200,6 +2092,8 @@ fn characteristic_receipt(
     for part in [
         RUNTIME_RECEIPT_SCHEMA_VERSION.as_bytes(),
         CHARACTERISTIC_EXECUTOR_VERSION.as_bytes(),
+        STRUCTURAL_CHARACTERISTIC_RUNTIME_VERSION.as_bytes(),
+        DYNAMIC_CHARACTERISTIC_RUNTIME_VERSION.as_bytes(),
         EXECUTABLE_ABILITY_PROGRAM_VERSION.as_bytes(),
         executor_id.as_bytes(),
         type_line.as_bytes(),
@@ -1239,6 +2133,87 @@ fn characteristic_receipt(
     }
 }
 
+pub(crate) fn compile_printed_cost_runtime_receipt(
+    face_index: u16,
+    type_line: &str,
+    printed_cost: &str,
+) -> Option<PrintedCostRuntimeReceipt> {
+    let program = parse_printed_mana_cost(printed_cost).ok()?;
+    let [face] = program.faces.as_slice() else {
+        return None;
+    };
+    if !face.has_mana_cost
+        || face.raw != program.raw
+        || !printed_mana_cost_has_exact_payment_contract(&program)
+    {
+        return None;
+    }
+    let printed_sha256 = sha256_hex(program.raw.as_bytes());
+    let contract_sha256 = printed_cost_contract_sha256(
+        face_index,
+        type_line,
+        &program,
+        PRINTED_COST_RUNTIME_VERSION,
+        PRINTED_COST_PAYMENT_BRIDGE_VERSION,
+    );
+    let receipt = PrintedCostRuntimeReceipt {
+        binding: RuntimeExecutorBinding {
+            receipt_schema_version: RUNTIME_RECEIPT_SCHEMA_VERSION,
+            executor_id: PRINTED_COST_RUNTIME_EXECUTOR_ID,
+            executor_version: PRINTED_COST_RUNTIME_EXECUTOR_VERSION,
+        },
+        capabilities: vec![
+            RuntimeCapability::ExactPrintedManaCost,
+            RuntimeCapability::TransactionalPrintedManaPayment,
+        ],
+        source_evidence: RuntimeSourceEvidence {
+            ability_program_version: EXECUTABLE_ABILITY_PROGRAM_VERSION,
+            normalized_oracle_sha256: printed_sha256.clone(),
+            normalized_oracle_clause_sha256s: vec![printed_sha256.clone()],
+            covered_oracle_clauses: vec![RuntimeOracleClauseEvidence {
+                face_index,
+                clause_index: 0,
+                normalized_clause_sha256: printed_sha256,
+            }],
+            type_line_sha256: sha256_hex(type_line.as_bytes()),
+            relevant_type_role_mask: 0,
+            source_evidence_sha256: contract_sha256.clone(),
+        },
+        face_index,
+        type_line: type_line.to_owned(),
+        program,
+        printed_cost_runtime_version: PRINTED_COST_RUNTIME_VERSION,
+        payment_bridge_version: PRINTED_COST_PAYMENT_BRIDGE_VERSION,
+        contract_sha256,
+    };
+    receipt.has_exact_contract().then_some(receipt)
+}
+
+fn printed_cost_contract_sha256(
+    face_index: u16,
+    type_line: &str,
+    program: &PrintedManaCost,
+    printed_cost_runtime_version: &str,
+    payment_bridge_version: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    for part in [
+        RUNTIME_RECEIPT_SCHEMA_VERSION.as_bytes(),
+        PRINTED_COST_RUNTIME_EXECUTOR_ID.as_bytes(),
+        PRINTED_COST_RUNTIME_EXECUTOR_VERSION.as_bytes(),
+        EXECUTABLE_ABILITY_PROGRAM_VERSION.as_bytes(),
+        printed_cost_runtime_version.as_bytes(),
+        payment_bridge_version.as_bytes(),
+        type_line.as_bytes(),
+        program.raw.as_bytes(),
+        format!("{program:?}").as_bytes(),
+    ] {
+        hash_framed(&mut hasher, part);
+    }
+    hash_framed(&mut hasher, &face_index.to_be_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 fn exact_mana_cost_shape(mana_cost: Option<&str>) -> Option<ExactManaCostShape> {
     let Some(mana_cost) = mana_cost else {
         return Some(ExactManaCostShape::Absent);
@@ -1253,11 +2228,11 @@ fn exact_mana_cost_shape(mana_cost: Option<&str>) -> Option<ExactManaCostShape> 
     };
     if parsed.confidence != 1.0
         || face.confidence != 1.0
-        || !parsed.notes.is_empty()
         || face.pips.is_empty()
-        || face.pips.iter().any(|pip| {
-            pip.is_variable || pip.is_hybrid || pip.is_phyrexian || pip.is_snow || pip.is_unknown
-        })
+        || face
+            .pips
+            .iter()
+            .any(|pip| pip.is_phyrexian || pip.is_snow || pip.is_unknown)
     {
         return None;
     }
@@ -1266,7 +2241,20 @@ fn exact_mana_cost_shape(mana_cost: Option<&str>) -> Option<ExactManaCostShape> 
         .iter()
         .map(|pip| {
             let symbol = pip.raw.trim().to_ascii_uppercase();
-            let canonical = if let Ok(generic) = symbol.parse::<u16>() {
+            let canonical = if pip.is_variable && symbol == "X" {
+                symbol.clone()
+            } else if pip.is_hybrid {
+                let parts = symbol.split('/').collect::<Vec<_>>();
+                if parts.len() < 2
+                    || parts.iter().any(|part| {
+                        !matches!(*part, "W" | "U" | "B" | "R" | "G" | "C")
+                            && part.parse::<u16>().is_err()
+                    })
+                {
+                    return None;
+                }
+                parts.join("/")
+            } else if let Ok(generic) = symbol.parse::<u16>() {
                 generic.to_string()
             } else if matches!(symbol.as_str(), "W" | "U" | "B" | "R" | "G" | "C") {
                 symbol.clone()
@@ -1288,125 +2276,25 @@ fn exact_mana_cost_shape(mana_cost: Option<&str>) -> Option<ExactManaCostShape> 
     if compact_source != reconstructed {
         return None;
     }
-    Some(ExactManaCostShape::Fixed {
-        symbols,
-        generic_value: face.generic_value,
-        pip_appearances: face.pip_appearances,
-    })
-}
-
-fn exact_mana_value(mana_value: Option<f32>) -> Option<u16> {
-    let value = mana_value?;
-    (value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= f32::from(u16::MAX))
-        .then_some(value as u16)
-}
-
-fn exact_color_set(colors: &[String]) -> Option<ExactColorSet> {
-    let mut mask = 0u8;
-    for color in colors {
-        let bit = match color.trim().to_ascii_uppercase().as_str() {
-            "W" => 1 << 0,
-            "U" => 1 << 1,
-            "B" => 1 << 2,
-            "R" => 1 << 3,
-            "G" => 1 << 4,
-            _ => return None,
-        };
-        if mask & bit != 0 {
-            return None;
-        }
-        mask |= bit;
-    }
-    Some(ExactColorSet { mask })
-}
-
-fn exact_printed_integer(value: Option<&str>) -> Option<i16> {
-    let raw = value?.trim();
-    let parsed = raw.parse::<i16>().ok()?;
-    (parsed.to_string() == raw).then_some(parsed)
-}
-
-fn exact_card_type_profile(type_line: &str) -> Option<(CardTypeProfile, u8, Vec<String>)> {
-    let (card_type_segment, subtype_segment) = type_line
-        .split_once('-')
-        .or_else(|| type_line.split_once(" - "))
-        .map_or((type_line, None), |(types, subtypes)| {
-            (types, Some(subtypes))
-        });
-    let subtypes = exact_subtype_words(subtype_segment)?;
-    let mut expected = CardTypeProfile::default();
-    let mut supertype_mask = 0u8;
-    let mut saw_card_type = false;
-    for word in card_type_segment.split_whitespace() {
-        match word.to_ascii_lowercase().as_str() {
-            "basic" => supertype_mask |= 1 << 0,
-            "legendary" => supertype_mask |= 1 << 1,
-            "snow" => supertype_mask |= 1 << 2,
-            "world" => supertype_mask |= 1 << 3,
-            "land" => {
-                expected.is_land = true;
-                saw_card_type = true;
-            }
-            "creature" => {
-                expected.is_creature = true;
-                saw_card_type = true;
-            }
-            "artifact" => {
-                expected.is_artifact = true;
-                saw_card_type = true;
-            }
-            "battle" => {
-                expected.is_battle = true;
-                saw_card_type = true;
-            }
-            "enchantment" => {
-                expected.is_enchantment = true;
-                saw_card_type = true;
-            }
-            "instant" => {
-                expected.is_instant = true;
-                saw_card_type = true;
-            }
-            "kindred" => {
-                expected.is_kindred = true;
-                saw_card_type = true;
-            }
-            "planeswalker" => {
-                expected.is_planeswalker = true;
-                saw_card_type = true;
-            }
-            "sorcery" => {
-                expected.is_sorcery = true;
-                saw_card_type = true;
-            }
-            _ => return None,
-        }
-    }
-    expected.is_basic_land = expected.is_land && supertype_mask & (1 << 0) != 0;
-    let compiled = compile_card_types(type_line);
-    (saw_card_type && compiled == expected).then_some((compiled, supertype_mask, subtypes))
-}
-
-fn exact_subtype_words(subtype_segment: Option<&str>) -> Option<Vec<String>> {
-    let Some(subtype_segment) = subtype_segment else {
-        return Some(Vec::new());
-    };
-    let subtype_segment = subtype_segment.trim();
-    if subtype_segment.is_empty()
-        || subtype_segment.contains('-')
-        || subtype_segment.contains(" // ")
-    {
-        return None;
-    }
-    subtype_segment
-        .split_whitespace()
-        .map(|subtype| {
-            subtype
-                .chars()
-                .all(|character| character.is_alphabetic() || character == '\'' || character == '-')
-                .then(|| subtype.to_ascii_lowercase())
+    let variable_symbols =
+        u16::try_from(face.pips.iter().filter(|pip| pip.is_variable).count()).ok()?;
+    let hybrid_symbols =
+        u16::try_from(face.pips.iter().filter(|pip| pip.is_hybrid).count()).ok()?;
+    if variable_symbols > 0 || hybrid_symbols > 0 {
+        Some(ExactManaCostShape::Structured {
+            symbols,
+            generic_value: face.generic_value,
+            pip_appearances: face.pip_appearances,
+            variable_symbols,
+            hybrid_symbols,
         })
-        .collect()
+    } else {
+        Some(ExactManaCostShape::Fixed {
+            symbols,
+            generic_value: face.generic_value,
+            pip_appearances: face.pip_appearances,
+        })
+    }
 }
 
 fn canonical_keyword_names(keywords: &[String]) -> Vec<String> {
@@ -1444,6 +2332,27 @@ fn exact_printed_keyword_runtime_clause(
     input: CharacteristicFaceInput<'_>,
     keyword: PrintedKeyword,
 ) -> Option<String> {
+    if keyword == PrintedKeyword::Devoid {
+        if !input.colors.is_empty() {
+            return None;
+        }
+        let mut matching = input.oracle_text.lines().filter_map(|clause| {
+            let normalized =
+                normalize_oracle_clause_for_receipt(clause, input.name, input.type_line?);
+            matches!(
+                normalized.trim().to_ascii_lowercase().as_str(),
+                "devoid"
+                    | "devoid (this card has no color.)"
+                    | "devoid (this object has no color.)"
+            )
+            .then_some(normalized)
+        });
+        let clause = matching.next()?;
+        return matching
+            .next()
+            .is_none()
+            .then(|| sha256_hex(clause.as_bytes()));
+    }
     if !matches!(
         keyword,
         PrintedKeyword::Equip | PrintedKeyword::CumulativeUpkeep
@@ -1610,7 +2519,7 @@ fn characteristic_keyword_has_exact_runtime_contract(characteristic: &TypedChara
         runtime_clause_sha256.is_none()
     } else if matches!(
         keyword,
-        PrintedKeyword::Equip | PrintedKeyword::CumulativeUpkeep
+        PrintedKeyword::Equip | PrintedKeyword::CumulativeUpkeep | PrintedKeyword::Devoid
     ) {
         runtime_clause_sha256.as_deref().is_some_and(is_sha256_hex)
     } else {
@@ -2328,6 +3237,9 @@ pub(crate) fn compile_live_ability_runtime_receipts(
                     })
                     .filter_map(|ability| {
                         let shape = classify_live_ability_shape(ability)?;
+                        if !live_static_attachment_source_is_legal(ability, &face.type_line) {
+                            return None;
+                        }
                         build_face_live_ability_receipt(
                             card,
                             u16::try_from(face.face_index).ok()?,
@@ -2405,6 +3317,9 @@ pub(crate) fn compile_live_ability_runtime_receipts(
         let Some(shape) = classify_live_ability_shape(ability) else {
             continue;
         };
+        if !live_static_attachment_source_is_legal(ability, &card.type_line) {
+            continue;
+        }
         if let Some(receipt) = build_live_ability_receipt(card, shape, vec![ability.clone()]) {
             receipts.push(receipt);
         }
@@ -2520,6 +3435,31 @@ fn classify_live_ability_shape(ability: &ExecutableAbility) -> Option<LiveAbilit
         }
         (AbilityTiming::SpellResolution, effects) if is_exact_scry_resolution(ability, effects) => {
             Some(LiveAbilityShape::ScryResolution)
+        }
+        (AbilityTiming::SpellResolution, [AbilityEffect::Mill(mill)])
+            if ability.costs.is_empty()
+                && ability.preconditions
+                    == [AbilityPrecondition::SourceZone(ProgramZone::Stack)]
+                && mill.player == PlayerSelector::TargetPlayer
+                && mill.count > 0 =>
+        {
+            Some(LiveAbilityShape::MillResolution)
+        }
+        (AbilityTiming::Triggered { event }, [AbilityEffect::CopyThisSpell(copy)])
+            if ability.costs.is_empty()
+                && event.kind == TriggerEventKind::ThisSpellCast
+                && event.actor == ControllerRelation::You
+                && event.object_filter.card_type == Some(ProgramCardType::Spell)
+                && event.object_filter.controller == Some(ControllerRelation::You)
+                && ability.preconditions
+                    == [
+                        AbilityPrecondition::SourceZone(ProgramZone::Stack),
+                        AbilityPrecondition::EventObjectMatches(event.object_filter.clone()),
+                    ]
+                && copy.count == SpellCopyCount::EachSpellCastBeforeThisSpellThisTurn
+                && copy.target_choice == CopyTargetChoice::MayChooseNewTargets =>
+        {
+            Some(LiveAbilityShape::StormCopyTrigger)
         }
         (AbilityTiming::StaticModifier, [AbilityEffect::ApplyStaticCreatureModifier(_)])
             if ability.costs.is_empty() && has_battlefield_source_only(ability) =>
@@ -2691,7 +3631,30 @@ fn classify_live_ability_shape(ability: &ExecutableAbility) -> Option<LiveAbilit
         {
             Some(LiveAbilityShape::DrawTrigger)
         }
+        (AbilityTiming::Triggered { event }, effects)
+            if ability.costs.is_empty()
+                && exact_event_preconditions(ability, event)
+                && event.kind == TriggerEventKind::SecondSpellCastEachTurn
+                && matches!(
+                    event.actor,
+                    ControllerRelation::You
+                        | ControllerRelation::Opponent
+                        | ControllerRelation::Any
+                )
+                && !effects.is_empty()
+                && effects.iter().all(is_exact_table_resource_effect) =>
+        {
+            Some(LiveAbilityShape::TableResourceTrigger)
+        }
         _ => None,
+    }
+}
+
+fn is_exact_table_resource_effect(effect: &AbilityEffect) -> bool {
+    match effect {
+        AbilityEffect::LoseLife(loss) => loss.player == ControllerRelation::You && loss.amount > 0,
+        AbilityEffect::CreateToken(token) => token.count > 0 && token.kind == TokenKind::Treasure,
+        _ => false,
     }
 }
 
@@ -2701,6 +3664,29 @@ fn type_line_is_enchantment_aura(type_line: &str) -> bool {
         && type_line
             .split(|character: char| !character.is_alphabetic())
             .any(|word| word.eq_ignore_ascii_case("aura"))
+}
+
+fn type_line_is_artifact_equipment(type_line: &str) -> bool {
+    let profile = compile_card_types(type_line);
+    profile.is_artifact
+        && type_line
+            .split(|character: char| !character.is_alphabetic())
+            .any(|word| word.eq_ignore_ascii_case("equipment"))
+}
+
+fn live_static_attachment_source_is_legal(ability: &ExecutableAbility, type_line: &str) -> bool {
+    let [AbilityEffect::ApplyStaticCreatureModifier(modifier)] = ability.effects.as_slice() else {
+        return true;
+    };
+    match modifier.target {
+        StaticCreatureModifierTarget::CreatureEnchantedBySource => {
+            type_line_is_enchantment_aura(type_line) && modifier.granted_keywords.is_empty()
+        }
+        StaticCreatureModifierTarget::CreatureEquippedBySource => {
+            type_line_is_artifact_equipment(type_line) && modifier.granted_keywords.is_empty()
+        }
+        _ => true,
+    }
 }
 
 fn is_exact_aura_spell_targeting(ability: &ExecutableAbility) -> bool {
@@ -2745,6 +3731,7 @@ fn is_live_beneficial_aura_payload(ability: &ExecutableAbility) -> bool {
             ability.costs.is_empty()
                 && has_battlefield_source_only(ability)
                 && modifier.target == StaticCreatureModifierTarget::CreatureEnchantedBySource
+                && modifier.granted_keywords.is_empty()
                 && live_static_value_is_nonnegative(&modifier.power_delta)
                 && live_static_value_is_nonnegative(&modifier.toughness_delta)
                 && (live_static_value_can_help(&modifier.power_delta)
@@ -3443,6 +4430,9 @@ pub(crate) fn compile_atomic_runtime_receipt(card: &CompiledCard) -> Option<Atom
     ) {
         capabilities.push(RuntimeCapability::ExactBargainKeyword);
     }
+    if matches!(transaction, TypedAtomicTransaction::ThresholdRitual { .. }) {
+        capabilities.push(RuntimeCapability::ExactThresholdAbilityWord);
+    }
 
     Some(AtomicRuntimeReceipt {
         binding: RuntimeExecutorBinding {
@@ -3547,13 +4537,24 @@ pub(crate) fn compile_conditional_mana_source_runtime_receipt(
         RuntimeCapability::LiveBattlefieldManaCondition
     };
 
+    let mut capabilities = vec![RuntimeCapability::CompleteOracleRoot, capability];
+    match source {
+        TypedConditionalManaSource::ImprintLinkedCardColors => {
+            capabilities.push(RuntimeCapability::ExactImprintAbilityWord);
+        }
+        TypedConditionalManaSource::MetalcraftAnyColor => {
+            capabilities.push(RuntimeCapability::ExactMetalcraftAbilityWord);
+        }
+        _ => {}
+    }
+
     Some(ConditionalManaSourceRuntimeReceipt {
         binding: RuntimeExecutorBinding {
             receipt_schema_version: RUNTIME_RECEIPT_SCHEMA_VERSION,
             executor_id,
             executor_version: CONDITIONAL_MANA_SOURCE_EXECUTOR_VERSION,
         },
-        capabilities: vec![RuntimeCapability::CompleteOracleRoot, capability],
+        capabilities,
         source_evidence,
         source,
     })
@@ -3695,6 +4696,7 @@ fn restriction_protection_capabilities(
     ) {
         capabilities.push(RuntimeCapability::OrderedResolution);
         capabilities.push(RuntimeCapability::CounteredSpellResolutionBoundary);
+        capabilities.push(RuntimeCapability::ExactProtectionKeyword);
     }
     if matches!(
         compiled.program,
@@ -4191,6 +5193,66 @@ fn selected_program_face_clause_source_evidence(
     })
 }
 
+fn selected_bounded_oracle_clause_source_evidence(
+    card: &CompiledCard,
+    address: crate::bounded_oracle_runtime::ClauseAddress,
+    executor_id: &'static str,
+    executor_version: &'static str,
+) -> Option<RuntimeSourceEvidence> {
+    let root = card
+        .effects
+        .bounded_oracle_source_roots
+        .iter()
+        .find(|root| root.face_index == address.face_index)?;
+    if root.normalized_clauses.is_empty()
+        || usize::from(address.clause_index) >= root.normalized_clauses.len()
+    {
+        return None;
+    }
+    let normalized_oracle = root.normalized_clauses.join(" ");
+    let normalized_oracle_sha256 = sha256_hex(normalized_oracle.as_bytes());
+    let normalized_oracle_clause_sha256s = root
+        .normalized_clauses
+        .iter()
+        .map(|clause| sha256_hex(clause.as_bytes()))
+        .collect::<Vec<_>>();
+    let covered_oracle_clauses = vec![RuntimeOracleClauseEvidence {
+        face_index: address.face_index,
+        clause_index: address.clause_index,
+        normalized_clause_sha256: normalized_oracle_clause_sha256s
+            [usize::from(address.clause_index)]
+        .clone(),
+    }];
+    let type_line_sha256 = sha256_hex(root.type_line.as_bytes());
+    let relevant_type_role_mask = runtime_kind_role_mask_for_type_line(&root.type_line);
+    let mut hasher = Sha256::new();
+    for part in [
+        RUNTIME_RECEIPT_SCHEMA_VERSION.as_bytes(),
+        executor_version.as_bytes(),
+        EXECUTABLE_ABILITY_PROGRAM_VERSION.as_bytes(),
+        executor_id.as_bytes(),
+        normalized_oracle.as_bytes(),
+        root.type_line.as_bytes(),
+    ] {
+        hash_framed(&mut hasher, part);
+    }
+    hash_framed(&mut hasher, &relevant_type_role_mask.to_be_bytes());
+    for clause in &covered_oracle_clauses {
+        hash_framed(&mut hasher, &clause.face_index.to_be_bytes());
+        hash_framed(&mut hasher, &clause.clause_index.to_be_bytes());
+        hash_framed(&mut hasher, clause.normalized_clause_sha256.as_bytes());
+    }
+    Some(RuntimeSourceEvidence {
+        ability_program_version: EXECUTABLE_ABILITY_PROGRAM_VERSION,
+        normalized_oracle_sha256,
+        normalized_oracle_clause_sha256s,
+        covered_oracle_clauses,
+        type_line_sha256,
+        relevant_type_role_mask,
+        source_evidence_sha256: format!("{:x}", hasher.finalize()),
+    })
+}
+
 fn runtime_kind_role_mask_for_type_line(type_line: &str) -> u32 {
     let types = compile_card_types(type_line);
     let mut roles = 0u32;
@@ -4210,6 +5272,398 @@ fn runtime_kind_role_mask_for_type_line(type_line: &str) -> u32 {
         roles |= role::INSTANT_SORCERY;
     }
     roles
+}
+
+pub(crate) fn compile_bounded_oracle_runtime_receipts(
+    card: &CompiledCard,
+) -> Vec<BoundedOracleRuntimeReceipt> {
+    let mut receipts = card
+        .effects
+        .bounded_oracle
+        .iter()
+        .filter_map(|clause| {
+            let address = clause.address();
+            let mechanic_programs = card
+                .effects
+                .mechanic_programs
+                .iter()
+                .filter(|program| program.primary_address() == address)
+                .cloned()
+                .collect::<Vec<_>>();
+            let executor_id = bounded_oracle_executor_id(clause);
+            let source_evidence = selected_bounded_oracle_clause_source_evidence(
+                card,
+                address,
+                executor_id,
+                BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION,
+            )?;
+            let receipt = BoundedOracleRuntimeReceipt {
+                binding: RuntimeExecutorBinding {
+                    receipt_schema_version: RUNTIME_RECEIPT_SCHEMA_VERSION,
+                    executor_id,
+                    executor_version: BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION,
+                },
+                capabilities: bounded_oracle_capabilities(
+                    clause,
+                    &mechanic_programs,
+                    &source_evidence,
+                ),
+                source_evidence,
+                clause: clause.clone(),
+                clause_semantic_sha256: clause.semantic_digest().to_owned(),
+                consumer_version: BOUNDED_ORACLE_CONSUMER_VERSION,
+                simulation_bridge_version: BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION,
+                mechanic_contract_sha256: bounded_mechanic_contract_sha256(&mechanic_programs),
+                mechanic_programs,
+            };
+            receipt.has_exact_contract().then_some(receipt)
+        })
+        .collect::<Vec<_>>();
+    receipts.sort_by(|left, right| {
+        left.clause
+            .address()
+            .cmp(&right.clause.address())
+            .then_with(|| left.binding.executor_id.cmp(right.binding.executor_id))
+    });
+    receipts
+}
+
+fn bounded_oracle_executor_id(clause: &BoundedOracleClause) -> &'static str {
+    match clause.timing() {
+        BoundedTiming::CastingAdditionalCost => {
+            "abstract-play.bounded-oracle.casting-additional-cost"
+        }
+        BoundedTiming::SpellResolution => "abstract-play.bounded-oracle.resolution",
+        BoundedTiming::Activated => "abstract-play.bounded-oracle.activated",
+        BoundedTiming::Triggered(_) => "abstract-play.bounded-oracle.triggered",
+        BoundedTiming::TriggeredModalHeader { .. } => {
+            "abstract-play.bounded-oracle.triggered-modal"
+        }
+        BoundedTiming::Static => "abstract-play.bounded-oracle.static",
+        BoundedTiming::Replacement => "abstract-play.bounded-oracle.replacement",
+        BoundedTiming::ModalHeader { .. } | BoundedTiming::ModalBranch { .. } => {
+            "abstract-play.bounded-oracle.modal"
+        }
+        BoundedTiming::TypedStandaloneProgram => {
+            "abstract-play.bounded-oracle.typed-standalone-unbound"
+        }
+        BoundedTiming::SpecialAction(_) => "abstract-play.bounded-oracle.special-action",
+    }
+}
+
+fn bounded_mechanic_programs_have_exact_contract(
+    clause: &BoundedOracleClause,
+    programs: &[MechanicProgram],
+) -> bool {
+    let address = clause.address();
+    programs
+        .windows(2)
+        .all(|pair| pair[0].mechanic() < pair[1].mechanic())
+        && programs.iter().all(|program| {
+            program.runtime_version() == MECHANIC_RUNTIME_VERSION
+                && program.has_exact_contract()
+                && program.primary_address() == address
+                && program.executable_clauses().first() == Some(clause)
+                && program
+                    .executable_clauses()
+                    .iter()
+                    .all(|compiled| compiled.runtime_version() == BOUNDED_ORACLE_RUNTIME_VERSION)
+                && mechanic_procedure_matches(program.mechanic(), program.procedure())
+                && match program.marker_disposition() {
+                    MarkerDisposition::Executable => true,
+                    MarkerDisposition::StructurallyNonoperative {
+                        owned_executable_clause,
+                    } => {
+                        *owned_executable_clause == address
+                            && program
+                                .executable_clauses()
+                                .iter()
+                                .any(|compiled| compiled.address() == address)
+                    }
+                }
+        })
+}
+
+fn mechanic_procedure_matches(mechanic: PrintedMechanic, procedure: &MechanicProcedure) -> bool {
+    matches!(
+        (mechanic, procedure),
+        (
+            PrintedMechanic::AbilityWord,
+            MechanicProcedure::AbilityWord(_)
+        ) | (PrintedMechanic::Cycling, MechanicProcedure::Cycling(_))
+            | (
+                PrintedMechanic::Typecycling,
+                MechanicProcedure::Typecycling(_)
+            )
+            | (PrintedMechanic::Enchant, MechanicProcedure::Enchant(_))
+            | (PrintedMechanic::Food, MechanicProcedure::Food(_))
+            | (PrintedMechanic::Prowess, MechanicProcedure::Prowess(_))
+            | (PrintedMechanic::Channel, MechanicProcedure::Channel(_))
+            | (PrintedMechanic::Treasure, MechanicProcedure::Treasure(_))
+            | (PrintedMechanic::Scry, MechanicProcedure::Scry(_))
+            | (PrintedMechanic::Landfall, MechanicProcedure::Landfall(_))
+            | (PrintedMechanic::Double, MechanicProcedure::Double(_))
+            | (PrintedMechanic::Paradigm, MechanicProcedure::Paradigm(_))
+            | (PrintedMechanic::Transform, MechanicProcedure::Transform(_))
+            | (PrintedMechanic::Surveil, MechanicProcedure::Surveil(_))
+            | (PrintedMechanic::Crew, MechanicProcedure::Crew(_))
+            | (PrintedMechanic::Ward, MechanicProcedure::Ward(_))
+            | (
+                PrintedMechanic::SplitSecond,
+                MechanicProcedure::SplitSecond(_)
+            )
+            | (PrintedMechanic::Evoke, MechanicProcedure::Evoke(_))
+            | (PrintedMechanic::Manifest, MechanicProcedure::Manifest(_))
+            | (PrintedMechanic::Partner, MechanicProcedure::Partner(_))
+            | (PrintedMechanic::Ferocious, MechanicProcedure::Ferocious(_))
+            | (PrintedMechanic::Dash, MechanicProcedure::Dash(_))
+            | (PrintedMechanic::Gift, MechanicProcedure::Gift(_))
+            | (PrintedMechanic::Mobilize, MechanicProcedure::Mobilize(_))
+    )
+}
+
+fn bounded_mechanic_contract_sha256(programs: &[MechanicProgram]) -> String {
+    bounded_mechanic_contract_sha256_for_version(MECHANIC_RUNTIME_VERSION, programs)
+}
+
+fn bounded_mechanic_contract_sha256_for_version(
+    mechanic_runtime_version: &str,
+    programs: &[MechanicProgram],
+) -> String {
+    let mut hasher = Sha256::new();
+    for part in [
+        RUNTIME_RECEIPT_SCHEMA_VERSION.as_bytes(),
+        BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION.as_bytes(),
+        BOUNDED_ORACLE_CONSUMER_VERSION.as_bytes(),
+        BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION.as_bytes(),
+        mechanic_runtime_version.as_bytes(),
+    ] {
+        hash_framed(&mut hasher, part);
+    }
+    for program in programs {
+        hash_framed(
+            &mut hasher,
+            &program.primary_address().face_index.to_be_bytes(),
+        );
+        hash_framed(
+            &mut hasher,
+            &program.primary_address().clause_index.to_be_bytes(),
+        );
+        hash_framed(&mut hasher, program.mechanic().printed_label().as_bytes());
+        hash_framed(&mut hasher, format!("{program:?}").as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn bounded_oracle_capabilities(
+    clause: &BoundedOracleClause,
+    mechanic_programs: &[MechanicProgram],
+    source_evidence: &RuntimeSourceEvidence,
+) -> Vec<RuntimeCapability> {
+    let source_scope = if source_evidence.normalized_oracle_clause_sha256s.len() == 1
+        && source_evidence.covered_oracle_clauses.len() == 1
+        && source_evidence.covered_oracle_clauses[0].normalized_clause_sha256
+            == source_evidence.normalized_oracle_clause_sha256s[0]
+    {
+        RuntimeCapability::CompleteOracleRoot
+    } else {
+        RuntimeCapability::ExactOracleClauseSet
+    };
+    let mut capabilities = vec![
+        source_scope,
+        RuntimeCapability::ExactBoundedOracleProgram,
+        RuntimeCapability::OrderedResolution,
+    ];
+    if !clause.costs().is_empty() {
+        capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+    }
+    if matches!(clause.timing(), BoundedTiming::SpellResolution) {
+        capabilities.push(RuntimeCapability::CounteredSpellResolutionBoundary);
+    }
+    if bounded_clause_retains_physical_identity(clause) {
+        capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+    }
+    if bounded_clause_any(clause, |effect| {
+        matches!(
+            effect,
+            BoundedEffect::TakeExtraTurn(effect) if effect.lose_at_end_step
+        )
+    }) {
+        capabilities.push(RuntimeCapability::ExactDelayedDrawbackLifecycle);
+    }
+    if bounded_clause_any(clause, |effect| {
+        matches!(
+            effect,
+            BoundedEffect::Restriction(BoundedRestriction::CannotBeBlocked { .. })
+        )
+    }) {
+        capabilities.push(RuntimeCapability::ExactCannotBeBlockedRestriction);
+    }
+    if bounded_clause_has_exact_live_attachment_static(clause) {
+        capabilities.push(RuntimeCapability::ExactAttachmentStaticEffect);
+    }
+    for program in mechanic_programs {
+        let capability = match program.mechanic() {
+            PrintedMechanic::AbilityWord => RuntimeCapability::ExactAbilityWordMarker,
+            PrintedMechanic::Cycling => RuntimeCapability::ExactCyclingKeyword,
+            PrintedMechanic::Typecycling => RuntimeCapability::ExactTypecyclingKeyword,
+            PrintedMechanic::Enchant => RuntimeCapability::ExactEnchantKeyword,
+            PrintedMechanic::Food => RuntimeCapability::ExactFoodKeyword,
+            PrintedMechanic::Prowess => RuntimeCapability::ExactProwessKeyword,
+            PrintedMechanic::Channel => RuntimeCapability::ExactChannelKeyword,
+            PrintedMechanic::Treasure => RuntimeCapability::ExactTreasureKeyword,
+            PrintedMechanic::Scry => RuntimeCapability::ExactScryKeyword,
+            PrintedMechanic::Landfall => RuntimeCapability::ExactLandfallAbilityWord,
+            PrintedMechanic::Double => RuntimeCapability::ExactDoubleKeyword,
+            PrintedMechanic::Paradigm => RuntimeCapability::ExactParadigmKeyword,
+            PrintedMechanic::Transform => RuntimeCapability::ExactTransformKeyword,
+            PrintedMechanic::Surveil => RuntimeCapability::ExactSurveilKeyword,
+            PrintedMechanic::Crew => RuntimeCapability::ExactCrewKeyword,
+            PrintedMechanic::Ward => RuntimeCapability::ExactWardKeyword,
+            PrintedMechanic::SplitSecond => RuntimeCapability::ExactSplitSecondKeyword,
+            PrintedMechanic::Evoke => RuntimeCapability::ExactEvokeKeyword,
+            PrintedMechanic::Manifest => RuntimeCapability::ExactManifestKeyword,
+            PrintedMechanic::Partner => RuntimeCapability::ExactPartnerKeyword,
+            PrintedMechanic::Ferocious => RuntimeCapability::ExactFerociousAbilityWord,
+            PrintedMechanic::Dash => RuntimeCapability::ExactDashKeyword,
+            PrintedMechanic::Gift => RuntimeCapability::ExactGiftKeyword,
+            PrintedMechanic::Mobilize => RuntimeCapability::ExactMobilizeKeyword,
+        };
+        capabilities.push(capability);
+    }
+    capabilities
+}
+
+fn bounded_clause_has_exact_live_attachment_static(clause: &BoundedOracleClause) -> bool {
+    !clause.effects().is_empty()
+        && matches!(clause.timing(), BoundedTiming::Static)
+        && clause.effects().iter().all(|effect| {
+            matches!(
+                effect,
+                BoundedEffect::ModifyPowerToughness(
+                crate::bounded_oracle_runtime::PowerToughnessChange {
+                    objects: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                    operation:
+                        crate::bounded_oracle_runtime::PowerToughnessOperation::Add
+                        | crate::bounded_oracle_runtime::PowerToughnessOperation::Subtract
+                        | crate::bounded_oracle_runtime::PowerToughnessOperation::AddPowerSubtractToughness
+                        | crate::bounded_oracle_runtime::PowerToughnessOperation::SubtractPowerAddToughness,
+                    power: crate::bounded_oracle_runtime::Amount::Constant(_),
+                    toughness: crate::bounded_oracle_runtime::Amount::Constant(_),
+                    duration: crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                },
+            )
+                | BoundedEffect::Restriction(BoundedRestriction::DoesNotUntapDuring {
+                    object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                    step: crate::bounded_oracle_runtime::Step::UntapStep,
+                })
+                | BoundedEffect::Restriction(
+                    BoundedRestriction::ActivatedAbilitiesCannotBeActivated {
+                        object:
+                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                        duration:
+                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                    }
+                    | BoundedRestriction::MustAttackEachCombatIfAble {
+                        object:
+                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                        duration:
+                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                    }
+                    | BoundedRestriction::CannotAttack {
+                        object:
+                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                        duration:
+                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                    }
+                    | BoundedRestriction::CannotBlock {
+                        object:
+                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                        duration:
+                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                    }
+                    | BoundedRestriction::CannotBeBlocked {
+                        object:
+                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                        duration:
+                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                    },
+                )
+            )
+        })
+}
+
+fn bounded_effect_any(effect: &BoundedEffect, predicate: fn(&BoundedEffect) -> bool) -> bool {
+    if predicate(effect) {
+        return true;
+    }
+    match effect {
+        BoundedEffect::Conditional {
+            if_true, if_false, ..
+        } => if_true
+            .iter()
+            .chain(if_false)
+            .any(|effect| bounded_effect_any(effect, predicate)),
+        BoundedEffect::GrantAbility { ability, .. } => ability
+            .effects
+            .iter()
+            .any(|effect| bounded_effect_any(effect, predicate)),
+        BoundedEffect::CreateToken(token) => {
+            let BoundedTokenSpecification::Defined(definition) = &token.specification else {
+                return false;
+            };
+            definition.abilities.iter().any(|ability| {
+                ability
+                    .effects
+                    .iter()
+                    .any(|effect| bounded_effect_any(effect, predicate))
+            })
+        }
+        BoundedEffect::Replacement(effect) => {
+            let crate::bounded_oracle_runtime::ReplacementEffect::ConditionalTokenSubstitution {
+                ordinary,
+                replacement,
+                ..
+            } = effect.as_ref()
+            else {
+                return false;
+            };
+            [ordinary, replacement.as_ref()].into_iter().any(|token| {
+                let BoundedTokenSpecification::Defined(definition) = &token.specification else {
+                    return false;
+                };
+                definition.abilities.iter().any(|ability| {
+                    ability
+                        .effects
+                        .iter()
+                        .any(|effect| bounded_effect_any(effect, predicate))
+                })
+            })
+        }
+        _ => false,
+    }
+}
+
+fn bounded_clause_any(clause: &BoundedOracleClause, predicate: fn(&BoundedEffect) -> bool) -> bool {
+    clause
+        .effects()
+        .iter()
+        .any(|effect| bounded_effect_any(effect, predicate))
+}
+
+fn bounded_clause_retains_physical_identity(clause: &BoundedOracleClause) -> bool {
+    bounded_clause_any(clause, |effect| {
+        matches!(
+            effect,
+            BoundedEffect::MoveZone(_)
+                | BoundedEffect::MoveSelected(_)
+                | BoundedEffect::SetSelectedTapped { .. }
+                | BoundedEffect::SearchLibrary(_)
+                | BoundedEffect::Manifest { .. }
+                | BoundedEffect::Copy(_)
+                | BoundedEffect::Transform { .. }
+        )
+    })
 }
 
 pub(crate) fn compile_interaction_runtime_receipt(
@@ -4415,6 +5869,8 @@ fn runtime_source_evidence(
     executor_id: &'static str,
     executor_version: &'static str,
 ) -> RuntimeSourceEvidence {
+    let normalized_oracle =
+        normalize_oracle_clause_for_receipt(normalized_oracle, &card.name, &card.type_line);
     let normalized_oracle_sha256 = sha256_hex(normalized_oracle.as_bytes());
     let normalized_oracle_clause_sha256s = normalized_oracle
         .lines()
@@ -4493,7 +5949,7 @@ fn type_line_has_exact_type_envelope(
     allow_legendary: bool,
 ) -> bool {
     let card_type_segment = type_line
-        .split_once('-')
+        .split_once('\u{2014}')
         .map(|(types, _)| types)
         .or_else(|| type_line.split_once(" - ").map(|(types, _)| types))
         .unwrap_or(type_line);

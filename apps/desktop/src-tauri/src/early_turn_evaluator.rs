@@ -32,7 +32,8 @@ use crate::mana::{EntersTapped, ManaModel, ManaSourceProfile, parse_mana_cost};
 use crate::parser::normalize_card_name;
 use crate::semantics::{CompiledCard, CompiledDeck, role};
 
-pub(crate) const EARLY_TURN_EVALUATOR_VERSION: &str = "early-turn-route-skeleton/v5";
+pub(crate) const EARLY_TURN_EVALUATOR_VERSION: &str = "early-turn-route-skeleton/v6";
+pub(crate) const EARLY_ROUTE_EXECUTION_WITNESS_VERSION: &str = "early-route-execution-witness/v1";
 
 const OPENING_HAND_SIZE: u8 = 7;
 const NATURAL_DRAWS_BEFORE_TURN_ONE: u8 = 1;
@@ -45,14 +46,32 @@ const MAX_TRACKED_MANA: u8 = 48;
 #[serde(rename_all = "camelCase")]
 pub struct EarlyTurnEvaluationReport {
     pub model_version: String,
+    pub execution_witness_version: String,
     pub library_size: u16,
     pub known_line_count: u16,
     pub eligible_table_win_route_count: u16,
     pub omitted_non_table_win_line_count: u16,
     pub fixed_policy: EarlyTurnPolicy,
     pub routes: Vec<RouteReadinessReport>,
+    /// Deterministic legal trajectories found through the production turn
+    /// executor. A witness proves that the route can be executed by the named
+    /// turn. It is deliberately not converted into an incidence estimate.
+    pub execution_witnesses: Vec<EarlyRouteExecutionWitness>,
     pub blockers: Vec<EarlyTurnBlocker>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EarlyRouteExecutionWitness {
+    pub route_id: String,
+    pub route_name: String,
+    pub turn: u8,
+    pub opening_cards: Vec<String>,
+    pub natural_draws: Vec<String>,
+    pub library_order_sha256: String,
+    pub resolved_table_win: bool,
+    pub proof_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -257,12 +276,14 @@ pub(crate) fn evaluate_early_turn_routes(
 
     EarlyTurnEvaluationReport {
         model_version: EARLY_TURN_EVALUATOR_VERSION.into(),
+        execution_witness_version: EARLY_ROUTE_EXECUTION_WITNESS_VERSION.into(),
         library_size: deck.library.len().min(u16::MAX as usize) as u16,
         known_line_count: deck.known_lines.len().min(u16::MAX as usize) as u16,
         eligible_table_win_route_count: routes.len().min(u16::MAX as usize) as u16,
         omitted_non_table_win_line_count,
         fixed_policy,
         routes,
+        execution_witnesses: Vec::new(),
         blockers: report_blockers,
         notes,
     }
@@ -283,7 +304,7 @@ fn evaluate_route(
         return Err(blocker(
             EarlyTurnBlockerCategory::RouteTooLarge,
             format!(
-                "The route has {required_slots} named piece slot(s); deterministic early-turn enumeration supports 1 to {MAX_ROUTE_PIECE_SLOTS}."
+                "The route has {required_slots} named piece slot(s); deterministic early turn enumeration supports 1 to {MAX_ROUTE_PIECE_SLOTS}."
             ),
             line.cards.clone(),
             None,
@@ -1794,7 +1815,7 @@ fn binomial(n: u128, k: u128) -> u128 {
     })
 }
 
-fn route_id(line: &KnownLine) -> String {
+pub(crate) fn route_id(line: &KnownLine) -> String {
     let mut members = line
         .cards
         .iter()

@@ -124,8 +124,8 @@ pub enum ComboStoreError {
 /// Resource limits for one bulk snapshot.
 ///
 /// Production callers should use [`SnapshotLimits::default`]. Exposing the
-/// values keeps offline import policy auditable and supports constrained
-/// validation environments.
+/// values makes offline import policy auditable and lets tests exercise failure
+/// paths with tiny fixtures.
 #[derive(Debug, Clone, Copy)]
 pub struct SnapshotLimits {
     pub max_compressed_bytes: u64,
@@ -506,7 +506,7 @@ impl ComboStore {
                     total_units: total_bytes,
                     progress: 0.02 + ratio.clamp(0.0, 1.0) * 0.48,
                     detail: format!(
-                        "Downloading the combo catalog: {}",
+                        "Downloading the combo catalog \u{2014} {}",
                         format_bytes(downloaded)
                     ),
                 },
@@ -1439,7 +1439,7 @@ impl SnapshotConsumer for SqliteSnapshotWriter<'_> {
                     total_units: None,
                     progress: (0.50 + self.variant_count as f32 / 400_000.0).min(0.94),
                     detail: format!(
-                        "Building the local combo index: {} variants",
+                        "Building the local combo index \u{2014} {} variants",
                         self.variant_count
                     ),
                 },

@@ -7,11 +7,16 @@ use sha2::{Digest, Sha256};
 
 use crate::ability_ir::{ABILITY_IR_VERSION, SYNERGY_GRAPH_VERSION};
 use crate::ability_program::EXECUTABLE_ABILITY_PROGRAM_VERSION;
+use crate::bounded_oracle_consumer::BOUNDED_ORACLE_CONSUMER_VERSION;
+use crate::bounded_oracle_runtime::BOUNDED_ORACLE_RUNTIME_VERSION;
+use crate::bounded_oracle_simulation::BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION;
 use crate::combo_store::ComboStoreStatus;
 use crate::comprehensive_rules::ComprehensiveRulesSnapshot;
 use crate::domain::{AnalysisOptions, AnalysisReport, DataStatus};
-use crate::domain::{DeckIntent, InteractionProfile, MulliganPolicy, PilotPolicy};
-use crate::early_turn_evaluator::EARLY_TURN_EVALUATOR_VERSION;
+use crate::domain::{DeckIntent, MulliganPolicy, PilotPolicy};
+use crate::early_turn_evaluator::{
+    EARLY_ROUTE_EXECUTION_WITNESS_VERSION, EARLY_TURN_EVALUATOR_VERSION,
+};
 use crate::effects::EFFECT_DESCRIPTOR_VERSION;
 use crate::execution_coverage::{
     EXECUTION_COVERAGE_COMPILER_VERSION, EXECUTION_COVERAGE_SCHEMA_VERSION,
@@ -20,10 +25,15 @@ use crate::interaction_scenarios::{
     INTERACTION_CHECKPOINT_VERSION, INTERACTION_DIRECTIVE_VERSION,
     INTERACTION_SCENARIO_INPUT_VERSION, INTERACTION_SCENARIO_REPORT_VERSION,
 };
+use crate::keyword_rules_runtime::{KEYWORD_RULES_EVIDENCE_VERSION, KEYWORD_RULES_RUNTIME_VERSION};
 use crate::mana::MANA_MODEL_VERSION;
+use crate::mechanic_runtime::MECHANIC_RUNTIME_VERSION;
 use crate::parser::normalize_card_name;
 use crate::policy_store::PolicyPackageSnapshot;
 use crate::rules_capabilities::RULE_CAPABILITY_MODEL_VERSION;
+use crate::runtime_receipts::{
+    KEYWORD_RULES_EXECUTION_BRIDGE_VERSION, RUNTIME_RECEIPT_SCHEMA_VERSION,
+};
 use crate::scoring::{BRACKET_MODEL_VERSION, SEMANTIC_MODEL_VERSION};
 use crate::semantic_store::SemanticPackageSnapshot;
 use crate::semantics::{ANNOTATION_MODEL_VERSION, COMBO_CATALOG_VERSION};
@@ -37,7 +47,7 @@ use crate::strict_engine::STRICT_ENGINE_VERSION;
 use crate::turn_planner::TURN_PLANNER_VERSION;
 
 const CACHE_SCHEMA_VERSION: &str = "1";
-pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-46";
+pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-49";
 const ANALYSIS_IMPLEMENTATION_SHA256: &str = env!("CDA_ANALYSIS_IMPLEMENTATION_SHA256");
 const MAX_CACHE_ENTRIES: usize = 64;
 const ALLOWED_PRODUCTION_SIMULATION_COUNTS: [u32; 3] = [1_000, 5_000, 10_000];
@@ -112,6 +122,14 @@ struct ExecutionContractFingerprint<'a> {
     strict_engine: &'a str,
     coverage_schema: &'a str,
     coverage_compiler: &'a str,
+    runtime_receipt_schema: &'a str,
+    bounded_oracle_runtime: &'a str,
+    bounded_oracle_consumer: &'a str,
+    bounded_oracle_simulation_bridge: &'a str,
+    mechanic_runtime: &'a str,
+    keyword_rules_runtime: &'a str,
+    keyword_rules_evidence: &'a str,
+    keyword_rules_execution_bridge: &'a str,
 }
 
 impl ExecutionContractFingerprint<'static> {
@@ -120,6 +138,14 @@ impl ExecutionContractFingerprint<'static> {
             strict_engine: STRICT_ENGINE_VERSION,
             coverage_schema: EXECUTION_COVERAGE_SCHEMA_VERSION,
             coverage_compiler: EXECUTION_COVERAGE_COMPILER_VERSION,
+            runtime_receipt_schema: RUNTIME_RECEIPT_SCHEMA_VERSION,
+            bounded_oracle_runtime: BOUNDED_ORACLE_RUNTIME_VERSION,
+            bounded_oracle_consumer: BOUNDED_ORACLE_CONSUMER_VERSION,
+            bounded_oracle_simulation_bridge: BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION,
+            mechanic_runtime: MECHANIC_RUNTIME_VERSION,
+            keyword_rules_runtime: KEYWORD_RULES_RUNTIME_VERSION,
+            keyword_rules_evidence: KEYWORD_RULES_EVIDENCE_VERSION,
+            keyword_rules_execution_bridge: KEYWORD_RULES_EXECUTION_BRIDGE_VERSION,
         }
     }
 }
@@ -460,10 +486,6 @@ fn report_matches_execution_contract(report: &AnalysisReport) -> bool {
             MulliganPolicy::Aggressive
         )
         && matches!(report.assumptions.pilot_policy, PilotPolicy::Race)
-        && matches!(
-            report.assumptions.interaction_profile,
-            InteractionProfile::HighPower
-        )
         && matches!(report.assumptions.declared_intent, DeckIntent::Unspecified)
         && report
             .win_speed
@@ -471,6 +493,7 @@ fn report_matches_execution_contract(report: &AnalysisReport) -> bool {
             .as_ref()
             .is_some_and(|evaluation| {
                 evaluation.model_version == EARLY_TURN_EVALUATOR_VERSION
+                    && evaluation.execution_witness_version == EARLY_ROUTE_EXECUTION_WITNESS_VERSION
                     && evaluation.fixed_policy.opening_hand_size == 7
                     && evaluation.fixed_policy.natural_draws_before_turn_one == 1
                     && evaluation.fixed_policy.natural_draws_before_turn_two == 2

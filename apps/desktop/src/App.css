@@ -2639,7 +2639,15 @@ textarea::placeholder {
   margin-top: 12px;
 }
 
-.trial-options label {
+.interaction-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.trial-options label,
+.interaction-options label {
   position: relative;
   display: grid;
   gap: 3px;
@@ -2650,30 +2658,39 @@ textarea::placeholder {
   cursor: pointer;
 }
 
-.trial-options label.selected {
+.trial-options label.selected,
+.interaction-options label.selected {
   border-color: rgba(157, 140, 255, 0.6);
   background: rgba(157, 140, 255, 0.1);
 }
 
-.trial-options label:focus-within {
+.trial-options label:focus-within,
+.interaction-options label:focus-within {
   outline: 2px solid var(--violet-bright);
   outline-offset: 2px;
 }
 
-.trial-options input {
+.trial-options input,
+.interaction-options input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
 }
 
-.trial-options strong {
+.trial-options strong,
+.interaction-options strong {
   color: var(--text);
   font-size: 14px;
 }
 
-.trial-options span {
+.trial-options span,
+.interaction-options span {
   color: var(--muted);
   font-size: 9px;
+}
+
+.interaction-options span {
+  line-height: 1.4;
 }
 
 .confirmation-dialog-actions {

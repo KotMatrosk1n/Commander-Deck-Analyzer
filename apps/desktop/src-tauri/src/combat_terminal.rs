@@ -448,7 +448,7 @@ pub enum CombatTerminalError {
 ///
 /// The allocator first searches for an exact all-opponents-lethal assignment.
 /// It may hold attackers back, and it reasons from combat damage plus current
-/// life or commander-damage state, not from a creature-count threshold. When no
+/// life/commander-damage state-not from a creature-count threshold. When no
 /// table-lethal assignment exists, it focuses damage on the nearest legal
 /// elimination in stable opponent/attacker order.
 pub fn allocate_attack(

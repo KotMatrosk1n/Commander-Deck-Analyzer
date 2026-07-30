@@ -28,6 +28,7 @@ import {
   hasStrictFunctionalRating,
   reportFileStem,
 } from "./reportExport";
+import { interactionProfileLabel } from "./interactionProfiles";
 import type {
   AnalysisReport,
   CompactInteractionScenarioReport,
@@ -240,7 +241,7 @@ function Overview({ report }: { report: AnalysisReport }) {
         ? `${pct(report.openingHands.keepableAfterMulligansRate)} keepable`
         : `${pct(report.openingHands.keepableAfterMulligansRate)} exploratory keep estimate`,
     },
-    { label: "Speed", value: report.overview.speedScore, icon: Activity, detail: speedScoreDetail(report) },
+    { label: "Speed", value: report.overview.speedScore, icon: Activity, detail: `Baseline · ${speedScoreDetail(report)}` },
     { label: "Interaction", value: report.overview.interactionScore, icon: ShieldCheck, detail: "Removal, counters & protection" },
     { label: "Synergy", value: report.overview.synergyScore, icon: Network, detail: `${report.synergy.detectedPlans.length} plan${report.synergy.detectedPlans.length === 1 ? "" : "s"} detected` },
     { label: "Resilience", value: report.overview.resilienceScore, icon: TimerReset, detail: recoveryDetail },
@@ -259,7 +260,7 @@ function Overview({ report }: { report: AnalysisReport }) {
         <div className="recommendation-copy">
           <div className="recommendation-pills">
             <span>
-              {`${strictRatingAvailable ? "Model" : "Exploratory model"} range ${report.recommendation.rangeLow} to ${report.recommendation.rangeHigh}`}
+              {`${strictRatingAvailable ? "Model" : "Exploratory model"} range ${report.recommendation.rangeLow}-${report.recommendation.rangeHigh}`}
             </span>
             {!strictRatingAvailable && <span>Strict functional rating unavailable</span>}
             <span className={`confidence ${report.recommendation.confidence}`}>
@@ -275,7 +276,7 @@ function Overview({ report }: { report: AnalysisReport }) {
           <p>{report.recommendation.summary}</p>
           <p className="method-caveat">
             {strictRatingAvailable
-              ? "This is an explainable, uncalibrated model estimate. It is not an official bracket ruling."
+              ? "This is an explainable, uncalibrated model estimate, not an official bracket ruling."
               : `Low-confidence warning: strict functional coverage is blocked by ${ratingGate?.blockingLeafCount ?? "unreported"} execution-preflight leaves. The estimate, range, and weights remain exploratory and uncalibrated; the official policy floor remains separate.`}
           </p>
         </div>
@@ -432,7 +433,7 @@ function OpeningHands({ report }: { report: AnalysisReport }) {
 }
 
 function WinSpeed({ report }: { report: AnalysisReport }) {
-  const profile = "High-power";
+  const profile = interactionProfileLabel(report.assumptions.interactionProfile);
   const baselineResolved = report.winSpeed.baselineResolvedTableWin;
   const interferedResolved = report.winSpeed.interferedResolvedTableWin;
   const pairedResolvedDelay = report.winSpeed.pairedResolvedTableWinDelay;
@@ -518,11 +519,18 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
             {earlyEvaluation.routes.map((route) => {
               const turnOne = route.turns.find((turn) => turn.turn === 1);
               const turnTwo = route.turns.find((turn) => turn.turn === 2);
+              const executionWitness = earlyEvaluation.executionWitnesses.find(
+                (witness) => witness.routeId === route.routeId,
+              );
               return (
                 <div className="stress-row" key={route.routeId}>
                   <span className="severity-dot info" />
                   <strong>{route.routeName}</strong>
                   <span>
+                    {executionWitness
+                      ? `Legal trajectory T${executionWitness.turn} ${executionWitness.resolvedTableWin ? "resolved table win" : "recognized attempt"}`
+                      : "No legal T1/T2 trajectory found in the bounded witness search"}
+                    {" · "}
                     T1 direct {pct(turnOne?.directSkeletonProbability ?? 0)}
                     {" · "}T2 direct {pct(turnTwo?.directSkeletonProbability ?? 0)}
                     {" · "}{route.aggressiveMulligan.candidateHands}-candidate envelope direct {pct(route.aggressiveMulligan.directSkeletonInAtLeastOneCandidate)}
@@ -556,7 +564,7 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
         <div className="section-heading">
           <div>
             <span className="eyebrow">Route provenance</span>
-            <h3>What produced or blocked a win attempt</h3>
+            <h3>What actually produced or blocked a win attempt</h3>
           </div>
           <span className="coverage-inline">
             {explicitRoutes.length
@@ -575,7 +583,7 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
           />
           <Detail
             label="Early blocker horizon"
-            value={attemptProvenance ? `Turns 1 to ${attemptProvenance.earlyFailureHorizon}` : "Not recorded"}
+            value={attemptProvenance ? `Turns 1-${attemptProvenance.earlyFailureHorizon}` : "Not recorded"}
           />
         </div>
         {explicitRoutes.length ? (
@@ -603,11 +611,11 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
                   <strong>{route.name}</strong>
                   <span>
                     Cumulative attempts: T1 baseline {pct(baselineTurnOne)}
-                    {" / "}pressured {pct(interferedTurnOne)}
+                    {" / "}selected profile {pct(interferedTurnOne)}
                     {" · "}T2 baseline {pct(baselineTurnTwo)}
-                    {" / "}pressured {pct(interferedTurnTwo)}
+                    {" / "}selected profile {pct(interferedTurnTwo)}
                     {" · "}By T{report.assumptions.maximumTurn} baseline {pct(route.baselineRate)}
-                    {" / "}pressured {pct(route.interferedRate)}
+                    {" / "}selected profile {pct(route.interferedRate)}
                     {" · "}{route.cards.join(" + ")}
                   </span>
                 </div>
@@ -651,8 +659,8 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
         maximumTurn={report.assumptions.maximumTurn}
       />
       <CumulativeCurve
-        eyebrow={`${profile} interference`}
-        title="Cumulative credible-threat rate under response pressure"
+        eyebrow={`${profile} profile`}
+        title="Cumulative credible-threat rate under the selected profile"
         points={report.winSpeed.cumulativeInterferedThreatRate}
         maximumTurn={report.assumptions.maximumTurn}
       />
@@ -663,8 +671,8 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
         maximumTurn={report.assumptions.maximumTurn}
       />
       <CumulativeCurve
-        eyebrow={`${profile} development diagnostic · not an attempt`}
-        title="Cumulative generic milestone rate under response pressure"
+        eyebrow={`${profile} profile · development diagnostic · not an attempt`}
+        title="Cumulative generic milestone rate under the selected profile"
         points={report.winSpeed.cumulativeInterferedGenericConversionMilestoneRate}
         maximumTurn={report.assumptions.maximumTurn}
       />
@@ -675,8 +683,8 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
         maximumTurn={report.assumptions.maximumTurn}
       />
       <CumulativeCurve
-        eyebrow={`${profile} interference`}
-        title="Cumulative first-win-attempt rate under response pressure"
+        eyebrow={`${profile} profile`}
+        title="Cumulative first-win-attempt rate under the selected profile"
         points={report.winSpeed.cumulativeInterferedWinAttemptRate}
         maximumTurn={report.assumptions.maximumTurn}
       />
@@ -687,8 +695,8 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
         maximumTurn={report.assumptions.maximumTurn}
       />
       <CumulativeCurve
-        eyebrow={`${profile} interference`}
-        title="Cumulative resolved-table-win rate under response pressure"
+        eyebrow={`${profile} profile`}
+        title="Cumulative resolved-table-win rate under the selected profile"
         points={report.winSpeed.cumulativeInterferedResolvedTableWinRate}
         maximumTurn={report.assumptions.maximumTurn}
       />
@@ -712,6 +720,8 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
             ))}
           </div>
           <p className="model-definition">
+            These eight fixed counterfactual checkpoints are independent of the selected
+            {" "}aggregate profile ({profile}).{" "}
             {interactionScenarios[0].measurement.claimBoundary}
           </p>
         </section>
@@ -736,7 +746,7 @@ function WinSpeed({ report }: { report: AnalysisReport }) {
       )}
       <div className="explanation-card">
         <Info size={20} />
-        <div><h4>Three timing endpoints, not multiplayer win percentages</h4><p>A credible threat is an answer-demanding state. A first win attempt requires either a recognized reviewed table-lethal line or a rules-backed combat assignment that would eliminate every remaining opponent if its damage connects. A resolved table win is recorded only after the typed line resolves or the assigned combat damage actually connects and produces a terminal game state; structural labels and generic engine or combat milestones cannot populate either endpoint. The response-pressure variant applies the one standardized high-power scenario. Censored runs remain censored at the turn cap, and one endpoint is never substituted for another. These are local paired-model outcomes, not observed pod win rates or three fully simulated opponents.</p></div>
+        <div><h4>Three timing endpoints, not multiplayer win percentages</h4><p>A credible threat is an answer-demanding state. A first win attempt requires either a recognized reviewed table-lethal line or a rules-backed combat assignment that would eliminate every remaining opponent if its damage connects. A resolved table win is recorded only after the typed line resolves or the assigned combat damage actually connects and produces a terminal game state; structural labels and generic engine or combat milestones cannot populate either endpoint. The aggregate comparison uses the selected profile: {profile}. The eight isolated checkpoints are separate fixed counterfactual diagnostics. Censored runs remain censored at the turn cap, and one endpoint is never substituted for another. These are local paired-model outcomes, not observed pod win rates or three fully simulated opponents.</p></div>
       </div>
     </div>
   );
@@ -1217,8 +1227,12 @@ function Method({ report }: { report: AnalysisReport }) {
           <Detail label="Opening hands" value={report.assumptions.openingHandSimulations.toLocaleString()} />
           <Detail label="Paired games" value={report.assumptions.gameSimulations.toLocaleString()} />
           <Detail label="Analyzer policy" value="Fixed competitive · aggressive route search" />
-          <Detail label="Primary timing horizon" value={`Turns 1 to ${report.assumptions.maximumTurn}`} />
-          <Detail label="Table stress model" value="Standardized high-power interaction" />
+          <Detail label="Primary timing horizon" value={`Turns 1-${report.assumptions.maximumTurn}`} />
+          <Detail
+            label="Selected interaction profile"
+            value={interactionProfileLabel(report.assumptions.interactionProfile)}
+          />
+          <Detail label="Isolated scenario suite" value="Eight independent fixed checkpoints" />
           <Detail label="Player-declared intent" value="Not used for evaluation" />
           <Detail label="Online card resolution" value={report.assumptions.allowOnlineCardResolution ? "Enabled for missing names" : "Disabled · local only"} />
           <Detail
@@ -1405,7 +1419,7 @@ const distributionLabel = (distribution?: TurnDistribution | null) => {
 const distributionQuantileLabel = (distribution?: TurnDistribution | null) => {
   if (!distribution) return "";
   if (isFiniteNumber(distribution.p10) && isFiniteNumber(distribution.p90)) {
-    return ` · P10 to P90 ${distribution.p10.toFixed(1)} to ${distribution.p90.toFixed(1)}`;
+    return ` · P10-P90 ${distribution.p10.toFixed(1)}-${distribution.p90.toFixed(1)}`;
   }
   if (isFiniteNumber(distribution.p10)) {
     return ` · P10 T${distribution.p10.toFixed(1)} · P90 not reached by cap`;

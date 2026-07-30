@@ -15,7 +15,8 @@ that gap instead of presenting the result as fully supported.
 1. Paste a decklist, open a supported text file, or submit a supported public
    deck URL.
 2. Select the commander and review unresolved cards.
-3. Choose the analysis depth and run the local analysis.
+3. Choose the trial count, turn horizon, and interaction profile, then run the
+   local analysis.
 4. Review the estimate, assumptions, coverage, and supporting evidence.
 5. Export the report as Markdown when you want a shareable record.
 
@@ -26,7 +27,7 @@ that gap instead of presenting the result as fully supported.
 - Mana production, color access, and early development
 - Card roles, synergy resources, and known combo lines
 - Modeled threat, win-attempt, and resilience timing
-- Interaction pressure and recovery behavior
+- Selected interaction pressure and recovery behavior
 - Rules and execution coverage for the analyzed list
 - A bracket estimate with reasons and confidence limits
 

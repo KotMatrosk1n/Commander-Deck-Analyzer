@@ -287,9 +287,10 @@ fn compile_triggered_tutor(type_line: &str, sentences: &[&str]) -> Option<TutorR
 fn parse_search_instruction(value: &str) -> Option<TutorSearchTransaction> {
     let (requirement, body) = if let Some(body) = value.strip_prefix("search your library for ") {
         (SearchRequirement::Required, body)
-    } else {
-        let body = value.strip_prefix("you may search your library for ")?;
+    } else if let Some(body) = value.strip_prefix("you may search your library for ") {
         (SearchRequirement::Optional, body)
+    } else {
+        return None;
     };
 
     let (quantity, searched_card, suffix) =
@@ -311,13 +312,14 @@ fn parse_search_instruction(value: &str) -> Option<TutorSearchTransaction> {
                 SearchedCardPredicate::Enchantment,
                 suffix,
             )
-        } else {
-            let suffix = body.strip_prefix("a card")?;
+        } else if let Some(suffix) = body.strip_prefix("a card") {
             (
                 SearchQuantity::ExactlyOne,
                 SearchedCardPredicate::AnyCard,
                 suffix,
             )
+        } else {
+            return None;
         };
 
     let ordered_steps = match suffix {

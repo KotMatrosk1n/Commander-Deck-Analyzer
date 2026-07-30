@@ -71,6 +71,15 @@ const ALLOWED_PRODUCTION_SIMULATION_COUNTS: [u32; 3] = [1_000, 5_000, 10_000];
 const MINIMUM_PRODUCTION_TURN: u8 = 2;
 const MAXIMUM_PRODUCTION_TURN: u8 = 12;
 
+fn interaction_progress_label(profile: InteractionProfile) -> &'static str {
+    match profile {
+        InteractionProfile::None => "Simulate no-interaction paired control",
+        InteractionProfile::Light => "Apply mild interaction pressure",
+        InteractionProfile::Typical => "Apply moderate interaction pressure",
+        InteractionProfile::HighPower => "Apply cEDH interaction pressure",
+    }
+}
+
 pub async fn analyze(
     repository: CardRepository,
     combo_store: ComboStore,
@@ -93,11 +102,10 @@ pub async fn analyze(
     .await
 }
 
-/// The analyzer has one reproducible strategy policy. Strategy choices
-/// supplied by an older frontend or a handcrafted IPC request are deliberately
-/// ignored so the same deck cannot receive a different result from a
-/// different play-style preset. Workload controls remain explicit
-/// reproducibility inputs and are validated instead of being silently
+/// The analyzer has one reproducible pilot policy while preserving the
+/// caller's explicit interaction profile. Legacy mulligan, pilot, and declared
+/// intent knobs are ignored; workload and interaction controls remain explicit
+/// reproducibility inputs. Workloads are validated instead of being silently
 /// overwritten or clamped.
 ///
 /// Online card-resolution consent and an explicit reproducibility seed are
@@ -114,7 +122,11 @@ fn with_objective_production_policy(
             "Opening-hand and paired-game trial counts must match.".into(),
         ));
     }
-    if !ALLOWED_PRODUCTION_SIMULATION_COUNTS.contains(&opening_hand_simulations) {
+    #[cfg(not(test))]
+    let local_diagnostic_count_allowed = false;
+    if !ALLOWED_PRODUCTION_SIMULATION_COUNTS.contains(&opening_hand_simulations)
+        && !local_diagnostic_count_allowed
+    {
         return Err(AnalysisError::Validation(
             "Analysis trials must be exactly 1,000, 5,000, or 10,000.".into(),
         ));
@@ -126,6 +138,7 @@ fn with_objective_production_policy(
     }
 
     let allow_online_card_resolution = request.options.allow_online_card_resolution;
+    let interaction_profile = request.options.interaction_profile;
     let seed = request.options.seed;
     request.options = AnalysisOptions {
         opening_hand_simulations,
@@ -133,7 +146,7 @@ fn with_objective_production_policy(
         maximum_turn,
         mulligan_policy: MulliganPolicy::Aggressive,
         pilot_policy: PilotPolicy::Race,
-        interaction_profile: InteractionProfile::HighPower,
+        interaction_profile,
         // Declared intent is subjective and must not bias the rating. The
         // aggressive mulligan policy independently selects the competitive
         // search envelope in the simulator.
@@ -558,15 +571,12 @@ async fn analyze_internal(
     let game_cancel = cancellation.clone();
     let game_report = report.clone();
     let game_run_id = request.run_id.clone();
-    let mut win_speed = tokio::task::spawn_blocking(move || {
+    let (mut win_speed, early_execution_witnesses) = tokio::task::spawn_blocking(move || {
+        let interaction_label = interaction_progress_label(game_options.interaction_profile);
         let progress = |interference: bool, completed: u32, total: u32| {
             let ratio = completed as f32 / total.max(1) as f32;
             let (stage, label, base) = if interference {
-                (
-                    AnalysisStage::Interference,
-                    "Apply standardized high-power response pressure",
-                    0.72,
-                )
+                (AnalysisStage::Interference, interaction_label, 0.72)
             } else {
                 (AnalysisStage::Goldfish, "Simulate baseline plans", 0.50)
             };
@@ -589,12 +599,22 @@ async fn analyze_internal(
             &game_cancel,
             progress,
         )
+        .and_then(|report| {
+            crate::simulation::find_early_route_execution_witnesses(
+                &game_deck,
+                &game_mana,
+                &game_options,
+                &game_cancel,
+            )
+            .map(|witnesses| (report, witnesses))
+        })
     })
     .await
     .map_err(|error| AnalysisError::Worker(error.to_string()))??;
-    win_speed.early_turn_evaluation = Some(
-        crate::early_turn_evaluator::evaluate_early_turn_routes(&compiled, &mana_model),
-    );
+    let mut early_turn_evaluation =
+        crate::early_turn_evaluator::evaluate_early_turn_routes(&compiled, &mana_model);
+    early_turn_evaluation.execution_witnesses = early_execution_witnesses;
+    win_speed.early_turn_evaluation = Some(early_turn_evaluation);
 
     ensure_not_cancelled(&cancellation)?;
     crate::rules::apply_compiled_bracket_guidance(
