@@ -385,7 +385,7 @@ fn exact_land_type(type_line: &str) -> Option<ExactLandType> {
     if type_line.contains(" // ") {
         return None;
     }
-    let mut split = type_line.split('-');
+    let mut split = type_line.split('\u{2014}');
     let types = split.next()?.trim();
     let subtype_segment = split.next().map(str::trim);
     if split.next().is_some() || subtype_segment.is_some_and(str::is_empty) {

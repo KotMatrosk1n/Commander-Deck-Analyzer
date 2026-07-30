@@ -27,13 +27,13 @@ const SCRYFALL_DISPLAY_ALIAS_URL: &str = "https://api.scryfall.com/cards/search?
 const SCRYFALL_BULK_URL: &str = "https://api.scryfall.com/bulk-data/oracle-cards";
 const USER_AGENT_VALUE: &str = concat!("CommanderDeckAnalyzer/", env!("CARGO_PKG_VERSION"));
 const ACCEPT_VALUE: &str = "application/json;q=0.9,*/*;q=0.8";
-pub(crate) const CARD_DATA_SCHEMA_VERSION: &str = "7";
-pub(crate) const SCRYFALL_CARD_INGESTOR_VERSION: &str = "scryfall-oracle-cards-5";
+pub(crate) const CARD_DATA_SCHEMA_VERSION: &str = "8";
+pub(crate) const SCRYFALL_CARD_INGESTOR_VERSION: &str = "scryfall-oracle-cards-6";
 /// Reviewed against Scryfall's public `api-types` CardFields/CardFace contract
 /// at this upstream revision. Fields outside this versioned classification are
 /// retained and blocked by execution coverage instead of being discarded.
 pub(crate) const SCRYFALL_FIELD_CLASSIFICATION_VERSION: &str = "scryfall-card-fields/2026-07-28/api-types-c16cdfba9e09a0d3aef9ef0db6c36153a7529615+live-union/v3";
-pub(crate) const CARD_ALIAS_RESOLUTION_VERSION: &str = "scryfall-display-aliases-2";
+pub(crate) const CARD_ALIAS_RESOLUTION_VERSION: &str = "scryfall-display-aliases-3";
 const MINIMUM_FULL_SNAPSHOT_CARDS: u64 = 25_000;
 const MAXIMUM_BULK_METADATA_BYTES: usize = 1024 * 1024;
 const MAXIMUM_BULK_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
@@ -155,7 +155,7 @@ impl CardRepository {
         names: &[String],
     ) -> Result<HashMap<String, CardDefinition>, CardDataError> {
         let connection = self.open()?;
-        let mut statement = connection.prepare(
+        let mut exact_name_statement = connection.prepare(
             "SELECT name, normalized_name, oracle_id, mana_value, mana_cost, type_line,
                     oracle_text, layout, colors, color_indicator, color_identity, keywords,
                     produced_mana, power, toughness, loyalty, defense, faces_json,
@@ -163,10 +163,12 @@ impl CardRepository {
                     root_mana_value, hand_modifier, life_modifier, attraction_lights,
                     commander_legality, unreviewed_fields_json, source_schema_version,
                     game_changer
-             FROM cards WHERE normalized_name = ?1",
+             FROM cards
+             WHERE exact_name = ?1",
         )?;
-        let mut alias_statement = connection.prepare(
-            "SELECT cards.name, cards.normalized_name, cards.oracle_id, cards.mana_value,
+        let mut exact_alias_statement = connection.prepare(
+            "SELECT DISTINCT
+                    cards.name, cards.normalized_name, cards.oracle_id, cards.mana_value,
                     cards.mana_cost, cards.type_line, cards.oracle_text, cards.layout,
                     cards.colors, cards.color_indicator, cards.color_identity, cards.keywords,
                     cards.produced_mana, cards.power, cards.toughness, cards.loyalty,
@@ -177,24 +179,69 @@ impl CardRepository {
                     cards.unreviewed_fields_json, cards.source_schema_version,
                     cards.game_changer
              FROM card_aliases
-             JOIN cards ON cards.normalized_name = card_aliases.normalized_name
-             WHERE card_aliases.alias = ?1
-               AND (
-                    SELECT COUNT(DISTINCT candidate.normalized_name)
-                    FROM card_aliases AS candidate
-                    WHERE candidate.alias = ?1
-               ) = 1",
+             JOIN cards ON cards.card_id = card_aliases.card_id
+             WHERE card_aliases.exact_alias = ?1",
+        )?;
+        let mut normalized_name_statement = connection.prepare(
+            "SELECT name, normalized_name, oracle_id, mana_value, mana_cost, type_line,
+                    oracle_text, layout, colors, color_indicator, color_identity, keywords,
+                    produced_mana, power, toughness, loyalty, defense, faces_json,
+                    related_components_json, image_uri, legal_commander, updated_at,
+                    root_mana_value, hand_modifier, life_modifier, attraction_lights,
+                    commander_legality, unreviewed_fields_json, source_schema_version,
+                    game_changer
+             FROM cards
+             WHERE normalized_name = ?1
+               AND identity_disambiguated = 1",
+        )?;
+        let mut normalized_alias_statement = connection.prepare(
+            "SELECT DISTINCT
+                    cards.name, cards.normalized_name, cards.oracle_id, cards.mana_value,
+                    cards.mana_cost, cards.type_line, cards.oracle_text, cards.layout,
+                    cards.colors, cards.color_indicator, cards.color_identity, cards.keywords,
+                    cards.produced_mana, cards.power, cards.toughness, cards.loyalty,
+                    cards.defense, cards.faces_json, cards.related_components_json,
+                    cards.image_uri, cards.legal_commander, cards.updated_at,
+                    cards.root_mana_value, cards.hand_modifier, cards.life_modifier,
+                    cards.attraction_lights, cards.commander_legality,
+                    cards.unreviewed_fields_json, cards.source_schema_version,
+                    cards.game_changer
+             FROM card_aliases
+             JOIN cards ON cards.card_id = card_aliases.card_id
+             WHERE card_aliases.alias = ?1",
         )?;
         let mut cards = HashMap::new();
 
         for name in names {
             let normalized = normalize_card_name(name);
-            let card = statement
-                .query_row([&normalized], row_to_card)
-                .optional()?
-                .or(alias_statement
-                    .query_row([&normalized], row_to_card)
-                    .optional()?);
+            let exact = normalize_exact_card_name(name);
+            let card = match query_unique_card(&mut exact_name_statement, &exact)? {
+                UniqueCardQuery::Unique(card) => Some(*card),
+                UniqueCardQuery::Ambiguous => None,
+                UniqueCardQuery::Missing => {
+                    match query_unique_card(&mut exact_alias_statement, &exact)? {
+                        UniqueCardQuery::Unique(card) => Some(*card),
+                        UniqueCardQuery::Ambiguous => None,
+                        UniqueCardQuery::Missing => {
+                            match query_unique_card(&mut normalized_name_statement, &normalized)? {
+                                UniqueCardQuery::Unique(card) => Some(*card),
+                                UniqueCardQuery::Ambiguous => None,
+                                UniqueCardQuery::Missing => {
+                                    match query_unique_card(
+                                        &mut normalized_alias_statement,
+                                        &normalized,
+                                    )? {
+                                        UniqueCardQuery::Unique(card) => Some(*card),
+                                        UniqueCardQuery::Missing | UniqueCardQuery::Ambiguous => {
+                                            None
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
             if let Some(card) = card {
                 cards.insert(normalized, card);
             }
@@ -220,22 +267,29 @@ impl CardRepository {
         {
             let mut statement = transaction.prepare(UPSERT_CARD_SQL)?;
             let mut existing_card =
-                transaction.prepare("SELECT 1 FROM cards WHERE normalized_name = ?1")?;
+                transaction.prepare("SELECT 1 FROM cards WHERE card_id = ?1")?;
             let mut insert_alias = transaction.prepare(
-                "INSERT OR IGNORE INTO card_aliases(alias, normalized_name) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO card_aliases(
+                    exact_alias, alias, card_id, printing_id
+                 ) VALUES (?1, ?2, ?3, '')",
             )?;
             for (card, aliases) in records {
+                let card_id = card_storage_id(card);
                 let exists = existing_card
-                    .query_row([&card.normalized_name], |_| Ok(()))
+                    .query_row([&card_id], |_| Ok(()))
                     .optional()?
                     .is_some();
                 if replace_existing_cards || !exists {
                     insert_card(&mut statement, card)?;
                 }
                 for alias in aliases {
+                    let exact_alias = normalize_exact_card_name(alias);
                     let normalized_alias = normalize_card_name(alias);
-                    if !normalized_alias.is_empty() && normalized_alias != card.normalized_name {
-                        insert_alias.execute([&normalized_alias, &card.normalized_name])?;
+                    if !exact_alias.is_empty()
+                        && exact_alias != normalize_exact_card_name(&card.name)
+                        && !normalized_alias.is_empty()
+                    {
+                        insert_alias.execute(params![exact_alias, normalized_alias, card_id,])?;
                     }
                 }
             }
@@ -301,7 +355,19 @@ impl CardRepository {
                 };
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 let Some(raw) = fetch_scryfall_named_exact(&client, &name).await? else {
-                    chunk_unresolved.push(name);
+                    let Some(front_name) = alternate_multiface_front_name(&name) else {
+                        chunk_unresolved.push(name);
+                        continue;
+                    };
+                    let Some(raw) = fetch_scryfall_named_exact(&client, front_name).await? else {
+                        chunk_unresolved.push(name);
+                        continue;
+                    };
+                    let Some(record) = revalidate_scryfall_named_exact_response(&name, raw) else {
+                        chunk_unresolved.push(name);
+                        continue;
+                    };
+                    records.push(record);
                     continue;
                 };
                 let Some(record) = revalidate_scryfall_named_exact_response(&name, raw) else {
@@ -411,7 +477,9 @@ impl CardRepository {
         {
             let mut statement = transaction.prepare(UPSERT_CARD_SQL)?;
             let mut insert_alias = transaction.prepare(
-                "INSERT OR IGNORE INTO card_aliases(alias, normalized_name) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO card_aliases(
+                    exact_alias, alias, card_id, printing_id
+                 ) VALUES (?1, ?2, ?3, '')",
             )?;
             deserialize_card_snapshot(File::open(&download_path)?, payload_format, |raw| {
                 processed += 1;
@@ -419,11 +487,17 @@ impl CardRepository {
                     return Ok(());
                 };
                 insert_card(&mut statement, &card).map_err(|error| error.to_string())?;
+                let card_id = card_storage_id(&card);
+                let exact_name = normalize_exact_card_name(&card.name);
                 for alias in aliases {
+                    let exact_alias = normalize_exact_card_name(&alias);
                     let normalized_alias = normalize_card_name(&alias);
-                    if !normalized_alias.is_empty() && normalized_alias != card.normalized_name {
+                    if !exact_alias.is_empty()
+                        && exact_alias != exact_name
+                        && !normalized_alias.is_empty()
+                    {
                         insert_alias
-                            .execute([&normalized_alias, &card.normalized_name])
+                            .execute(params![exact_alias, normalized_alias, card_id,])
                             .map_err(|error| error.to_string())?;
                     }
                 }
@@ -710,7 +784,10 @@ fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
             value TEXT NOT NULL
          );
          CREATE TABLE IF NOT EXISTS cards (
-            normalized_name TEXT PRIMARY KEY NOT NULL,
+            card_id TEXT PRIMARY KEY NOT NULL,
+            exact_name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            identity_disambiguated INTEGER NOT NULL,
             name TEXT NOT NULL,
             oracle_id TEXT,
             mana_value REAL NOT NULL,
@@ -740,8 +817,7 @@ fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
             unreviewed_fields_json TEXT NOT NULL,
             source_schema_version TEXT NOT NULL,
             game_changer INTEGER
-         );
-         CREATE INDEX IF NOT EXISTS cards_oracle_id ON cards(oracle_id);",
+         );",
     )?;
     for (column, migration) in [
         (
@@ -809,31 +885,29 @@ fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
             connection.execute(migration, [])?;
         }
     }
+    if !card_schema_is_current(connection)? {
+        migrate_card_identity_schema(connection)?;
+    }
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS card_aliases (
+            exact_alias TEXT NOT NULL,
             alias TEXT NOT NULL,
-            normalized_name TEXT NOT NULL,
-            PRIMARY KEY(alias, normalized_name),
-            FOREIGN KEY(normalized_name) REFERENCES cards(normalized_name) ON DELETE CASCADE
+            card_id TEXT NOT NULL,
+            printing_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(exact_alias, card_id, printing_id),
+            FOREIGN KEY(card_id) REFERENCES cards(card_id) ON DELETE CASCADE
          );",
     )?;
     if !card_alias_schema_is_current(connection)? {
-        connection.execute_batch(
-            "ALTER TABLE card_aliases RENAME TO card_aliases_legacy;
-             CREATE TABLE card_aliases (
-                alias TEXT NOT NULL,
-                normalized_name TEXT NOT NULL,
-                PRIMARY KEY(alias, normalized_name),
-                FOREIGN KEY(normalized_name) REFERENCES cards(normalized_name) ON DELETE CASCADE
-             );
-             INSERT OR IGNORE INTO card_aliases(alias, normalized_name)
-             SELECT alias, normalized_name FROM card_aliases_legacy;
-             DROP TABLE card_aliases_legacy;",
-        )?;
+        migrate_card_alias_schema(connection)?;
     }
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS card_aliases_card ON card_aliases(normalized_name)",
-        [],
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS cards_oracle_id ON cards(oracle_id);
+         CREATE INDEX IF NOT EXISTS cards_exact_name ON cards(exact_name);
+         CREATE INDEX IF NOT EXISTS cards_normalized_name ON cards(normalized_name);
+         CREATE INDEX IF NOT EXISTS card_aliases_exact ON card_aliases(exact_alias);
+         CREATE INDEX IF NOT EXISTS card_aliases_normalized ON card_aliases(alias);
+         CREATE INDEX IF NOT EXISTS card_aliases_card ON card_aliases(card_id);",
     )?;
     // Older snapshots keyed every Scryfall Oracle object by normalized name.
     // A same-named token could therefore overwrite the physical card (Storm
@@ -856,6 +930,167 @@ fn initialize_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+fn migrate_card_identity_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let aliases_exist = table_exists(connection, "card_aliases")?;
+    connection.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")?;
+    let migration = (|| {
+        if aliases_exist {
+            connection.execute("ALTER TABLE card_aliases RENAME TO card_aliases_legacy", [])?;
+        }
+        connection.execute_batch(
+            "ALTER TABLE cards RENAME TO cards_legacy;
+             CREATE TABLE cards (
+                card_id TEXT PRIMARY KEY NOT NULL,
+                exact_name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                identity_disambiguated INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                oracle_id TEXT,
+                mana_value REAL NOT NULL,
+                mana_cost TEXT,
+                type_line TEXT NOT NULL,
+                oracle_text TEXT NOT NULL,
+                layout TEXT NOT NULL,
+                colors TEXT NOT NULL,
+                color_indicator TEXT NOT NULL,
+                color_identity TEXT NOT NULL,
+                keywords TEXT NOT NULL,
+                produced_mana TEXT NOT NULL,
+                power TEXT,
+                toughness TEXT,
+                loyalty TEXT,
+                defense TEXT,
+                faces_json TEXT NOT NULL,
+                related_components_json TEXT NOT NULL,
+                image_uri TEXT,
+                legal_commander INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                root_mana_value REAL,
+                hand_modifier TEXT,
+                life_modifier TEXT,
+                attraction_lights TEXT NOT NULL,
+                commander_legality TEXT,
+                unreviewed_fields_json TEXT NOT NULL,
+                source_schema_version TEXT NOT NULL,
+                game_changer INTEGER
+             );
+             INSERT OR REPLACE INTO cards (
+                card_id, exact_name, normalized_name, identity_disambiguated,
+                name, oracle_id, mana_value, mana_cost, type_line, oracle_text,
+                layout, colors, color_indicator, color_identity, keywords,
+                produced_mana, power, toughness, loyalty, defense, faces_json,
+                related_components_json, image_uri, legal_commander, updated_at,
+                root_mana_value, hand_modifier, life_modifier, attraction_lights,
+                commander_legality, unreviewed_fields_json, source_schema_version,
+                game_changer
+             )
+             SELECT
+                CASE
+                    WHEN oracle_id IS NOT NULL AND trim(oracle_id) <> ''
+                        THEN 'oracle:' || lower(trim(oracle_id))
+                    ELSE 'legacy:' || normalized_name
+                END,
+                lower(trim(name)),
+                normalized_name,
+                0,
+                name,
+                oracle_id,
+                mana_value,
+                mana_cost,
+                type_line,
+                oracle_text,
+                layout,
+                colors,
+                color_indicator,
+                color_identity,
+                keywords,
+                produced_mana,
+                power,
+                toughness,
+                loyalty,
+                defense,
+                faces_json,
+                related_components_json,
+                image_uri,
+                legal_commander,
+                updated_at,
+                root_mana_value,
+                hand_modifier,
+                life_modifier,
+                attraction_lights,
+                commander_legality,
+                unreviewed_fields_json,
+                source_schema_version,
+                game_changer
+             FROM cards_legacy;
+             CREATE TABLE card_aliases (
+                exact_alias TEXT NOT NULL,
+                alias TEXT NOT NULL,
+                card_id TEXT NOT NULL,
+                printing_id TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(exact_alias, card_id, printing_id),
+                FOREIGN KEY(card_id) REFERENCES cards(card_id) ON DELETE CASCADE
+             );",
+        )?;
+        if aliases_exist {
+            connection.execute_batch(
+                "INSERT OR IGNORE INTO card_aliases(
+                    exact_alias, alias, card_id, printing_id
+                 )
+                 SELECT
+                    legacy_alias.alias,
+                    legacy_alias.alias,
+                    CASE
+                        WHEN legacy_card.oracle_id IS NOT NULL
+                             AND trim(legacy_card.oracle_id) <> ''
+                            THEN 'oracle:' || lower(trim(legacy_card.oracle_id))
+                        ELSE 'legacy:' || legacy_card.normalized_name
+                    END,
+                    ''
+                 FROM card_aliases_legacy AS legacy_alias
+                 JOIN cards_legacy AS legacy_card
+                   ON legacy_card.normalized_name = legacy_alias.normalized_name;
+                 DROP TABLE card_aliases_legacy;",
+            )?;
+        }
+        connection.execute_batch("DROP TABLE cards_legacy; COMMIT;")?;
+        Ok(())
+    })();
+    if migration.is_err() {
+        let _ = connection.execute_batch("ROLLBACK;");
+    }
+    connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+    migration
+}
+
+fn migrate_card_alias_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    connection.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         BEGIN IMMEDIATE;
+         ALTER TABLE card_aliases RENAME TO card_aliases_legacy;
+         CREATE TABLE card_aliases (
+            exact_alias TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            card_id TEXT NOT NULL,
+            printing_id TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(exact_alias, card_id, printing_id),
+            FOREIGN KEY(card_id) REFERENCES cards(card_id) ON DELETE CASCADE
+         );
+         INSERT OR IGNORE INTO card_aliases(exact_alias, alias, card_id, printing_id)
+         SELECT legacy.alias, legacy.alias, cards.card_id, ''
+         FROM card_aliases_legacy AS legacy
+         JOIN cards ON cards.normalized_name = legacy.normalized_name
+         WHERE (
+            SELECT COUNT(*)
+            FROM cards AS candidate
+            WHERE candidate.normalized_name = legacy.normalized_name
+         ) = 1;
+         DROP TABLE card_aliases_legacy;
+         COMMIT;
+         PRAGMA foreign_keys = ON;",
+    )
+}
+
 fn column_exists(
     connection: &Connection,
     table: &str,
@@ -876,6 +1111,40 @@ fn column_exists(
     Ok(false)
 }
 
+fn table_exists(connection: &Connection, table: &str) -> Result<bool, rusqlite::Error> {
+    if !matches!(table, "cards" | "card_aliases") {
+        return Ok(false);
+    }
+    connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?1
+         )",
+        [table],
+        |row| row.get(0),
+    )
+}
+
+fn card_schema_is_current(connection: &Connection) -> Result<bool, rusqlite::Error> {
+    let mut statement = connection.prepare("PRAGMA table_info(cards)")?;
+    let columns = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+    })?;
+    let columns = columns.collect::<Result<Vec<_>, _>>()?;
+    let primary_key = columns
+        .iter()
+        .filter(|(_, position)| *position > 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(primary_key == [("card_id".to_string(), 1)]
+        && columns.iter().any(|(name, _)| name == "exact_name")
+        && columns.iter().any(|(name, _)| name == "normalized_name")
+        && columns
+            .iter()
+            .any(|(name, _)| name == "identity_disambiguated"))
+}
+
 fn card_alias_schema_is_current(connection: &Connection) -> Result<bool, rusqlite::Error> {
     let mut statement = connection.prepare("PRAGMA table_info(card_aliases)")?;
     let columns = statement.query_map([], |row| {
@@ -886,7 +1155,12 @@ fn card_alias_schema_is_current(connection: &Connection) -> Result<bool, rusqlit
         .into_iter()
         .filter(|(_, position)| *position > 0)
         .collect::<Vec<_>>();
-    Ok(primary_key == [("alias".to_string(), 1), ("normalized_name".to_string(), 2)])
+    Ok(primary_key
+        == [
+            ("exact_alias".to_string(), 1),
+            ("card_id".to_string(), 2),
+            ("printing_id".to_string(), 3),
+        ])
 }
 
 fn seed_basic_lands(connection: &Connection) -> Result<(), rusqlite::Error> {
@@ -912,7 +1186,7 @@ fn seed_basic_lands(connection: &Connection) -> Result<(), rusqlite::Error> {
             root_mana_value: None,
             mana_value: 0.0,
             mana_cost: None,
-            type_line: format!("Basic Land - {subtype}"),
+            type_line: format!("Basic Land \u{2014} {subtype}"),
             oracle_text: format!("{{T}}: Add {symbol}."),
             colors: Vec::new(),
             color_indicator: Vec::new(),
@@ -937,7 +1211,7 @@ fn seed_basic_lands(connection: &Connection) -> Result<(), rusqlite::Error> {
             commander_legality: None,
             legal_commander: true,
             unreviewed_fields: BTreeMap::new(),
-            // Bundled compatibility records predate a complete upstream
+            // Bundled compatibility fixtures predate a complete upstream
             // field capture and therefore remain strict-gate blockers.
             source_schema_version: String::new(),
             updated_at: now.clone(),
@@ -949,18 +1223,22 @@ fn seed_basic_lands(connection: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 const UPSERT_CARD_SQL: &str = "INSERT INTO cards (
-        normalized_name, name, oracle_id, mana_value, mana_cost, type_line, oracle_text,
-        layout, colors, color_indicator, color_identity, keywords, produced_mana, power,
-        toughness, loyalty, defense, faces_json, related_components_json, image_uri,
-        legal_commander, updated_at, root_mana_value, hand_modifier,
-        life_modifier, attraction_lights, commander_legality, unreviewed_fields_json,
-        source_schema_version, game_changer
+        card_id, exact_name, normalized_name, identity_disambiguated, name,
+        oracle_id, mana_value, mana_cost, type_line, oracle_text, layout, colors,
+        color_indicator, color_identity, keywords, produced_mana, power,
+        toughness, loyalty, defense, faces_json, related_components_json,
+        image_uri, legal_commander, updated_at, root_mana_value, hand_modifier,
+        life_modifier, attraction_lights, commander_legality,
+        unreviewed_fields_json, source_schema_version, game_changer
      ) VALUES (
         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
         ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
-        ?29, ?30
+        ?29, ?30, ?31, ?32, ?33
      )
-     ON CONFLICT(normalized_name) DO UPDATE SET
+     ON CONFLICT(card_id) DO UPDATE SET
+        exact_name = excluded.exact_name,
+        normalized_name = excluded.normalized_name,
+        identity_disambiguated = excluded.identity_disambiguated,
         name = excluded.name,
         oracle_id = excluded.oracle_id,
         mana_value = excluded.mana_value,
@@ -995,6 +1273,8 @@ fn insert_card(
     statement: &mut rusqlite::Statement<'_>,
     card: &CardDefinition,
 ) -> Result<(), rusqlite::Error> {
+    let card_id = card_storage_id(card);
+    let exact_name = normalize_exact_card_name(&card.name);
     let colors = serialize_json(&card.colors)?;
     let color_indicator = serialize_json(&card.color_indicator)?;
     let color_identity = serialize_json(&card.color_identity)?;
@@ -1005,7 +1285,10 @@ fn insert_card(
     let attraction_lights = serialize_json(&card.attraction_lights)?;
     let unreviewed_fields = serialize_json(&card.unreviewed_fields)?;
     statement.execute(params![
+        card_id,
+        exact_name,
         card.normalized_name,
+        1,
         card.name,
         card.oracle_id,
         card.mana_value,
@@ -1037,6 +1320,80 @@ fn insert_card(
         card.game_changer.map(i64::from),
     ])?;
     Ok(())
+}
+
+fn card_storage_id(card: &CardDefinition) -> String {
+    if let Some(oracle_id) = card
+        .oracle_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|oracle_id| !oracle_id.is_empty())
+    {
+        return format!("oracle:{}", oracle_id.to_ascii_lowercase());
+    }
+
+    let face_oracle_ids = card
+        .faces
+        .iter()
+        .filter_map(|face| face.oracle_id.as_deref())
+        .map(str::trim)
+        .filter(|oracle_id| !oracle_id.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    if !face_oracle_ids.is_empty() {
+        return format!(
+            "face-oracles:{}:{}",
+            card.layout.trim().to_ascii_lowercase(),
+            face_oracle_ids.join(":")
+        );
+    }
+
+    let fallback = serde_json::to_vec(&(
+        normalize_exact_card_name(&card.name),
+        card.layout.trim().to_ascii_lowercase(),
+        card.type_line.trim(),
+        card.oracle_text.as_str(),
+    ))
+    .expect("card storage identity material is serializable");
+    format!("legacy:{}", sha256_hex(&fallback))
+}
+
+fn normalize_exact_card_name(name: &str) -> String {
+    let mut normalized = String::new();
+    let mut pending_space = false;
+    for character in name.trim().chars().flat_map(char::to_lowercase) {
+        if character.is_whitespace() {
+            pending_space = !normalized.is_empty();
+        } else {
+            if pending_space {
+                normalized.push(' ');
+                pending_space = false;
+            }
+            normalized.push(character);
+        }
+    }
+    normalized
+}
+
+enum UniqueCardQuery {
+    Missing,
+    Unique(Box<CardDefinition>),
+    Ambiguous,
+}
+
+fn query_unique_card(
+    statement: &mut rusqlite::Statement<'_>,
+    lookup_key: &str,
+) -> Result<UniqueCardQuery, rusqlite::Error> {
+    let mut rows = statement.query([lookup_key])?;
+    let Some(first) = rows.next()? else {
+        return Ok(UniqueCardQuery::Missing);
+    };
+    let card = row_to_card(first)?;
+    if rows.next()?.is_some() {
+        return Ok(UniqueCardQuery::Ambiguous);
+    }
+    Ok(UniqueCardQuery::Unique(Box::new(card)))
 }
 
 fn row_to_card(row: &rusqlite::Row<'_>) -> Result<CardDefinition, rusqlite::Error> {
@@ -1371,8 +1728,12 @@ fn install_display_alias_catalog(
     catalog: &DisplayAliasCatalog,
 ) -> Result<(u64, u64, u64), CardDataError> {
     let targets_by_oracle = deck_card_targets_by_oracle_identity(transaction)?;
-    let mut insert_alias = transaction
-        .prepare("INSERT OR IGNORE INTO card_aliases(alias, normalized_name) VALUES (?1, ?2)")?;
+    let exact_names_by_card_id = deck_card_exact_names_by_id(transaction)?;
+    let mut insert_alias = transaction.prepare(
+        "INSERT OR IGNORE INTO card_aliases(
+            exact_alias, alias, card_id, printing_id
+         ) VALUES (?1, ?2, ?3, ?4)",
+    )?;
     let mut excluded_non_deck = 0u64;
     let mut unresolved_identity_count = 0u64;
 
@@ -1381,7 +1742,7 @@ fn install_display_alias_catalog(
             excluded_non_deck += 1;
             continue;
         }
-        let canonical = normalize_card_name(&record.canonical_name);
+        let canonical = normalize_exact_card_name(&record.canonical_name);
         let mut targets = BTreeSet::new();
         let mut missing_identity = record.oracle_ids.is_empty();
         for oracle_id in &record.oracle_ids {
@@ -1393,7 +1754,11 @@ fn install_display_alias_catalog(
                 targets.insert(target.clone());
             }
         }
-        if missing_identity || targets.len() != 1 || !targets.contains(&canonical) {
+        let target = targets.iter().next();
+        if missing_identity
+            || targets.len() != 1
+            || target.and_then(|target| exact_names_by_card_id.get(target)) != Some(&canonical)
+        {
             unresolved_identity_count = unresolved_identity_count.saturating_add(1);
             continue;
         }
@@ -1402,9 +1767,15 @@ fn install_display_alias_catalog(
             .next()
             .expect("one alias catalog target was established");
         for alias in &record.aliases {
+            let exact_alias = normalize_exact_card_name(alias);
             let normalized_alias = normalize_card_name(alias);
-            if !normalized_alias.is_empty() && normalized_alias != target {
-                insert_alias.execute([&normalized_alias, &target])?;
+            if !exact_alias.is_empty() && exact_alias != canonical && !normalized_alias.is_empty() {
+                insert_alias.execute(params![
+                    exact_alias,
+                    normalized_alias,
+                    target,
+                    record.printing_id,
+                ])?;
             }
         }
     }
@@ -1419,14 +1790,14 @@ fn deck_card_targets_by_oracle_identity(
     transaction: &rusqlite::Transaction<'_>,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, CardDataError> {
     let mut statement = transaction.prepare(
-        "SELECT normalized_name, oracle_id, faces_json
+        "SELECT card_id, oracle_id, faces_json
          FROM cards
-         ORDER BY normalized_name",
+         ORDER BY card_id",
     )?;
     let mut rows = statement.query([])?;
     let mut targets = BTreeMap::<String, BTreeSet<String>>::new();
     while let Some(row) = rows.next()? {
-        let normalized_name: String = row.get(0)?;
+        let card_id: String = row.get(0)?;
         let root_oracle_id: Option<String> = row.get(1)?;
         let faces_json: String = row.get(2)?;
         let faces = serde_json::from_str::<Vec<CardFaceDefinition>>(&faces_json)?;
@@ -1439,10 +1810,19 @@ fn deck_card_targets_by_oracle_identity(
             targets
                 .entry(oracle_id.to_string())
                 .or_default()
-                .insert(normalized_name.clone());
+                .insert(card_id.clone());
         }
     }
     Ok(targets)
+}
+
+fn deck_card_exact_names_by_id(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<BTreeMap<String, String>, CardDataError> {
+    let mut statement =
+        transaction.prepare("SELECT card_id, exact_name FROM cards ORDER BY card_id")?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(rows.collect::<Result<_, _>>()?)
 }
 
 async fn read_bounded_json_response<T: DeserializeOwned>(
@@ -1938,8 +2318,8 @@ fn deduplicate_aliases(aliases: Vec<String>) -> Vec<String> {
     aliases
         .into_iter()
         .filter(|alias| {
-            let normalized = normalize_card_name(alias);
-            !normalized.is_empty() && seen.insert(normalized)
+            let exact = normalize_exact_card_name(alias);
+            !exact.is_empty() && seen.insert(exact)
         })
         .collect()
 }
@@ -1953,17 +2333,46 @@ fn revalidate_scryfall_named_exact_response(
     raw: ScryfallCard,
 ) -> Option<(CardDefinition, Vec<String>)> {
     let (card, mut aliases) = deck_card_with_face_aliases(raw)?;
-    let requested = normalize_card_name(requested_name);
+    let requested = normalize_exact_card_name(requested_name);
     let returned_name_matches = !requested.is_empty()
-        && (card.normalized_name == requested
+        && (normalize_exact_card_name(&card.name) == requested
             || aliases
                 .iter()
-                .any(|alias| normalize_card_name(alias) == requested));
+                .any(|alias| normalize_exact_card_name(alias) == requested)
+            || multiface_names_are_equivalent(requested_name, &card.name));
     if !returned_name_matches {
         return None;
     }
     aliases.push(requested_name.to_string());
     Some((card, deduplicate_aliases(aliases)))
+}
+
+fn alternate_multiface_front_name(name: &str) -> Option<&str> {
+    let components = multiface_name_components(name)?;
+    let separator = name.find('/')?;
+    let front = name[..separator].trim();
+    (!front.is_empty() && components.len() == 2).then_some(front)
+}
+
+fn multiface_names_are_equivalent(left: &str, right: &str) -> bool {
+    let Some(left) = multiface_name_components(left) else {
+        return false;
+    };
+    let Some(right) = multiface_name_components(right) else {
+        return false;
+    };
+    left == right
+}
+
+fn multiface_name_components(name: &str) -> Option<Vec<String>> {
+    let components = name
+        .split('/')
+        .map(str::trim)
+        .filter(|component| !component.is_empty())
+        .map(normalize_exact_card_name)
+        .collect::<Vec<_>>();
+    (components.len() == 2 && components.iter().all(|component| !component.is_empty()))
+        .then_some(components)
 }
 
 fn is_deck_card_identity(layout: &str, type_line: &str) -> bool {

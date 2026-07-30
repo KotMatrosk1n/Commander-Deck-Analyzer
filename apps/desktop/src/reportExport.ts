@@ -1,4 +1,5 @@
 import { assertCurrentReportTimingSemantics } from "./reportCompatibility";
+import { interactionProfileLabel } from "./interactionProfiles";
 import type { AnalysisReport } from "./types";
 
 export function hasStrictFunctionalRating(report: AnalysisReport): boolean {
@@ -27,6 +28,9 @@ export function formatReportMarkdown(report: AnalysisReport): string {
   const baselineResolved = report.winSpeed.baselineResolvedTableWin!;
   const interferedResolved = report.winSpeed.interferedResolvedTableWin!;
   const pairedResolvedDelay = report.winSpeed.pairedResolvedTableWinDelay!;
+  const selectedInteractionProfile = interactionProfileLabel(
+    report.assumptions.interactionProfile,
+  );
   const bracket = report.recommendation;
   const strictRatingAvailable = hasStrictFunctionalRating(report);
   const policyFloor = report.policy.policyFloor
@@ -217,7 +221,7 @@ No execution-coverage manifest was attached to this report.
         .sort((left, right) => right.rate - left.rate || left.turn - right.turn)
         .slice(0, 12)
         .map((blocker) =>
-          `| T${blocker.turn} | ${words(blocker.reason)} | ${singleLine(blocker.routeName ?? "No recognized route")} | ${singleLine(blocker.blockedCard ?? "Not recorded")} | ${pct(blocker.rate)} |`,
+          `| T${blocker.turn} | ${words(blocker.reason)} | ${singleLine(blocker.routeName ?? "No recognized route")} | ${singleLine(blocker.blockedCard ?? "Not available")} | ${pct(blocker.rate)} |`,
         )
         .join("\n")
     : "| Not available | Not recorded | Not available | Not available | Not available |";
@@ -245,12 +249,18 @@ ${blockerRows}
         .map((route) => {
           const turnOne = route.turns.find((entry) => entry.turn === 1);
           const turnTwo = route.turns.find((entry) => entry.turn === 2);
-          return `| ${singleLine(route.routeName)} | ${pct(turnOne?.directSkeletonProbability ?? 0)} | ${pct(turnOne?.typedTutorSkeletonProbability ?? 0)} | ${pct(turnTwo?.directSkeletonProbability ?? 0)} | ${pct(turnTwo?.typedTutorSkeletonProbability ?? 0)} | ${pct(route.aggressiveMulligan.directSkeletonInAtLeastOneCandidate)} | ${words(route.modelingCeiling)} |`;
+          const witness = earlyEvaluation.executionWitnesses.find(
+            (entry) => entry.routeId === route.routeId,
+          );
+          const witnessLabel = witness
+            ? `T${witness.turn} ${witness.resolvedTableWin ? "resolved table win" : "recognized attempt"}`
+            : "Not found in bounded search";
+          return `| ${singleLine(route.routeName)} | ${witnessLabel} | ${pct(turnOne?.directSkeletonProbability ?? 0)} | ${pct(turnOne?.typedTutorSkeletonProbability ?? 0)} | ${pct(turnTwo?.directSkeletonProbability ?? 0)} | ${pct(turnTwo?.typedTutorSkeletonProbability ?? 0)} | ${pct(route.aggressiveMulligan.directSkeletonInAtLeastOneCandidate)} | ${words(route.modelingCeiling)} |`;
         })
         .join("\n")
     : omittedConversionRoutes > 0
-      ? `| No eligible table-win route; ${omittedConversionRoutes} recognized route${omittedConversionRoutes === 1 ? "" : "s"} require${omittedConversionRoutes === 1 ? "s" : ""} conversion | Not available | Not available | Not available | Not available | Not available | Not available |`
-      : "| No eligible explicit table-win route | Not available | Not available | Not available | Not available | Not available | Not available |";
+      ? `| No eligible table-win route; ${omittedConversionRoutes} recognized route${omittedConversionRoutes === 1 ? "" : "s"} require${omittedConversionRoutes === 1 ? "s" : ""} conversion | Not available | Not available | Not available | Not available | Not available | Not available | Not available |`
+      : "| No eligible explicit table-win route | Not available | Not available | Not available | Not available | Not available | Not available | Not available |";
   const earlyRouteCounts = earlyEvaluation
     ? `Eligible explicit table-win routes: **${earlyEvaluation.eligibleTableWinRouteCount}**. Recognized routes requiring a table-lethal conversion: **${omittedConversionRoutes}**.`
     : "Early-route evaluation was not recorded.";
@@ -262,14 +272,15 @@ Tutor payment, colored mana, ordered sequencing, priority, protection, and oppon
 
 ${earlyRouteCounts}
 
-| Explicit route | T1 direct | T1 with typed tutor access | T2 direct | T2 with typed tutor access | Direct in independent candidate envelope | Modeling ceiling |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Explicit route | Legal trajectory witness | T1 direct | T1 with typed tutor access | T2 direct | T2 with typed tutor access | Direct in independent candidate envelope | Modeling ceiling |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 ${earlyRouteRows}
 `;
-  const ratingHeader = `**${strictRatingAvailable ? "Model" : "Exploratory model"} bracket estimate:** ${bracket.likelyBracket}<br>
-**Uncalibrated model range:** ${bracket.rangeLow} to ${bracket.rangeHigh}<br>
-**Model coverage:** ${capitalize(bracket.confidence)}<br>
-**Strict functional rating:** ${strictRatingAvailable ? "Available" : "Unavailable"}`;
+  const markdownHardBreak = "  ";
+  const ratingHeader = `**${strictRatingAvailable ? "Model" : "Exploratory model"} bracket estimate:** ${bracket.likelyBracket}${markdownHardBreak}
+**Uncalibrated model range:** ${bracket.rangeLow}-${bracket.rangeHigh}${markdownHardBreak}
+**Model coverage:** ${capitalize(bracket.confidence)}${markdownHardBreak}
+**Strict functional rating:** ${strictRatingAvailable ? "Available" : "Unavailable"}${markdownHardBreak}`;
   const ratingSummary = strictRatingAvailable
     ? bracket.summary
     : `${bracket.summary}
@@ -288,14 +299,14 @@ ${probabilityRows}`;
 
   return `# Commander Deck Analyzer report
 
-**Commander:** ${report.deck.commanders.join(" + ") || "Not specified"}<br>
-**Cards:** ${report.deck.cardCount} (${report.deck.uniqueCardCount} unique)<br>
+**Commander:** ${report.deck.commanders.join(" + ") || "Not specified"}${markdownHardBreak}
+**Cards:** ${report.deck.cardCount} (${report.deck.uniqueCardCount} unique)${markdownHardBreak}
 ${ratingHeader}
-**Calibration status:** ${words(bracket.calibrationStatus)}<br>
-**Timing fidelity:** ${words(report.winSpeed.fidelity)}<br>
-**Timing endpoint contract:** \`${report.winSpeed.timingEndpointVersion}\`<br>
-**Functional mulligan fidelity:** ${words(report.openingHands.policyFidelity)}<br>
-**Legality:** ${capitalize(report.policy.legality)}<br>
+**Calibration status:** ${words(bracket.calibrationStatus)}${markdownHardBreak}
+**Timing fidelity:** ${words(report.winSpeed.fidelity)}${markdownHardBreak}
+**Timing endpoint contract:** \`${report.winSpeed.timingEndpointVersion}\`${markdownHardBreak}
+**Functional mulligan fidelity:** ${words(report.openingHands.policyFidelity)}${markdownHardBreak}
+**Legality:** ${capitalize(report.policy.legality)}${markdownHardBreak}
 **Policy floor:** ${policyFloor}
 
 ${ratingSummary}
@@ -344,15 +355,15 @@ ${coreMetricsHeading}
 | Baseline threat population P10 | ${turn(report.winSpeed.baseline.p10)} |
 | Population median baseline threat | ${turn(report.winSpeed.baseline.median)} |
 | Baseline threat population P90 | ${turn(report.winSpeed.baseline.p90)} |
-| Interfered threat population P10 | ${turn(report.winSpeed.interfered.p10)} |
-| Population median threat with interference | ${turn(report.winSpeed.interfered.median)} |
-| Interfered threat population P90 | ${turn(report.winSpeed.interfered.p90)} |
+| ${selectedInteractionProfile} threat population P10 | ${turn(report.winSpeed.interfered.p10)} |
+| ${selectedInteractionProfile} threat population median | ${turn(report.winSpeed.interfered.median)} |
+| ${selectedInteractionProfile} threat population P90 | ${turn(report.winSpeed.interfered.p90)} |
 | Baseline first-win-attempt population P10 | ${turn(report.winSpeed.baselineWinAttempt.p10)} |
 | Population median baseline first win attempt | ${turn(report.winSpeed.baselineWinAttempt.median)} |
 | Baseline first-win-attempt population P90 | ${turn(report.winSpeed.baselineWinAttempt.p90)} |
-| Interfered first-win-attempt population P10 | ${turn(report.winSpeed.interferedWinAttempt.p10)} |
-| Population median first win attempt with interference | ${turn(report.winSpeed.interferedWinAttempt.median)} |
-| Interfered first-win-attempt population P90 | ${turn(report.winSpeed.interferedWinAttempt.p90)} |
+| ${selectedInteractionProfile} first-win-attempt population P10 | ${turn(report.winSpeed.interferedWinAttempt.p10)} |
+| ${selectedInteractionProfile} first-win-attempt population median | ${turn(report.winSpeed.interferedWinAttempt.median)} |
+| ${selectedInteractionProfile} first-win-attempt population P90 | ${turn(report.winSpeed.interferedWinAttempt.p90)} |
 | Baseline first win attempt demonstrated by turn cap | ${pct(report.winSpeed.baselineWinAttempt.demonstratedRate)} |
 | Successful-run-only baseline first-attempt median | ${conditionalTurn(report.winSpeed.baselineWinAttempt.conditionalMedian)} |
 | Baseline generic engine/combat milestone | ${turn(report.winSpeed.baselineGenericConversionMilestone?.median)} |
@@ -363,9 +374,9 @@ ${coreMetricsHeading}
 | Baseline resolved-table-win population P10 | ${turn(baselineResolved.p10)} |
 | Population median baseline resolved table win | ${turn(baselineResolved.median)} |
 | Baseline resolved-table-win population P90 | ${turn(baselineResolved.p90)} |
-| Interfered resolved-table-win population P10 | ${turn(interferedResolved.p10)} |
-| Population median resolved table win with interference | ${turn(interferedResolved.median)} |
-| Interfered resolved-table-win population P90 | ${turn(interferedResolved.p90)} |
+| ${selectedInteractionProfile} resolved-table-win population P10 | ${turn(interferedResolved.p10)} |
+| ${selectedInteractionProfile} resolved-table-win population median | ${turn(interferedResolved.median)} |
+| ${selectedInteractionProfile} resolved-table-win population P90 | ${turn(interferedResolved.p90)} |
 | Baseline resolved table win demonstrated by turn cap | ${pct(baselineResolved.demonstratedRate)} |
 | Successful-run-only baseline resolved-win median | ${conditionalTurn(baselineResolved.conditionalMedian)} |
 | Recovery after a stopped attempt | ${recovery} |
@@ -375,7 +386,7 @@ ${coreMetricsHeading}
 | Baseline resolved wins prevented through turn cap | ${pairedResolvedDelay.preventedByTurnCap} |
 
 The primary-plan value is a conservative deck-role opening proxy, not a claim that a complete line is executable. The speed evidence basis identifies which deck-specific signal supplied the overview score. Proactive development is the earlier per-episode explicit attempt or generic milestone and is not itself a win attempt or probability; structural pace is a capped list-observable fallback, not a timing claim.
-A credible threat is an answer-demanding state. A first win attempt requires either a recognized reviewed table-lethal line or a rules-backed combat assignment that would eliminate every remaining opponent if its damage connects. A generic engine/combat milestone is a separate development diagnostic and cannot populate attempt timing. A resolved table win is recorded only when the typed line resolves or the assigned combat damage actually connects and produces a terminal game state. The interfered variant also applies modeled response pressure. Censored runs remain censored at the turn cap; these endpoints are never substituted for one another and are not multiplayer pod win percentages.
+A credible threat is an answer-demanding state. A first win attempt requires either a recognized reviewed table-lethal line or a rules-backed combat assignment that would eliminate every remaining opponent if its damage connects. A generic engine/combat milestone is a separate development diagnostic and cannot populate attempt timing. A resolved table win is recorded only when the typed line resolves or the assigned combat damage actually connects and produces a terminal game state. The aggregate comparison uses the selected profile: **${selectedInteractionProfile}**. The eight isolated interaction scenarios are independent fixed counterfactual diagnostics. Censored runs remain censored at the turn cap; these endpoints are never substituted for one another and are not multiplayer pod win percentages.
 ${report.openingHands.policyFidelity === "strictExecutable"
     ? ""
     : " Functional mulligan, keepability, and engine-access values are not strict consistency claims for this report."}
@@ -439,7 +450,8 @@ ${graphLinks}`
 - Paired game trials: ${report.assumptions.gameSimulations}
 - Analyzer policy: Fixed competitive policy with aggressive route search
 - Primary timing horizon: turns 1-${report.assumptions.maximumTurn}
-- Table stress model: Standardized high-power interaction
+- Selected interaction profile: ${selectedInteractionProfile}
+- Isolated scenario suite: Eight independent fixed checkpoints
 - Player-declared intent: Not used for evaluation
 - Online missing-card resolution: ${report.assumptions.allowOnlineCardResolution ? "Enabled (unresolved names may be sent to Scryfall)" : "Disabled; local data only"}
 - Seed: ${report.assumptions.seedExact ?? String(report.assumptions.seed)}
@@ -504,6 +516,9 @@ const declaredSemanticPackage = (value: string) => value
 
 function formatInteractionScenariosMarkdown(report: AnalysisReport): string {
   const scenarios = report.winSpeed.interactionScenarios ?? [];
+  const selectedInteractionProfile = interactionProfileLabel(
+    report.assumptions.interactionProfile,
+  );
   if (!scenarios.length) {
     return `## Isolated interaction scenarios
 
@@ -547,6 +562,9 @@ scenario suite was attached.
   return `## Isolated interaction scenarios
 
 **Measurement:** ${measurement.label}. ${measurement.claimBoundary}
+
+**Profile separation:** These eight fixed counterfactual checkpoints are
+independent of the selected aggregate profile (**${selectedInteractionProfile}**).
 
 **Sampling:** ${scenarios[0].sampling.episodeCount} paired episodes through turn
 ${scenarios[0].sampling.maximumTurn}; master seed

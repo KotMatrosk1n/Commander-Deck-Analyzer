@@ -873,7 +873,7 @@ pub fn apply_compiled_bracket_guidance(
     {
         let cards = definite_mass_land_denial.into_iter().collect::<Vec<_>>();
         let detail = format!(
-            "{} match{} the versioned mass-land-denial definition, which is excluded from Brackets 1 through 3.",
+            "{} match{} the versioned mass-land-denial definition, which is excluded from Brackets 1\u{2013}3.",
             cards.join(" · "),
             if cards.len() == 1 { "es" } else { "" },
         );
@@ -996,7 +996,7 @@ pub fn apply_compiled_bracket_guidance(
             .into_iter()
             .collect::<Vec<_>>();
         let detail = format!(
-            "{} extra-turn card{} detected. Bracket 1 excludes extra-turn cards; Brackets 2 and 3 describe low quantities that are not intended to chain or loop.",
+            "{} extra-turn card{} detected. Bracket 1 excludes extra-turn cards; Brackets 2\u{2013}3 describe low quantities that are not intended to chain or loop.",
             cards.len(),
             if cards.len() == 1 { "" } else { "s" },
         );

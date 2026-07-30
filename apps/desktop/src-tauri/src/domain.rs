@@ -92,7 +92,7 @@ pub enum PilotPolicy {
     Protect,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum InteractionProfile {
     None,

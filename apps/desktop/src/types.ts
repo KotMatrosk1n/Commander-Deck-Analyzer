@@ -27,10 +27,11 @@ export interface DeckParseResult {
 }
 
 export type AnalysisTrialCount = 1000 | 5000 | 10000;
+export type InteractionProfile = "none" | "light" | "typical" | "highPower";
 
 /**
- * Strategy remains fixed while the user selects the deterministic work budget
- * and timing horizon for this run.
+ * Mulligan and pilot strategy remain fixed while the user selects the
+ * deterministic work budget, timing horizon, and interaction profile.
  */
 export interface AnalysisOptions {
   openingHandSimulations: AnalysisTrialCount;
@@ -38,7 +39,7 @@ export interface AnalysisOptions {
   maximumTurn: number;
   mulliganPolicy: "aggressive";
   pilotPolicy: "race";
-  interactionProfile: "highPower";
+  interactionProfile: InteractionProfile;
   declaredIntent: "unspecified";
   allowOnlineCardResolution: boolean;
   seed?: number;
@@ -464,7 +465,7 @@ export interface AnalysisReport {
     maximumTurn: number;
     mulliganPolicy: "aggressive";
     pilotPolicy: "race";
-    interactionProfile: "highPower";
+    interactionProfile: InteractionProfile;
     declaredIntent: "unspecified";
     allowOnlineCardResolution: boolean;
     seed: number;
@@ -608,6 +609,7 @@ export type EarlyTurnBlockerCategory =
 
 export interface EarlyTurnEvaluationReport {
   modelVersion: string;
+  executionWitnessVersion: string;
   librarySize: number;
   knownLineCount: number;
   eligibleTableWinRouteCount: number;
@@ -662,6 +664,16 @@ export interface EarlyTurnEvaluationReport {
       blockers: EarlyTurnBlocker[];
     }[];
     blockers: EarlyTurnBlocker[];
+  }[];
+  executionWitnesses: {
+    routeId: string;
+    routeName: string;
+    turn: number;
+    openingCards: string[];
+    naturalDraws: string[];
+    libraryOrderSha256: string;
+    resolvedTableWin: boolean;
+    proofSha256: string;
   }[];
   blockers: EarlyTurnBlocker[];
   notes: string[];

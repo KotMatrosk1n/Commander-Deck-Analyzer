@@ -20,39 +20,59 @@ use crate::ability_program::{
     compile_executable_ability_program, compile_face_bound_ability_program,
     normalize_oracle_clause_for_receipt,
 };
+use crate::face_layout_runtime::{
+    FACE_LAYOUT_EXECUTOR_ID, FaceLayoutFaceSource, FaceLayoutProgram, FaceLayoutRuntimeInput,
+    FaceLayoutRuntimeReceipt, FaceRulesProfile, RelatedLayoutSource, compile_face_layout_runtime,
+};
+use crate::keyword_production_bridge::{
+    DEVOID_PRODUCTION_BRIDGE_VERSION, STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+};
+use crate::keyword_rules_runtime::OfficialKeyword;
 use crate::mana_network_runtime::{
     COMMANDER_IDENTITY_MANA_EXECUTOR_ID, CONTROLLED_LAND_ANY_COLOR_GRANT_EXECUTOR_ID,
     CONTROLLED_LAND_CAPABILITY_MANA_EXECUTOR_ID, GLOBAL_BASIC_LAND_SUBTYPE_GRANT_EXECUTOR_ID,
     SELF_BOUNCE_DUAL_LAND_EXECUTOR_ID,
 };
+use crate::mechanic_runtime::MechanicProcedure;
+use crate::oracle_clause_backend::{
+    CompiledOracleClause, LiveBridgeCapability, OracleClauseBackendInput, OracleClauseCardContext,
+    compile_oracle_clause_backend_with_context,
+};
 use crate::runtime_receipts::{
     ALTERNATIVE_CAST_EXECUTOR_VERSION, ATOMIC_TRANSACTION_EXECUTOR_VERSION, AtomicRuntimeReceipt,
+    BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION, BoundedOracleRuntimeReceipt,
     CHARACTERISTIC_EXECUTOR_VERSION, CHARACTERISTIC_ORACLE_EXECUTOR_VERSION,
     CONDITIONAL_MANA_SOURCE_EXECUTOR_VERSION, CONTINUOUS_TRIGGER_EXECUTOR_VERSION,
     CharacteristicFaceBinding, CharacteristicFaceInput, CharacteristicRootAlignment,
     CharacteristicRuntimeReceipt, CharacteristicSubject, ConditionalManaSourceRuntimeReceipt,
-    GRAVEYARD_RECLAMATION_EXECUTOR_VERSION, GraveyardReclamationRuntimeReceipt,
-    INTERACTION_RUNTIME_EXECUTOR_VERSION, InteractionRuntimeReceipt, LAND_RUNTIME_EXECUTOR_VERSION,
+    ExactKeywordRulesReceiptInput, ExactKeywordRulesRuntimeReceipt,
+    FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION, GRAVEYARD_RECLAMATION_EXECUTOR_VERSION,
+    GraveyardReclamationRuntimeReceipt, INTERACTION_RUNTIME_EXECUTOR_VERSION,
+    InteractionRuntimeReceipt, KEYWORD_RULES_RUNTIME_EXECUTOR_ID,
+    KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION, LAND_RUNTIME_EXECUTOR_VERSION,
     LIVE_ABILITY_EXECUTOR_VERSION, LandRuntimeReceipt, LiveAbilityRuntimeReceipt, LiveAbilityShape,
     MANA_NETWORK_RUNTIME_EXECUTOR_VERSION, OBJECT_LIFECYCLE_EXECUTOR_VERSION,
-    RESTRICTION_PROTECTION_EXECUTOR_VERSION, RUNTIME_RECEIPT_SCHEMA_VERSION,
-    RestrictionProtectionRuntimeReceipt, ReviewedRuntimeReceipt, RuntimeCapability,
-    RuntimeExecutorBinding, RuntimeOracleClauseEvidence, RuntimeSourceEvidence,
-    SACRIFICE_SELF_MANA_EXECUTOR_VERSION, SPELL_RESOLUTION_MANA_EXECUTOR_VERSION,
-    SacrificeSelfManaRuntimeReceipt, SpellResolutionManaRuntimeReceipt,
-    TUTOR_RUNTIME_EXECUTOR_VERSION, TutorRuntimeReceipt, TypedAtomicTransaction,
-    UTILITY_MODAL_EXECUTOR_VERSION, compile_atomic_runtime_receipt,
+    PRINTED_COST_RUNTIME_EXECUTOR_ID, PRINTED_COST_RUNTIME_EXECUTOR_VERSION,
+    PrintedCostRuntimeReceipt, RESTRICTION_PROTECTION_EXECUTOR_VERSION,
+    RUNTIME_RECEIPT_SCHEMA_VERSION, RestrictionProtectionRuntimeReceipt, ReviewedRuntimeProgram,
+    ReviewedRuntimeReceipt, RuntimeCapability, RuntimeExecutorBinding, RuntimeOracleClauseEvidence,
+    RuntimeSourceEvidence, SACRIFICE_SELF_MANA_EXECUTOR_VERSION,
+    SPELL_RESOLUTION_MANA_EXECUTOR_VERSION, SacrificeSelfManaRuntimeReceipt,
+    SpellResolutionManaRuntimeReceipt, TUTOR_RUNTIME_EXECUTOR_VERSION, TutorRuntimeReceipt,
+    TypedAtomicTransaction, TypedConditionalManaSource, UTILITY_MODAL_EXECUTOR_VERSION,
+    compile_atomic_runtime_receipt, compile_bounded_oracle_runtime_receipts,
     compile_characteristic_runtime_receipts, compile_conditional_mana_source_runtime_receipt,
-    compile_graveyard_reclamation_runtime_receipt, compile_interaction_runtime_receipt,
-    compile_land_runtime_receipts, compile_live_ability_runtime_receipts,
+    compile_exact_keyword_rules_runtime_receipt, compile_graveyard_reclamation_runtime_receipt,
+    compile_interaction_runtime_receipt, compile_land_runtime_receipts,
+    compile_live_ability_runtime_receipts, compile_printed_cost_runtime_receipt,
     compile_restriction_protection_runtime_receipt, compile_reviewed_runtime_receipts,
     compile_sacrifice_self_mana_runtime_receipt, compile_spell_resolution_mana_runtime_receipt,
     compile_tutor_runtime_receipt,
 };
 use crate::semantics::{CompiledCard, role};
 
-pub const EXECUTION_COVERAGE_SCHEMA_VERSION: &str = "commander-execution-coverage-manifest/v7";
-pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-0.9";
+pub const EXECUTION_COVERAGE_SCHEMA_VERSION: &str = "commander-execution-coverage-manifest/v8";
+pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-1.7";
 pub const COMPACT_BLOCKER_SAMPLE_LIMIT: usize = 20;
 
 const METRICS: [ExecutionMetric; 7] = [
@@ -255,6 +275,8 @@ pub enum FaceRelationship {
     ReversibleBack,
     DoubleFacedTokenFront,
     DoubleFacedTokenBack,
+    PreparationPermanent,
+    PreparationSpell,
     MeldCard,
     LegacySingleFaceLayoutUnknown,
     LegacyCombinedMultifaceRelationshipUnknown,
@@ -1165,6 +1187,65 @@ fn compile_card(
     let multiface = faces.len() > 1 || layout_requires_exact_faces(&layout) || layout == "meld";
     let face_alignment_complete =
         face_alignment_complete(record, &layout, legacy_face_count, faces.len());
+    let face_layout_receipt = face_alignment_complete
+        .then(|| {
+            let face_sources = faces
+                .iter()
+                .map(|face| {
+                    Ok(FaceLayoutFaceSource {
+                        face_index: face.face_index,
+                        source_sha256: sha256_hex(&face_layout_source_evidence(face)?),
+                        functional_sha256: sha256_hex(&serde_json::to_vec(&(
+                            face.mana_value,
+                            &face.type_line,
+                            &face.mana_cost,
+                            &face.oracle_source,
+                            &face.colors,
+                            &face.color_indicator,
+                            &face.keywords,
+                            &face.produced_mana,
+                            &face.power,
+                            &face.toughness,
+                            &face.loyalty,
+                            &face.defense,
+                            &face.hand_modifier,
+                            &face.life_modifier,
+                            &face.attraction_lights,
+                        ))?),
+                        profile: face_rules_profile(face.type_line.as_deref()),
+                    })
+                })
+                .collect::<Result<Vec<_>, serde_json::Error>>()?;
+            let related_components = record
+                .related_components
+                .iter()
+                .filter(|component| {
+                    layout == "meld"
+                        && matches!(
+                            component.component.trim().to_ascii_lowercase().as_str(),
+                            "meld_part" | "meld_result"
+                        )
+                })
+                .map(|component| {
+                    Ok(RelatedLayoutSource {
+                        stable_id: component.id.clone(),
+                        component_kind: component.component.trim().to_ascii_lowercase(),
+                        source_sha256: sha256_hex(&serde_json::to_vec(component)?),
+                    })
+                })
+                .collect::<Result<Vec<_>, serde_json::Error>>()?;
+            Ok::<_, serde_json::Error>(
+                compile_face_layout_runtime(FaceLayoutRuntimeInput {
+                    layout: layout.clone(),
+                    card_revision_sha256: oracle_revision_sha256.clone(),
+                    faces: face_sources,
+                    related_components,
+                })
+                .ok(),
+            )
+        })
+        .transpose()?
+        .flatten();
     let exact_normal_single_face = layout == "normal"
         && faces.len() == 1
         && face_alignment_complete
@@ -1175,6 +1256,12 @@ fn compile_card(
         && face_alignment_complete
         && faces[0].relationship == FaceRelationship::ModalDoubleFacedFront
         && faces[1].relationship == FaceRelationship::ModalDoubleFacedBack;
+    let exact_transform_double_faced = has_exact_faces
+        && layout == "transform"
+        && faces.len() == 2
+        && face_alignment_complete
+        && faces[0].relationship == FaceRelationship::TransformFront
+        && faces[1].relationship == FaceRelationship::TransformBack;
     let characteristic_receipts = faces
         .iter()
         .flat_map(|face| {
@@ -1186,12 +1273,21 @@ fn compile_card(
                     1 => Some(CharacteristicFaceBinding::ModalDoubleFacedBack),
                     _ => None,
                 }
+            } else if exact_transform_double_faced {
+                match face.face_index {
+                    0 => Some(CharacteristicFaceBinding::TransformDoubleFacedFront),
+                    1 => Some(CharacteristicFaceBinding::TransformDoubleFacedBack),
+                    _ => None,
+                }
+            } else if face_alignment_complete {
+                Some(CharacteristicFaceBinding::ExactFace(face.face_index))
             } else {
                 None
             };
             compile_characteristic_runtime_receipts(CharacteristicFaceInput {
                 face_index: face.face_index,
                 face_binding,
+                layout: &layout,
                 name: face.name.as_deref().unwrap_or_default(),
                 oracle_text: &face.oracle_source,
                 mana_cost: face.mana_cost.as_deref(),
@@ -1200,14 +1296,31 @@ fn compile_card(
                 color_indicator: &face.color_indicator,
                 power: face.power.as_deref(),
                 toughness: face.toughness.as_deref(),
+                loyalty: face.loyalty.as_deref(),
+                defense: face.defense.as_deref(),
+                hand_modifier: face.hand_modifier.as_deref(),
+                life_modifier: face.life_modifier.as_deref(),
+                attraction_lights: &face.attraction_lights,
                 type_line: face.type_line.as_deref(),
                 keywords: &face.keywords,
-                root_alignment: if exact_modal_double_faced {
+                root_alignment: if has_exact_faces {
                     CharacteristicRootAlignment::EXACT
                 } else {
                     characteristic_root_alignment(record, face, has_exact_faces)
                 },
             })
+        })
+        .collect::<Vec<_>>();
+    let printed_cost_receipts = faces
+        .iter()
+        .filter_map(|face| {
+            let printed_cost = face.mana_cost.as_deref()?.trim();
+            (!printed_cost.is_empty()).then_some(())?;
+            compile_printed_cost_runtime_receipt(
+                face.face_index,
+                face.type_line.as_deref().unwrap_or_default(),
+                printed_cost,
+            )
         })
         .collect::<Vec<_>>();
     let (oracle_clause_contexts, oracle_root_contexts) =
@@ -1276,6 +1389,7 @@ fn compile_card(
             )?;
         }
     }
+    push_card_policy_leaves(record, &mut leaves, &mut faces)?;
 
     for span in &mut spans {
         let (kind, subject, dispositions) = match span.kind {
@@ -1336,22 +1450,23 @@ fn compile_card(
     for index in 0..faces.len() {
         let face_index = Some(index as u16);
         let structure_blocker = structure_blocker(record, &layout, legacy_face_count, faces.len());
-        let structural_evidence = serde_json::to_vec(&faces[index])?;
-        let structure_dispositions = if layout == "normal"
-            && faces.len() == 1
+        let structural_evidence = face_layout_source_evidence(&faces[index])?;
+        let structure_dispositions = if faces.len() == 1
             && face_alignment_complete
             && faces[index].relationship == FaceRelationship::SingleFace
-        {
+            && face_layout_receipt.as_ref().is_some_and(|receipt| {
+                receipt.owns_face_source(index, &sha256_hex(&structural_evidence))
+                    && matches!(receipt.program, FaceLayoutProgram::SingleFace { .. })
+            }) {
             safely_irrelevant_for_all(
-                "plain-single-face-layout",
-                "The exact normal single-face layout adds no independent rules behavior beyond the retained Oracle root and printed fields.",
+                "single-face-layout-owned-by-retained-rules-fields",
+                "This exact single-face layout adds no face selection or face transition. Its type, Oracle, keyword, and printed characteristic procedures own all game behavior.",
             )
-        } else if exact_modal_double_faced {
+        } else if let Some(receipt) = face_layout_receipt.as_ref() {
             let leaf_evidence_sha256 = sha256_hex(&structural_evidence);
-            characteristic_receipt_dispositions(
-                &characteristic_receipts,
-                &CoverageLeafSubject::FaceRelationship,
-                face_index,
+            face_layout_receipt_dispositions(
+                receipt,
+                FaceLayoutCoverageSubject::Face(index),
                 &oracle_revision_sha256,
                 &leaf_evidence_sha256,
                 structure_blocker,
@@ -1391,10 +1506,10 @@ fn compile_card(
                     CoverageLeafSubject::ManaCost,
                     face_index,
                     Vec::new(),
-                    characteristic_receipt_dispositions(
-                        &characteristic_receipts,
-                        &CoverageLeafSubject::ManaCost,
+                    printed_cost_receipt_dispositions(
+                        &printed_cost_receipts,
                         face_index,
+                        &cost,
                         &oracle_revision_sha256,
                         &leaf_evidence_sha256,
                         blocker,
@@ -1436,7 +1551,7 @@ fn compile_card(
     }
 
     if has_exact_faces {
-        for (index, face) in record.faces.iter().enumerate() {
+        for (index, _face) in record.faces.iter().enumerate() {
             let face_index = Some(index as u16);
             let rules_spans = spans
                 .iter()
@@ -1445,27 +1560,39 @@ fn compile_card(
                 })
                 .map(|span| span.span_index)
                 .collect::<Vec<_>>();
-            for blocker in detect_atomicity_blockers(&face.oracle_text) {
-                let leaf_evidence_sha256 = sha256_hex(face.oracle_text.as_bytes());
+            for span_index in rules_spans {
+                let span = spans
+                    .get(span_index as usize)
+                    .expect("an Oracle span index addresses its exact source span");
+                let clause_context = oracle_clause_contexts
+                    .get(&span_index)
+                    .expect("every rules span has an occurrence-addressed Oracle context");
                 let root_context = oracle_root_contexts
                     .get(&(index as u16))
                     .expect("every exact face has an Oracle root context");
-                push_leaf(
-                    &mut leaves,
-                    &mut faces,
-                    CoverageLeafKind::AtomicityGuard,
-                    CoverageLeafSubject::AtomicityGuard,
-                    face_index,
-                    rules_spans.clone(),
-                    runtime_receipt_dispositions(
-                        &runtime_receipts,
-                        RuntimeCoverageRequirement::CompleteRoot(root_context),
-                        &oracle_revision_sha256,
-                        &leaf_evidence_sha256,
-                        blocker,
-                    ),
-                    face.oracle_text.as_bytes(),
-                );
+                for requirement in atomicity_guard_requirements(&span.text) {
+                    let leaf_evidence_sha256 = sha256_hex(span.text.as_bytes());
+                    push_leaf(
+                        &mut leaves,
+                        &mut faces,
+                        CoverageLeafKind::AtomicityGuard,
+                        CoverageLeafSubject::AtomicityGuard,
+                        face_index,
+                        vec![span_index],
+                        runtime_receipt_dispositions(
+                            &runtime_receipts,
+                            RuntimeCoverageRequirement::ClauseCapabilities {
+                                clause: clause_context,
+                                root: root_context,
+                                required: requirement.required_capabilities,
+                            },
+                            &oracle_revision_sha256,
+                            &leaf_evidence_sha256,
+                            requirement.blocker,
+                        ),
+                        span.text.as_bytes(),
+                    );
+                }
             }
         }
     } else {
@@ -1474,27 +1601,39 @@ fn compile_card(
             .filter(|span| span.kind == OracleSourceSpanKind::RulesText)
             .map(|span| span.span_index)
             .collect::<Vec<_>>();
-        for blocker in detect_atomicity_blockers(&record.oracle_text) {
-            let leaf_evidence_sha256 = sha256_hex(record.oracle_text.as_bytes());
+        for span_index in all_rules_spans {
+            let span = spans
+                .get(span_index as usize)
+                .expect("an Oracle span index addresses its exact source span");
+            let clause_context = oracle_clause_contexts
+                .get(&span_index)
+                .expect("every rules span has an occurrence-addressed Oracle context");
             let root_context = oracle_root_contexts
                 .get(&0)
                 .expect("the top-level Oracle source has a root context");
-            push_leaf(
-                &mut leaves,
-                &mut faces,
-                CoverageLeafKind::AtomicityGuard,
-                CoverageLeafSubject::AtomicityGuard,
-                None,
-                all_rules_spans.clone(),
-                runtime_receipt_dispositions(
-                    &runtime_receipts,
-                    RuntimeCoverageRequirement::CompleteRoot(root_context),
-                    &oracle_revision_sha256,
-                    &leaf_evidence_sha256,
-                    blocker,
-                ),
-                record.oracle_text.as_bytes(),
-            );
+            for requirement in atomicity_guard_requirements(&span.text) {
+                let leaf_evidence_sha256 = sha256_hex(span.text.as_bytes());
+                push_leaf(
+                    &mut leaves,
+                    &mut faces,
+                    CoverageLeafKind::AtomicityGuard,
+                    CoverageLeafSubject::AtomicityGuard,
+                    None,
+                    vec![span_index],
+                    runtime_receipt_dispositions(
+                        &runtime_receipts,
+                        RuntimeCoverageRequirement::ClauseCapabilities {
+                            clause: clause_context,
+                            root: root_context,
+                            required: requirement.required_capabilities,
+                        },
+                        &oracle_revision_sha256,
+                        &leaf_evidence_sha256,
+                        requirement.blocker,
+                    ),
+                    span.text.as_bytes(),
+                );
+            }
         }
     }
     for keyword in &keywords {
@@ -1528,13 +1667,29 @@ fn compile_card(
 
     for component in &record.related_components {
         let component_evidence = serde_json::to_vec(component)?;
-        let component_complete = !component.id.trim().is_empty()
-            && !component.component.trim().is_empty()
-            && !component.name.trim().is_empty();
+        let component_complete =
+            !component.id.trim().is_empty() && !component.component.trim().is_empty();
         let component_kind = component.component.trim().to_ascii_lowercase();
+        let component_evidence_sha256 = sha256_hex(&component_evidence);
         let dispositions = if component_complete
-            && matches!(component_kind.as_str(), "token" | "combo_piece")
-        {
+            && matches!(component_kind.as_str(), "meld_part" | "meld_result")
+            && face_layout_receipt.as_ref().is_some_and(|receipt| {
+                matches!(receipt.program, FaceLayoutProgram::Meld { .. })
+                    && receipt.owns_related_component_source(&component_evidence_sha256)
+            }) {
+            face_layout_receipt_dispositions(
+                face_layout_receipt
+                    .as_ref()
+                    .expect("checked exact meld layout receipt"),
+                FaceLayoutCoverageSubject::RelatedComponent,
+                &oracle_revision_sha256,
+                &component_evidence_sha256,
+                CoverageBlocker {
+                    blocker_code: "related-component-executor-unbound".into(),
+                    detail: "The retained meld component has no exact face-layout binding.".into(),
+                },
+            )
+        } else if component_complete && matches!(component_kind.as_str(), "token" | "combo_piece") {
             safely_irrelevant_for_all(
                 "provider-cross-link-does-not-execute",
                 "This complete provider cross-link is retained for provenance and does not supply a game object or runtime action.",
@@ -1602,6 +1757,11 @@ fn characteristic_root_alignment(
             color_indicator: true,
             power: true,
             toughness: true,
+            loyalty: true,
+            defense: true,
+            hand_modifier: true,
+            life_modifier: true,
+            attraction_lights: true,
             type_line: true,
             keywords: true,
         };
@@ -1616,6 +1776,11 @@ fn characteristic_root_alignment(
         color_indicator: face.color_indicator == record.color_indicator,
         power: face.power == record.power,
         toughness: face.toughness == record.toughness,
+        loyalty: face.loyalty == record.loyalty,
+        defense: face.defense == record.defense,
+        hand_modifier: face.hand_modifier == record.hand_modifier,
+        life_modifier: face.life_modifier == record.life_modifier,
+        attraction_lights: face.attraction_lights == record.attraction_lights,
         type_line: face.type_line.as_deref() == nonempty_string(&record.type_line).as_deref(),
         keywords: canonical_keywords(&face.keywords) == canonical_keywords(&record.keywords),
     }
@@ -1634,12 +1799,17 @@ enum RetainedRuntimeReceipt {
     Reviewed(ReviewedRuntimeReceipt),
     Land(LandRuntimeReceipt),
     LiveAbility(LiveAbilityRuntimeReceipt),
+    BoundedOracle(Box<BoundedOracleRuntimeReceipt>),
+    KeywordRules(Box<ExactKeywordRulesRuntimeReceipt>),
 }
 
 fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<RetainedRuntimeReceipt> {
     let compiled = compile_retained_card(record);
     let mut receipts = Vec::with_capacity(4);
-    if let Some(receipt) = compile_atomic_runtime_receipt(&compiled) {
+    let atomic_receipt = compile_atomic_runtime_receipt(&compiled);
+    let incomplete_atomic_root =
+        compiled.ability_program.atomic_transaction.is_some() && atomic_receipt.is_none();
+    if let Some(receipt) = atomic_receipt {
         receipts.push(RetainedRuntimeReceipt::Atomic(receipt));
     }
     if let Some(receipt) = compile_graveyard_reclamation_runtime_receipt(&compiled) {
@@ -1663,13 +1833,45 @@ fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<Retaine
     if let Some(receipt) = compile_restriction_protection_runtime_receipt(&compiled) {
         receipts.push(RetainedRuntimeReceipt::RestrictionProtection(receipt));
     }
+    let reviewed_receipts = compile_reviewed_runtime_receipts(&compiled);
+    let mut reviewed_keyword_occurrences = BTreeMap::new();
+    for receipt in &reviewed_receipts {
+        let ReviewedRuntimeProgram::CharacteristicOracle(compiled) = &receipt.program else {
+            continue;
+        };
+        let crate::characteristic_oracle_runtime::CharacteristicOracleProgram::PureCombatKeyword(
+            program,
+        ) = &compiled.program
+        else {
+            continue;
+        };
+        *reviewed_keyword_occurrences
+            .entry((compiled.ownership.face_index, program.owned_keyword))
+            .or_insert(0usize) += 1;
+    }
     receipts.extend(
-        compile_reviewed_runtime_receipts(&compiled)
+        reviewed_receipts
             .into_iter()
+            .filter(|receipt| {
+                let ReviewedRuntimeProgram::CharacteristicOracle(compiled) = &receipt.program else {
+                    return true;
+                };
+                let crate::characteristic_oracle_runtime::CharacteristicOracleProgram::PureCombatKeyword(
+                    program,
+                ) = &compiled.program
+                else {
+                    return true;
+                };
+                reviewed_keyword_occurrences
+                    .get(&(compiled.ownership.face_index, program.owned_keyword))
+                    .copied()
+                    == Some(1)
+            })
             .map(RetainedRuntimeReceipt::Reviewed),
     );
     let claimed_oracle_clauses = receipts
         .iter()
+        .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
         .flat_map(|receipt| {
             runtime_receipt_parts(receipt)
                 .2
@@ -1692,13 +1894,15 @@ fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<Retaine
     );
     if !compiled.has(role::LAND) {
         let complete_root_claimed = receipts.iter().any(|receipt| {
-            runtime_receipt_parts(receipt)
-                .1
-                .contains(&RuntimeCapability::CompleteOracleRoot)
+            runtime_receipt_has_exact_contract(receipt)
+                && runtime_receipt_parts(receipt)
+                    .1
+                    .contains(&RuntimeCapability::CompleteOracleRoot)
         });
         if !complete_root_claimed {
             let claimed_clauses = receipts
                 .iter()
+                .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
                 .flat_map(|receipt| {
                     runtime_receipt_parts(receipt)
                         .2
@@ -1721,8 +1925,309 @@ fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<Retaine
             );
         }
     }
+    let complete_root_claimed = receipts.iter().any(|receipt| {
+        runtime_receipt_has_exact_contract(receipt)
+            && runtime_receipt_parts(receipt)
+                .1
+                .contains(&RuntimeCapability::CompleteOracleRoot)
+    });
+    if !complete_root_claimed {
+        let claimed_clauses = receipts
+            .iter()
+            .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
+            .flat_map(|receipt| {
+                runtime_receipt_parts(receipt)
+                    .2
+                    .covered_oracle_clauses
+                    .iter()
+                    .cloned()
+            })
+            .collect::<BTreeSet<_>>();
+        receipts.extend(
+            compile_bounded_oracle_runtime_receipts(&compiled)
+                .into_iter()
+                .filter(|receipt| {
+                    receipt
+                        .source_evidence
+                        .covered_oracle_clauses
+                        .iter()
+                        .all(|clause| !claimed_clauses.contains(clause))
+                })
+                .map(|receipt| RetainedRuntimeReceipt::BoundedOracle(Box::new(receipt))),
+        );
+    }
+    let claimed_clauses = receipts
+        .iter()
+        .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
+        .flat_map(|receipt| {
+            runtime_receipt_parts(receipt)
+                .2
+                .covered_oracle_clauses
+                .iter()
+                .cloned()
+        })
+        .collect::<BTreeSet<_>>();
+    let complete_root_sha256s = receipts
+        .iter()
+        .filter(|receipt| {
+            runtime_receipt_has_exact_contract(receipt)
+                && runtime_receipt_parts(receipt)
+                    .1
+                    .contains(&RuntimeCapability::CompleteOracleRoot)
+        })
+        .map(|receipt| {
+            runtime_receipt_parts(receipt)
+                .2
+                .normalized_oracle_sha256
+                .clone()
+        })
+        .collect::<BTreeSet<_>>();
+    receipts.extend(
+        compile_retained_keyword_rules_runtime_receipts(record)
+            .into_iter()
+            .filter(|receipt| {
+                !incomplete_atomic_root
+                    && !complete_root_sha256s
+                        .contains(&receipt.source_evidence.normalized_oracle_sha256)
+                    && receipt
+                        .source_evidence
+                        .covered_oracle_clauses
+                        .iter()
+                        .all(|clause| !claimed_clauses.contains(clause))
+            })
+            .map(|receipt| RetainedRuntimeReceipt::KeywordRules(Box::new(receipt))),
+    );
+    if incomplete_atomic_root {
+        let required_clauses = exact_oracle_clause_evidence(record);
+        let claimed_clauses = receipts
+            .iter()
+            .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
+            .flat_map(|receipt| {
+                runtime_receipt_parts(receipt)
+                    .2
+                    .covered_oracle_clauses
+                    .iter()
+                    .cloned()
+            })
+            .collect::<BTreeSet<_>>();
+        if !required_clauses
+            .iter()
+            .all(|clause| claimed_clauses.contains(clause))
+        {
+            // A changed atomic root may fall through only when independent
+            // exact clause executors cover the complete root. Otherwise the
+            // recognizable sibling would authorize a partial transaction.
+            return Vec::new();
+        }
+    }
     sort_retained_runtime_receipts(&mut receipts);
     receipts
+}
+
+fn exact_oracle_clause_evidence(
+    record: &CombinedCardRecord,
+) -> BTreeSet<RuntimeOracleClauseEvidence> {
+    struct FaceSource<'a> {
+        face_index: u16,
+        name: &'a str,
+        type_line: &'a str,
+        oracle_text: &'a str,
+        source_reference: OracleSourceReference,
+    }
+
+    let sources = if record.faces.is_empty() {
+        vec![FaceSource {
+            face_index: 0,
+            name: &record.name,
+            type_line: &record.type_line,
+            oracle_text: &record.oracle_text,
+            source_reference: OracleSourceReference::TopLevelCard,
+        }]
+    } else {
+        record
+            .faces
+            .iter()
+            .enumerate()
+            .filter_map(|(face_index, face)| {
+                Some(FaceSource {
+                    face_index: u16::try_from(face_index).ok()?,
+                    name: &face.name,
+                    type_line: &face.type_line,
+                    oracle_text: &face.oracle_text,
+                    source_reference: OracleSourceReference::ExactFace,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    sources
+        .into_iter()
+        .flat_map(|source| {
+            let mut next_span_index = 0u32;
+            partition_oracle_source(
+                source.oracle_text,
+                source.source_reference,
+                Some(source.face_index),
+                false,
+                &mut next_span_index,
+            )
+            .into_iter()
+            .filter(|span| span.kind == OracleSourceSpanKind::RulesText)
+            .enumerate()
+            .filter_map(move |(clause_index, span)| {
+                Some(RuntimeOracleClauseEvidence {
+                    face_index: source.face_index,
+                    clause_index: u16::try_from(clause_index).ok()?,
+                    normalized_clause_sha256: sha256_hex_lowercase(
+                        normalize_oracle_clause_for_receipt(
+                            &span.text,
+                            source.name,
+                            source.type_line,
+                        )
+                        .as_bytes(),
+                    ),
+                })
+            })
+        })
+        .collect()
+}
+
+fn compile_retained_keyword_rules_runtime_receipts(
+    record: &CombinedCardRecord,
+) -> Vec<ExactKeywordRulesRuntimeReceipt> {
+    struct FaceSource<'a> {
+        face_index: u16,
+        name: &'a str,
+        type_line: &'a str,
+        oracle_text: &'a str,
+        keywords: &'a [String],
+        source_reference: OracleSourceReference,
+    }
+
+    let layout = record.layout.trim().to_ascii_lowercase();
+    let face_count = if record.faces.is_empty() {
+        1
+    } else {
+        record.faces.len()
+    };
+    let sources = if record.faces.is_empty() {
+        if layout_requires_exact_faces(&layout)
+            || record.oracle_text.lines().any(|line| line.trim() == "//")
+        {
+            return Vec::new();
+        }
+        vec![FaceSource {
+            face_index: 0,
+            name: &record.name,
+            type_line: &record.type_line,
+            oracle_text: &record.oracle_text,
+            keywords: &record.keywords,
+            source_reference: OracleSourceReference::TopLevelCard,
+        }]
+    } else {
+        record
+            .faces
+            .iter()
+            .enumerate()
+            .filter_map(|(index, face)| {
+                Some(FaceSource {
+                    face_index: u16::try_from(index).ok()?,
+                    name: &face.name,
+                    type_line: &face.type_line,
+                    oracle_text: &face.oracle_text,
+                    keywords: &face.keywords,
+                    source_reference: OracleSourceReference::ExactFace,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut candidates =
+        BTreeMap::<(u16, OfficialKeyword), Vec<ExactKeywordRulesRuntimeReceipt>>::new();
+    for source in sources {
+        if source.name.trim().is_empty()
+            || source.type_line.trim().is_empty()
+            || source.oracle_text.trim().is_empty()
+        {
+            continue;
+        }
+        let mut next_span_index = 0u32;
+        let oracle_clauses = partition_oracle_source(
+            source.oracle_text,
+            source.source_reference,
+            Some(source.face_index),
+            false,
+            &mut next_span_index,
+        )
+        .into_iter()
+        .filter(|span| span.kind == OracleSourceSpanKind::RulesText)
+        .filter_map(|span| {
+            let line = span.text.trim().to_owned();
+            (!line.is_empty() && line != "//").then_some(line)
+        })
+        .collect::<Vec<_>>();
+        let printed_keywords = source
+            .keywords
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        for (clause_index, oracle_clause) in oracle_clauses.iter().enumerate() {
+            let Ok(clause_index) = u16::try_from(clause_index) else {
+                continue;
+            };
+            let Ok(CompiledOracleClause::Delegated(delegated_clause)) =
+                compile_oracle_clause_backend_with_context(
+                    OracleClauseBackendInput {
+                        face_index: source.face_index,
+                        clause_index,
+                        source_name: source.name,
+                        source_type_line: source.type_line,
+                        oracle_clause,
+                        printed_keywords: &printed_keywords,
+                    },
+                    OracleClauseCardContext {
+                        layout: &layout,
+                        face_count,
+                    },
+                )
+            else {
+                continue;
+            };
+            let keyword = delegated_clause.keyword_program().keyword();
+            let Some(receipt) =
+                compile_exact_keyword_rules_runtime_receipt(ExactKeywordRulesReceiptInput {
+                    face_index: source.face_index,
+                    face_name: source.name,
+                    type_line: source.type_line,
+                    oracle_text: source.oracle_text,
+                    oracle_clauses: &oracle_clauses,
+                    delegated_clause: &delegated_clause,
+                })
+            else {
+                continue;
+            };
+            candidates
+                .entry((source.face_index, keyword))
+                .or_default()
+                .push(receipt);
+        }
+    }
+
+    candidates
+        .into_iter()
+        .flat_map(|((_, keyword), mut receipts)| {
+            if matches!(
+                keyword,
+                OfficialKeyword::Fear | OfficialKeyword::Shadow | OfficialKeyword::Landwalk
+            ) {
+                receipts
+            } else if receipts.len() == 1 {
+                vec![receipts.remove(0)]
+            } else {
+                Vec::new()
+            }
+        })
+        .collect()
 }
 
 fn sort_retained_runtime_receipts(receipts: &mut [RetainedRuntimeReceipt]) {
@@ -1935,7 +2440,7 @@ fn push_face_characteristic_leaves(
             &face.type_line
         );
         retain!(
-            !face.colors.is_empty(),
+            true,
             CoverageLeafSubject::Colors,
             "colors",
             "printed-colors-executor-unbound",
@@ -1943,7 +2448,7 @@ fn push_face_characteristic_leaves(
             &face.colors
         );
         retain!(
-            !face.color_indicator.is_empty(),
+            true,
             CoverageLeafSubject::ColorIndicator,
             "colorIndicator",
             "printed-color-indicator-executor-unbound",
@@ -2051,11 +2556,94 @@ fn push_face_characteristic_leaves(
     Ok(())
 }
 
+fn push_card_policy_leaves(
+    record: &CombinedCardRecord,
+    leaves: &mut Vec<ExecutionCoverageLeaf>,
+    faces: &mut [FaceCoverageManifest],
+) -> Result<(), CoverageManifestError> {
+    let color_identity_evidence = serde_json::to_vec(&("colorIdentity", &record.color_identity))?;
+    push_leaf(
+        leaves,
+        faces,
+        CoverageLeafKind::PrintedCharacteristics,
+        CoverageLeafSubject::ColorIdentity,
+        None,
+        Vec::new(),
+        function_dispositions(CoverageBlocker {
+            blocker_code: "color-identity-executor-unbound".into(),
+            detail: "The complete Commander color identity, including an explicit empty colorless identity, has no versioned execution-coverage binding.".into(),
+        }),
+        &color_identity_evidence,
+    );
+
+    if let Some(commander_legality) = &record.commander_legality {
+        let evidence = serde_json::to_vec(&("commanderLegality", commander_legality))?;
+        push_leaf(
+            leaves,
+            faces,
+            CoverageLeafKind::PrintedCharacteristics,
+            CoverageLeafSubject::CommanderLegality,
+            None,
+            Vec::new(),
+            function_dispositions(CoverageBlocker {
+                blocker_code: "commander-legality-executor-unbound".into(),
+                detail: "The retained Commander legality status has no versioned execution-coverage binding.".into(),
+            }),
+            &evidence,
+        );
+    }
+
+    let legacy_legality_evidence = serde_json::to_vec(&(
+        "legalCommander",
+        record.legal_commander,
+        record.commander_legality.is_some(),
+    ))?;
+    let legacy_legality_dispositions = if record.commander_legality.is_some() {
+        safely_irrelevant_for_all(
+            "legacy-commander-legality-shadowed",
+            "The legacy Commander legality fallback cannot execute while an exact retained Commander legality status is present.",
+        )
+    } else {
+        function_dispositions(CoverageBlocker {
+            blocker_code: "legacy-commander-legality-executor-unbound".into(),
+            detail: "The legacy Commander legality fallback has no versioned execution-coverage binding.".into(),
+        })
+    };
+    push_leaf(
+        leaves,
+        faces,
+        CoverageLeafKind::PrintedCharacteristics,
+        CoverageLeafSubject::LegacyCommanderLegality,
+        None,
+        Vec::new(),
+        legacy_legality_dispositions,
+        &legacy_legality_evidence,
+    );
+
+    if let Some(game_changer) = record.game_changer {
+        let evidence = serde_json::to_vec(&("gameChanger", game_changer))?;
+        push_leaf(
+            leaves,
+            faces,
+            CoverageLeafKind::PrintedCharacteristics,
+            CoverageLeafSubject::GameChanger,
+            None,
+            Vec::new(),
+            function_dispositions(CoverageBlocker {
+                blocker_code: "game-changer-executor-unbound".into(),
+                detail: "The retained Game Changer classification has no versioned execution-coverage binding.".into(),
+            }),
+            &evidence,
+        );
+    }
+
+    Ok(())
+}
+
 fn printed_characteristic_leaf_count(face: &FaceCoverageManifest) -> usize {
     usize::from(face.mana_value.is_some())
         + usize::from(face.type_line.is_some())
-        + usize::from(!face.colors.is_empty())
-        + usize::from(!face.color_indicator.is_empty())
+        + 2
         + usize::from(!face.produced_mana.is_empty())
         + usize::from(face.power.is_some())
         + usize::from(face.toughness.is_some())
@@ -2064,6 +2652,11 @@ fn printed_characteristic_leaf_count(face: &FaceCoverageManifest) -> usize {
         + usize::from(face.hand_modifier.is_some())
         + usize::from(face.life_modifier.is_some())
         + usize::from(!face.attraction_lights.is_empty())
+}
+
+fn card_policy_leaf_count(record: &CombinedCardRecord) -> usize {
+    2 + usize::from(record.commander_legality.is_some())
+        + usize::from(record.game_changer.is_some())
 }
 
 fn canonical_keywords(keywords: &[String]) -> Vec<String> {
@@ -2213,7 +2806,88 @@ fn layout_requires_exact_faces(layout: &str) -> bool {
             | "flip"
             | "reversible_card"
             | "double_faced_token"
+            | "prepare"
     )
+}
+
+fn face_layout_source_evidence(face: &FaceCoverageManifest) -> Result<Vec<u8>, serde_json::Error> {
+    #[derive(Serialize)]
+    struct Evidence<'a> {
+        face_index: u16,
+        oracle_id: &'a Option<String>,
+        layout: &'a str,
+        name: &'a Option<String>,
+        mana_value: Option<f32>,
+        type_line: &'a Option<String>,
+        mana_cost: &'a Option<String>,
+        oracle_source: &'a str,
+        oracle_source_sha256: &'a str,
+        colors: &'a [String],
+        color_indicator: &'a [String],
+        keywords: &'a [String],
+        produced_mana: &'a [String],
+        power: &'a Option<String>,
+        toughness: &'a Option<String>,
+        loyalty: &'a Option<String>,
+        defense: &'a Option<String>,
+        hand_modifier: &'a Option<String>,
+        life_modifier: &'a Option<String>,
+        attraction_lights: &'a [u8],
+        image_uri: &'a Option<String>,
+        relationship: FaceRelationship,
+        oracle_span_indices: &'a [u32],
+    }
+
+    serde_json::to_vec(&Evidence {
+        face_index: face.face_index,
+        oracle_id: &face.oracle_id,
+        layout: &face.layout,
+        name: &face.name,
+        mana_value: face.mana_value,
+        type_line: &face.type_line,
+        mana_cost: &face.mana_cost,
+        oracle_source: &face.oracle_source,
+        oracle_source_sha256: &face.oracle_source_sha256,
+        colors: &face.colors,
+        color_indicator: &face.color_indicator,
+        keywords: &face.keywords,
+        produced_mana: &face.produced_mana,
+        power: &face.power,
+        toughness: &face.toughness,
+        loyalty: &face.loyalty,
+        defense: &face.defense,
+        hand_modifier: &face.hand_modifier,
+        life_modifier: &face.life_modifier,
+        attraction_lights: &face.attraction_lights,
+        image_uri: &face.image_uri,
+        relationship: face.relationship,
+        oracle_span_indices: &face.oracle_span_indices,
+    })
+}
+
+fn face_rules_profile(type_line: Option<&str>) -> FaceRulesProfile {
+    let type_line = type_line.unwrap_or_default().to_ascii_lowercase();
+    let words = type_line
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<BTreeSet<_>>();
+    let is_land = words.contains("land");
+    let is_instant_or_sorcery = words.contains("instant") || words.contains("sorcery");
+    FaceRulesProfile {
+        is_land,
+        is_permanent: is_land
+            || [
+                "artifact",
+                "battle",
+                "creature",
+                "enchantment",
+                "planeswalker",
+            ]
+            .into_iter()
+            .any(|card_type| words.contains(card_type)),
+        is_instant_or_sorcery,
+        is_room: words.contains("room"),
+    }
 }
 
 fn known_single_layout(layout: &str) -> bool {
@@ -2240,7 +2914,7 @@ fn known_single_layout(layout: &str) -> bool {
 
 fn relationship_for_layout(layout: &str, index: usize) -> Option<FaceRelationship> {
     match (layout, index) {
-        ("split", 0 | 1) => Some(FaceRelationship::SplitHalf),
+        ("split", _) => Some(FaceRelationship::SplitHalf),
         ("transform", 0) => Some(FaceRelationship::TransformFront),
         ("transform", 1) => Some(FaceRelationship::TransformBack),
         ("adventure", 0) => Some(FaceRelationship::AdventurePermanent),
@@ -2253,6 +2927,8 @@ fn relationship_for_layout(layout: &str, index: usize) -> Option<FaceRelationshi
         ("reversible_card", 1) => Some(FaceRelationship::ReversibleBack),
         ("double_faced_token", 0) => Some(FaceRelationship::DoubleFacedTokenFront),
         ("double_faced_token", 1) => Some(FaceRelationship::DoubleFacedTokenBack),
+        ("prepare", 0) => Some(FaceRelationship::PreparationPermanent),
+        ("prepare", 1) => Some(FaceRelationship::PreparationSpell),
         ("meld", 0) => Some(FaceRelationship::MeldCard),
         (layout, 0) if known_single_layout(layout) => Some(FaceRelationship::SingleFace),
         _ => None,
@@ -2272,25 +2948,28 @@ fn legacy_relationship(layout: &str, face_count: usize, index: usize) -> FaceRel
 }
 
 fn meld_components_complete(record: &CombinedCardRecord) -> bool {
-    let meld_parts = record
+    let mut meld_parts = record
         .related_components
         .iter()
         .filter(|component| {
-            component.component == "meld_part"
-                && !component.id.trim().is_empty()
-                && !component.name.trim().is_empty()
+            component.component.eq_ignore_ascii_case("meld_part") && !component.id.trim().is_empty()
         })
-        .count();
-    let meld_results = record
+        .map(|component| component.id.trim())
+        .collect::<Vec<_>>();
+    let mut meld_results = record
         .related_components
         .iter()
         .filter(|component| {
-            component.component == "meld_result"
+            component.component.eq_ignore_ascii_case("meld_result")
                 && !component.id.trim().is_empty()
-                && !component.name.trim().is_empty()
         })
-        .count();
-    meld_parts >= 2 && meld_results >= 1
+        .map(|component| component.id.trim())
+        .collect::<Vec<_>>();
+    meld_parts.sort_unstable();
+    meld_parts.dedup();
+    meld_results.sort_unstable();
+    meld_results.dedup();
+    meld_parts.len() == 2 && meld_results.len() == 1
 }
 
 fn face_alignment_complete(
@@ -2307,6 +2986,9 @@ fn face_alignment_complete(
             && compiled_face_count == 1
             && legacy_face_count == Some(1)
             && meld_components_complete(record);
+    }
+    if layout == "split" {
+        return record.faces.len() >= 2 && compiled_face_count == record.faces.len();
     }
     if layout_requires_exact_faces(layout) {
         return record.faces.len() == 2 && compiled_face_count == 2;
@@ -2357,12 +3039,19 @@ fn structure_blocker(
         if record.faces.is_empty() {
             (
                 "schema5-face-data-missing",
-                "This layout requires two exact schema-v5 face records; combined top-level strings cannot substitute for them.",
+                "This layout requires exact schema-v5 face records; combined top-level strings cannot substitute for them.",
             )
-        } else if record.faces.len() != 2 || compiled_face_count != 2 {
+        } else if (layout == "split"
+            && (record.faces.len() < 2 || compiled_face_count != record.faces.len()))
+            || (layout != "split" && (record.faces.len() != 2 || compiled_face_count != 2))
+        {
             (
                 "layout-face-count-mismatch",
-                "The retained layout requires exactly two ordered face records, and the stored count does not match.",
+                if layout == "split" {
+                    "A split card requires at least two ordered face records, and the stored count must match the compiled face count."
+                } else {
+                    "The retained layout requires exactly two ordered face records, and the stored count does not match."
+                },
             )
         } else {
             (
@@ -2478,41 +3167,65 @@ fn classify_rules_text(text: &str) -> CoverageBlocker {
     }
 }
 
-fn detect_atomicity_blockers(source: &str) -> Vec<CoverageBlocker> {
-    let normalized = source
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AtomicityGuardRequirement {
+    blocker: CoverageBlocker,
+    required_capabilities: &'static [RuntimeCapability],
+}
+
+const ORDERED_RESOLUTION_CAPABILITIES: &[RuntimeCapability] =
+    &[RuntimeCapability::OrderedResolution];
+const ADDITIONAL_COST_CAPABILITIES: &[RuntimeCapability] =
+    &[RuntimeCapability::AtomicInitiationBoundary];
+const DELAYED_DRAWBACK_CAPABILITIES: &[RuntimeCapability] = &[
+    RuntimeCapability::OrderedResolution,
+    RuntimeCapability::ExactDelayedDrawbackLifecycle,
+];
+
+fn atomicity_guard_requirements(source_clause: &str) -> Vec<AtomicityGuardRequirement> {
+    let normalized = source_clause
         .replace(['\r', '\n'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase();
-    let mut blockers = BTreeMap::<String, String>::new();
-    if normalized.contains("draw") && normalized.contains("then discard") {
-        blockers.insert(
-            "mandatory-sequence-requires-atomic-executor".into(),
-            "Drawing and the mandatory later discard must execute as one ordered ability.".into(),
-        );
+    let mut requirements = Vec::new();
+    if normalized.contains("draw")
+        && (normalized.contains("then discard") || normalized.contains("discard, then draw"))
+    {
+        requirements.push(AtomicityGuardRequirement {
+            blocker: CoverageBlocker {
+                blocker_code: "mandatory-sequence-requires-atomic-executor".into(),
+                detail:
+                    "The draw and mandatory discard instructions must execute in their printed order as one ability."
+                        .into(),
+            },
+            required_capabilities: ORDERED_RESOLUTION_CAPABILITIES,
+        });
     }
     if normalized.contains("as an additional cost") {
-        blockers.insert(
-            "additional-cost-requires-atomic-executor".into(),
-            "The additional cost and spell effect must be announced, paid, and executed atomically."
-                .into(),
-        );
+        requirements.push(AtomicityGuardRequirement {
+            blocker: CoverageBlocker {
+                blocker_code: "additional-cost-requires-atomic-executor".into(),
+                detail:
+                    "The exact additional-cost clause must have a live cast-initiation receipt that commits every mandatory cost before resolution."
+                        .into(),
+            },
+            required_capabilities: ADDITIONAL_COST_CAPABILITIES,
+        });
     }
     if normalized.contains("extra turn") && normalized.contains("lose the game") {
-        blockers.insert(
-            "delayed-drawback-requires-atomic-executor".into(),
-            "The extra turn and linked delayed loss condition must share one executable trace."
-                .into(),
-        );
+        requirements.push(AtomicityGuardRequirement {
+            blocker: CoverageBlocker {
+                blocker_code: "delayed-drawback-requires-atomic-executor".into(),
+                detail:
+                    "The extra turn and its linked delayed game-loss trigger must be registered by one ordered live transaction."
+                        .into(),
+            },
+            required_capabilities: DELAYED_DRAWBACK_CAPABILITIES,
+        });
     }
-    blockers
-        .into_iter()
-        .map(|(blocker_code, detail)| CoverageBlocker {
-            blocker_code,
-            detail,
-        })
-        .collect()
+    requirements
 }
 
 fn classify_printed_cost(cost: &str) -> Vec<CoverageBlocker> {
@@ -2608,13 +3321,17 @@ enum RuntimeCoverageRequirement<'a> {
         clause: &'a RuntimeOracleClauseEvidence,
         root: &'a OracleRootBindingContext,
     },
-    CompleteRoot(&'a OracleRootBindingContext),
+    ClauseCapabilities {
+        clause: &'a RuntimeOracleClauseEvidence,
+        root: &'a OracleRootBindingContext,
+        required: &'static [RuntimeCapability],
+    },
 }
 
 impl<'a> RuntimeCoverageRequirement<'a> {
     fn root(self) -> &'a OracleRootBindingContext {
         match self {
-            Self::Clause { root, .. } | Self::CompleteRoot(root) => root,
+            Self::Clause { root, .. } | Self::ClauseCapabilities { root, .. } => root,
         }
     }
 }
@@ -2626,7 +3343,26 @@ fn runtime_receipt_claims_requirement(
     if !runtime_receipt_has_exact_contract(receipt) {
         return false;
     }
+    if let RetainedRuntimeReceipt::KeywordRules(receipt) = receipt {
+        return match requirement {
+            RuntimeCoverageRequirement::Clause { clause, .. } => receipt
+                .source_evidence
+                .covered_oracle_clauses
+                .contains(clause),
+            RuntimeCoverageRequirement::ClauseCapabilities { .. } => false,
+        };
+    }
     let (_, capabilities, source_evidence) = runtime_receipt_parts(receipt);
+    let required_capabilities = match requirement {
+        RuntimeCoverageRequirement::ClauseCapabilities { required, .. } => required,
+        RuntimeCoverageRequirement::Clause { .. } => &[],
+    };
+    if !required_capabilities
+        .iter()
+        .all(|capability| capabilities.contains(capability))
+    {
+        return false;
+    }
     if capabilities.contains(&RuntimeCapability::CompleteOracleRoot) {
         return source_evidence.normalized_oracle_sha256
             == requirement.root().normalized_root_sha256;
@@ -2635,10 +3371,10 @@ fn runtime_receipt_claims_requirement(
         return false;
     }
     match requirement {
-        RuntimeCoverageRequirement::Clause { clause, .. } => {
+        RuntimeCoverageRequirement::Clause { clause, .. }
+        | RuntimeCoverageRequirement::ClauseCapabilities { clause, .. } => {
             source_evidence.covered_oracle_clauses.contains(clause)
         }
-        RuntimeCoverageRequirement::CompleteRoot(_) => false,
     }
 }
 
@@ -2720,7 +3456,7 @@ fn characteristic_receipt_dispositions(
         let mut matches = receipts.iter().filter(|receipt| {
             receipt.face_index == face_index.unwrap_or_default()
                 && &receipt.subject == subject
-                && receipt.has_exact_contract()
+                && receipt.has_live_consumer_without_additional_input()
         });
         let receipt = matches.next()?;
         matches.next().is_none().then_some(receipt)
@@ -2753,6 +3489,128 @@ fn characteristic_receipt_dispositions(
                         leaf_evidence_sha256,
                     )),
                 },
+                _ => CoverageDisposition::BlockingUnsupported {
+                    blocker: blocker.clone(),
+                },
+            };
+            MetricDisposition {
+                metric,
+                disposition,
+            }
+        })
+        .collect()
+}
+
+fn printed_cost_receipt_dispositions(
+    receipts: &[PrintedCostRuntimeReceipt],
+    face_index: Option<u16>,
+    printed_cost: &str,
+    card_revision_sha256: &str,
+    leaf_evidence_sha256: &str,
+    blocker: CoverageBlocker,
+) -> Vec<MetricDisposition> {
+    let receipt = face_index.and_then(|face_index| {
+        let mut matches = receipts.iter().filter(|receipt| {
+            receipt.face_index == face_index
+                && receipt.program.raw == printed_cost.trim()
+                && receipt.has_exact_contract()
+        });
+        let receipt = matches.next()?;
+        matches.next().is_none().then_some(receipt)
+    });
+    METRICS
+        .into_iter()
+        .map(|metric| {
+            let disposition = match metric {
+                ExecutionMetric::RawOpeningComposition => {
+                    CoverageDisposition::SafelyIrrelevant {
+                        proof: IrrelevanceProof {
+                            proof_code: "raw-opening-does-not-execute-card-functions".into(),
+                            detail: "Physical opening-card sampling uses only canonical deck membership and zone placement; this metric makes no keep or card-function claim.".into(),
+                        },
+                    }
+                }
+                ExecutionMetric::SynergyDescription => CoverageDisposition::ReportOnly {
+                    reason: "The exact printed cost receipt may corroborate descriptive evidence, but descriptive relationships do not mutate game state or numeric scoring.".into(),
+                },
+                metric if receipt.is_some_and(|receipt| {
+                    executor_id_supports_metric(
+                        receipt.binding.executor_id,
+                        receipt.binding.executor_version,
+                        metric,
+                    )
+                }) => CoverageDisposition::FullyExecutable {
+                    binding: Box::new(printed_cost_executor_binding(
+                        receipt.expect("supported metric requires a printed cost receipt"),
+                        card_revision_sha256,
+                        leaf_evidence_sha256,
+                    )),
+                },
+                _ => CoverageDisposition::BlockingUnsupported {
+                    blocker: blocker.clone(),
+                },
+            };
+            MetricDisposition {
+                metric,
+                disposition,
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FaceLayoutCoverageSubject {
+    Face(usize),
+    RelatedComponent,
+}
+
+fn face_layout_receipt_dispositions(
+    receipt: &FaceLayoutRuntimeReceipt,
+    subject: FaceLayoutCoverageSubject,
+    card_revision_sha256: &str,
+    leaf_evidence_sha256: &str,
+    blocker: CoverageBlocker,
+) -> Vec<MetricDisposition> {
+    let owns_leaf = receipt.has_exact_contract()
+        && receipt.source_evidence.normalized_oracle_sha256 == card_revision_sha256
+        && match subject {
+            FaceLayoutCoverageSubject::Face(index) => {
+                receipt.owns_face_source(index, leaf_evidence_sha256)
+            }
+            FaceLayoutCoverageSubject::RelatedComponent => {
+                receipt.owns_related_component_source(leaf_evidence_sha256)
+            }
+        };
+    METRICS
+        .into_iter()
+        .map(|metric| {
+            let disposition = match metric {
+                ExecutionMetric::RawOpeningComposition => {
+                    CoverageDisposition::SafelyIrrelevant {
+                        proof: IrrelevanceProof {
+                            proof_code: "raw-opening-does-not-execute-card-functions".into(),
+                            detail: "Physical opening-card sampling uses only canonical deck membership and zone placement; this metric makes no keep or card-function claim.".into(),
+                        },
+                    }
+                }
+                ExecutionMetric::SynergyDescription => CoverageDisposition::ReportOnly {
+                    reason: "The exact face-layout receipt may corroborate descriptive evidence, but descriptive relationships do not mutate game state or numeric scoring.".into(),
+                },
+                metric if owns_leaf
+                    && executor_id_supports_metric(
+                        receipt.binding.executor_id,
+                        receipt.binding.executor_version,
+                        metric,
+                    ) =>
+                {
+                    CoverageDisposition::FullyExecutable {
+                        binding: Box::new(face_layout_executor_binding(
+                            receipt,
+                            card_revision_sha256,
+                            leaf_evidence_sha256,
+                        )),
+                    }
+                }
                 _ => CoverageDisposition::BlockingUnsupported {
                     blocker: blocker.clone(),
                 },
@@ -2812,11 +3670,38 @@ fn keyword_receipt_dispositions(
     let required_capability = match keyword.trim().to_ascii_lowercase().as_str() {
         "flashback" => Some(RuntimeCapability::ExactFlashbackKeyword),
         "bargain" => Some(RuntimeCapability::ExactBargainKeyword),
+        "imprint" => Some(RuntimeCapability::ExactImprintAbilityWord),
+        "metalcraft" => Some(RuntimeCapability::ExactMetalcraftAbilityWord),
+        "threshold" => Some(RuntimeCapability::ExactThresholdAbilityWord),
+        "mill" => Some(RuntimeCapability::ExactMillKeyword),
+        "storm" => Some(RuntimeCapability::ExactStormKeyword),
         "overload" => Some(RuntimeCapability::ExactOverloadKeyword),
         "escape" => Some(RuntimeCapability::ExactEscapeKeyword),
         "enchant" => Some(RuntimeCapability::ExactEnchantKeyword),
         "equip" => Some(RuntimeCapability::ExactEquipKeyword),
         "scry" => Some(RuntimeCapability::ExactScryKeyword),
+        "channel" => Some(RuntimeCapability::ExactChannelKeyword),
+        "cycling" => Some(RuntimeCapability::ExactCyclingKeyword),
+        "typecycling" => Some(RuntimeCapability::ExactTypecyclingKeyword),
+        "treasure" => Some(RuntimeCapability::ExactTreasureKeyword),
+        "food" => Some(RuntimeCapability::ExactFoodKeyword),
+        "prowess" => Some(RuntimeCapability::ExactProwessKeyword),
+        "ward" => Some(RuntimeCapability::ExactWardKeyword),
+        "surveil" => Some(RuntimeCapability::ExactSurveilKeyword),
+        "crew" => Some(RuntimeCapability::ExactCrewKeyword),
+        "split second" => Some(RuntimeCapability::ExactSplitSecondKeyword),
+        "evoke" => Some(RuntimeCapability::ExactEvokeKeyword),
+        "manifest" => Some(RuntimeCapability::ExactManifestKeyword),
+        "partner" => Some(RuntimeCapability::ExactPartnerKeyword),
+        "transform" => Some(RuntimeCapability::ExactTransformKeyword),
+        "paradigm" => Some(RuntimeCapability::ExactParadigmKeyword),
+        "double" => Some(RuntimeCapability::ExactDoubleKeyword),
+        "protection" => Some(RuntimeCapability::ExactProtectionKeyword),
+        "landfall" => Some(RuntimeCapability::ExactLandfallAbilityWord),
+        "ferocious" => Some(RuntimeCapability::ExactFerociousAbilityWord),
+        "dash" => Some(RuntimeCapability::ExactDashKeyword),
+        "gift" => Some(RuntimeCapability::ExactGiftKeyword),
+        "mobilize" => Some(RuntimeCapability::ExactMobilizeKeyword),
         _ => None,
     };
     let required_live_shape = match keyword.trim().to_ascii_lowercase().as_str() {
@@ -2826,25 +3711,51 @@ fn keyword_receipt_dispositions(
         "scry" => Some(LiveAbilityShape::ScryResolution),
         _ => None,
     };
-    let runtime_receipt = required_capability
-        .and_then(|required| {
-            let mut matches = runtime_receipts.iter().filter(|receipt| {
-                runtime_receipt_has_exact_contract(receipt)
-                    && runtime_receipt_parts(receipt).1.contains(&required)
-                    && face_index.is_none_or(|face_index| {
-                        runtime_receipt_parts(receipt)
-                            .2
-                            .covered_oracle_clauses
-                            .iter()
-                            .all(|clause| clause.face_index == face_index)
-                    })
-            });
-            let receipt = matches.next()?;
-            matches.next().is_none().then_some(receipt)
+    // Retained receipts are sorted by exact executor and source evidence. A
+    // printed keyword is one metadata leaf even when several independently
+    // covered Oracle clauses use it, so the first exact owner is its stable
+    // binding. Every Oracle clause remains a separate required coverage leaf.
+    let exact_keyword_receipt = {
+        let mut matches = runtime_receipts.iter().filter(|retained| {
+            let RetainedRuntimeReceipt::KeywordRules(receipt) = retained else {
+                return false;
+            };
+            runtime_receipt_has_exact_contract(retained)
+                && match face_index {
+                    Some(face_index) => receipt
+                        .keyword_rules
+                        .matches_face_keyword(face_index, keyword),
+                    None => receipt
+                        .keyword_rules
+                        .occurrence
+                        .normalized_keyword
+                        .eq_ignore_ascii_case(keyword),
+                }
+        });
+        let receipt = matches.next();
+        (receipt.is_some() && matches.next().is_none())
+            .then_some(receipt)
+            .flatten()
+    };
+    let runtime_receipt = exact_keyword_receipt
+        .or_else(|| {
+            required_capability.and_then(|required| {
+                runtime_receipts.iter().find(|receipt| {
+                    runtime_receipt_has_exact_contract(receipt)
+                        && runtime_receipt_parts(receipt).1.contains(&required)
+                        && face_index.is_none_or(|face_index| {
+                            runtime_receipt_parts(receipt)
+                                .2
+                                .covered_oracle_clauses
+                                .iter()
+                                .all(|clause| clause.face_index == face_index)
+                        })
+                })
+            })
         })
         .or_else(|| {
             let required_shape = required_live_shape?;
-            let mut matches = runtime_receipts.iter().filter(|receipt| {
+            runtime_receipts.iter().find(|receipt| {
                 let RetainedRuntimeReceipt::LiveAbility(live) = receipt else {
                     return false;
                 };
@@ -2856,23 +3767,35 @@ fn keyword_receipt_dispositions(
                             .iter()
                             .all(|clause| clause.face_index == face_index)
                     })
-            });
-            let receipt = matches.next()?;
-            matches.next().is_none().then_some(receipt)
+            })
         })
         .or_else(|| {
             if !keyword.eq_ignore_ascii_case("treasure") || face_index.is_some() {
                 return None;
             }
-            let mut matches = runtime_receipts.iter().filter(|receipt| {
+            runtime_receipts.iter().find(|receipt| {
                 let RetainedRuntimeReceipt::LiveAbility(live) = receipt else {
                     return false;
                 };
                 live.owns_exact_treasure_token_keyword()
                     && runtime_receipt_has_exact_contract(receipt)
-            });
-            let receipt = matches.next()?;
-            matches.next().is_none().then_some(receipt)
+            })
+        })
+        .or_else(|| {
+            runtime_receipts.iter().find(|receipt| {
+                let RetainedRuntimeReceipt::BoundedOracle(bounded) = receipt else {
+                    return false;
+                };
+                bounded.owns_exact_ability_word(keyword)
+                    && runtime_receipt_has_exact_contract(receipt)
+                    && face_index.is_none_or(|face_index| {
+                        bounded
+                            .source_evidence
+                            .covered_oracle_clauses
+                            .iter()
+                            .all(|clause| clause.face_index == face_index)
+                    })
+            })
         });
     let Some(runtime_receipt) = runtime_receipt else {
         return characteristic_receipt_dispositions(
@@ -2934,6 +3857,11 @@ fn characteristic_subject_for_leaf(subject: &CoverageLeafSubject) -> Option<Char
         CoverageLeafSubject::ColorIndicator => Some(CharacteristicSubject::ColorIndicator),
         CoverageLeafSubject::Power => Some(CharacteristicSubject::Power),
         CoverageLeafSubject::Toughness => Some(CharacteristicSubject::Toughness),
+        CoverageLeafSubject::Loyalty => Some(CharacteristicSubject::Loyalty),
+        CoverageLeafSubject::Defense => Some(CharacteristicSubject::Defense),
+        CoverageLeafSubject::HandModifier => Some(CharacteristicSubject::HandModifier),
+        CoverageLeafSubject::LifeModifier => Some(CharacteristicSubject::LifeModifier),
+        CoverageLeafSubject::AttractionLights => Some(CharacteristicSubject::AttractionLights),
         CoverageLeafSubject::TypeLine => Some(CharacteristicSubject::CardTypeProfile),
         CoverageLeafSubject::Keyword(keyword) => Some(CharacteristicSubject::PrintedCombatKeyword(
             keyword.trim().to_ascii_lowercase(),
@@ -2943,6 +3871,20 @@ fn characteristic_subject_for_leaf(subject: &CoverageLeafSubject) -> Option<Char
 }
 
 fn runtime_receipt_has_exact_contract(receipt: &RetainedRuntimeReceipt) -> bool {
+    if let RetainedRuntimeReceipt::KeywordRules(receipt) = receipt {
+        return receipt.has_exact_contract()
+            && executor_id_matches_version(
+                receipt.keyword_rules.binding.executor_id,
+                receipt.keyword_rules.binding.executor_version,
+            );
+    }
+    if let RetainedRuntimeReceipt::BoundedOracle(receipt) = receipt {
+        return receipt.has_exact_contract()
+            && executor_id_matches_version(
+                receipt.binding.executor_id,
+                receipt.binding.executor_version,
+            );
+    }
     if let RetainedRuntimeReceipt::Land(receipt) = receipt {
         return receipt.has_exact_contract()
             && executor_id_matches_version(
@@ -3004,6 +3946,12 @@ fn runtime_receipt_has_exact_contract(receipt: &RetainedRuntimeReceipt) -> bool 
             ) {
                 expected_capabilities.push(RuntimeCapability::ExactBargainKeyword);
             }
+            if matches!(
+                receipt.transaction,
+                TypedAtomicTransaction::ThresholdRitual { .. }
+            ) {
+                expected_capabilities.push(RuntimeCapability::ExactThresholdAbilityWord);
+            }
             (
                 &receipt.binding,
                 receipt.capabilities.as_slice(),
@@ -3040,20 +3988,32 @@ fn runtime_receipt_has_exact_contract(receipt: &RetainedRuntimeReceipt) -> bool 
                 RuntimeCapability::CounteredSpellResolutionBoundary,
             ],
         ),
-        RetainedRuntimeReceipt::ConditionalManaSource(receipt) => (
-            &receipt.binding,
-            receipt.capabilities.as_slice(),
-            &receipt.source_evidence,
-            CONDITIONAL_MANA_SOURCE_EXECUTOR_VERSION,
-            vec![
+        RetainedRuntimeReceipt::ConditionalManaSource(receipt) => {
+            let mut expected = vec![
                 RuntimeCapability::CompleteOracleRoot,
                 if receipt.source.is_entry_linked() {
                     RuntimeCapability::ExactPermanentEntryProcedure
                 } else {
                     RuntimeCapability::LiveBattlefieldManaCondition
                 },
-            ],
-        ),
+            ];
+            match receipt.source {
+                TypedConditionalManaSource::ImprintLinkedCardColors => {
+                    expected.push(RuntimeCapability::ExactImprintAbilityWord);
+                }
+                TypedConditionalManaSource::MetalcraftAnyColor => {
+                    expected.push(RuntimeCapability::ExactMetalcraftAbilityWord);
+                }
+                _ => {}
+            }
+            (
+                &receipt.binding,
+                receipt.capabilities.as_slice(),
+                &receipt.source_evidence,
+                CONDITIONAL_MANA_SOURCE_EXECUTOR_VERSION,
+                expected,
+            )
+        }
         RetainedRuntimeReceipt::SacrificeSelfMana(receipt) => (
             &receipt.binding,
             receipt.capabilities.as_slice(),
@@ -3066,8 +4026,17 @@ fn runtime_receipt_has_exact_contract(receipt: &RetainedRuntimeReceipt) -> bool 
         ),
         RetainedRuntimeReceipt::LiveAbility(receipt) => {
             let mut expected = vec![RuntimeCapability::ExactOracleClauseSet];
-            if receipt.shape == LiveAbilityShape::EquipmentAttach {
-                expected.push(RuntimeCapability::ExactEquipKeyword);
+            match receipt.shape {
+                LiveAbilityShape::EquipmentAttach => {
+                    expected.push(RuntimeCapability::ExactEquipKeyword);
+                }
+                LiveAbilityShape::MillResolution => {
+                    expected.push(RuntimeCapability::ExactMillKeyword);
+                }
+                LiveAbilityShape::StormCopyTrigger => {
+                    expected.push(RuntimeCapability::ExactStormKeyword);
+                }
+                _ => {}
             }
             (
                 &receipt.binding,
@@ -3087,6 +4056,12 @@ fn runtime_receipt_has_exact_contract(receipt: &RetainedRuntimeReceipt) -> bool 
         }
         RetainedRuntimeReceipt::Land(_) => {
             unreachable!("land receipts return through their dedicated exact contract")
+        }
+        RetainedRuntimeReceipt::BoundedOracle(_) => {
+            unreachable!("bounded Oracle receipts return through their dedicated exact contract")
+        }
+        RetainedRuntimeReceipt::KeywordRules(_) => {
+            unreachable!("keyword rules receipts return through their dedicated exact contract")
         }
     };
     let Some(source_scope) = capabilities.first().copied() else {
@@ -3118,12 +4093,281 @@ fn runtime_receipt_supports_metric(
     receipt: &RetainedRuntimeReceipt,
     metric: ExecutionMetric,
 ) -> bool {
+    if let RetainedRuntimeReceipt::KeywordRules(receipt) = receipt {
+        return keyword_rules_receipt_supports_metric_with_gate(
+            receipt,
+            metric,
+            production_keyword_live_bridge_registry(),
+        );
+    }
     let (binding, _, _) = runtime_receipt_parts(receipt);
     executor_id_supports_metric(binding.executor_id, binding.executor_version, metric)
 }
 
+pub(crate) const KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION: &str = "keyword-live-bridge-registry/v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct KeywordLiveBridgeRegistration {
+    pub adapter_id: &'static str,
+    pub adapter_version: &'static str,
+    pub keyword: OfficialKeyword,
+    pub capabilities: &'static [LiveBridgeCapability],
+}
+
+impl KeywordLiveBridgeRegistration {
+    pub(crate) const fn new(
+        adapter_id: &'static str,
+        adapter_version: &'static str,
+        keyword: OfficialKeyword,
+        capabilities: &'static [LiveBridgeCapability],
+    ) -> Self {
+        Self {
+            adapter_id,
+            adapter_version,
+            keyword,
+            capabilities,
+        }
+    }
+
+    fn has_exact_contract(self) -> bool {
+        !self.adapter_id.trim().is_empty()
+            && !self.adapter_version.trim().is_empty()
+            && !self.capabilities.is_empty()
+            && self.capabilities.windows(2).all(|pair| pair[0] < pair[1])
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeywordLiveBridgeRegistry {
+    pub registry_version: &'static str,
+    pub registrations: &'static [KeywordLiveBridgeRegistration],
+}
+
+impl KeywordLiveBridgeRegistry {
+    fn has_exact_contract(self) -> bool {
+        self.registry_version == KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION
+            && self
+                .registrations
+                .iter()
+                .all(|registration| registration.has_exact_contract())
+            && self.registrations.windows(2).all(|pair| {
+                (pair[0].keyword, pair[0].adapter_id, pair[0].adapter_version)
+                    < (pair[1].keyword, pair[1].adapter_id, pair[1].adapter_version)
+            })
+    }
+}
+
+const DEVOID_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::EffectiveColorCharacteristics,
+];
+const STATIC_ATTACK_LEGALITY_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::CombatAttackLegality,
+];
+const VIGILANCE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::CombatAttackDeclaration,
+];
+const DEVOID_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.devoid-characteristics";
+const STATIC_KEYWORD_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.static-state";
+
+static PRODUCTION_KEYWORD_LIVE_BRIDGE_REGISTRATIONS: [KeywordLiveBridgeRegistration; 3] = [
+    KeywordLiveBridgeRegistration::new(
+        STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
+        STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Defender,
+        STATIC_ATTACK_LEGALITY_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        DEVOID_PRODUCTION_ADAPTER_ID,
+        DEVOID_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Devoid,
+        DEVOID_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
+        STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Vigilance,
+        VIGILANCE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+];
+
+fn production_keyword_live_bridge_registry() -> KeywordLiveBridgeRegistry {
+    KeywordLiveBridgeRegistry {
+        registry_version: KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION,
+        registrations: &PRODUCTION_KEYWORD_LIVE_BRIDGE_REGISTRATIONS,
+    }
+}
+
+fn keyword_live_bridge_registry_has_registration(
+    registry: KeywordLiveBridgeRegistry,
+    keyword: OfficialKeyword,
+    required_capabilities: &[LiveBridgeCapability],
+) -> bool {
+    if !registry.has_exact_contract() {
+        return false;
+    }
+    let mut registrations = registry
+        .registrations
+        .iter()
+        .filter(|registration| registration.keyword == keyword);
+    let Some(registration) = registrations.next() else {
+        return false;
+    };
+    registrations.next().is_none() && registration.capabilities == required_capabilities
+}
+
+fn keyword_live_bridge_registration_dependency(
+    registration: KeywordLiveBridgeRegistration,
+) -> String {
+    format!(
+        "keyword-live-adapter:{}@{}",
+        registration.adapter_id, registration.adapter_version
+    )
+}
+
+fn keyword_live_bridge_rule_dependency(keyword: OfficialKeyword) -> Option<&'static str> {
+    match keyword {
+        OfficialKeyword::Defender => Some("702.3a"),
+        OfficialKeyword::Devoid => Some("702.114a"),
+        OfficialKeyword::Vigilance => Some("702.20a"),
+        _ => None,
+    }
+}
+
+fn required_keyword_live_bridge_capabilities(
+    keyword: OfficialKeyword,
+    metric: ExecutionMetric,
+) -> Option<&'static [LiveBridgeCapability]> {
+    match (keyword, metric) {
+        (
+            OfficialKeyword::Devoid,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(DEVOID_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Defender,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(STATIC_ATTACK_LEGALITY_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Vigilance,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(VIGILANCE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Mill
+            | OfficialKeyword::Regenerate
+            | OfficialKeyword::Protection
+            | OfficialKeyword::Flying
+            | OfficialKeyword::Fight
+            | OfficialKeyword::Investigate
+            | OfficialKeyword::Kicker
+            | OfficialKeyword::Flashback
+            | OfficialKeyword::Morph
+            | OfficialKeyword::Flash
+            | OfficialKeyword::Menace
+            | OfficialKeyword::Reach
+            | OfficialKeyword::Changeling
+            | OfficialKeyword::Infect
+            | OfficialKeyword::Fear
+            | OfficialKeyword::Shadow
+            | OfficialKeyword::Landwalk
+            | OfficialKeyword::Affinity
+            | OfficialKeyword::Cascade
+            | OfficialKeyword::Delve
+            | OfficialKeyword::Fuse
+            | OfficialKeyword::Aftermath
+            | OfficialKeyword::Rebound
+            | OfficialKeyword::Exalted
+            | OfficialKeyword::Bushido
+            | OfficialKeyword::Wither
+            | OfficialKeyword::Horsemanship
+            | OfficialKeyword::Flanking
+            | OfficialKeyword::Persist
+            | OfficialKeyword::Undying
+            | OfficialKeyword::Toxic
+            | OfficialKeyword::Daybound
+            | OfficialKeyword::Nightbound
+            | OfficialKeyword::StartYourEngines
+            | OfficialKeyword::ChooseABackground
+            | OfficialKeyword::DoctorsCompanion
+            | OfficialKeyword::Exploit
+            | OfficialKeyword::Soulbond
+            | OfficialKeyword::Evolve
+            | OfficialKeyword::Improvise
+            | OfficialKeyword::Intimidate
+            | OfficialKeyword::Spree
+            | OfficialKeyword::Bargain
+            | OfficialKeyword::Mentor
+            | OfficialKeyword::Extort
+            | OfficialKeyword::LivingWeapon
+            | OfficialKeyword::Myriad
+            | OfficialKeyword::Retrace
+            | OfficialKeyword::Backup
+            | OfficialKeyword::UmbraArmor
+            | OfficialKeyword::Cipher
+            | OfficialKeyword::Renown
+            | OfficialKeyword::Ascend
+            | OfficialKeyword::Convoke
+            | OfficialKeyword::Equip
+            | OfficialKeyword::Enchant
+            | OfficialKeyword::Saga
+            | OfficialKeyword::CumulativeUpkeep
+            | OfficialKeyword::Haste
+            | OfficialKeyword::Trample
+            | OfficialKeyword::Deathtouch
+            | OfficialKeyword::Lifelink
+            | OfficialKeyword::FirstStrike
+            | OfficialKeyword::DoubleStrike
+            | OfficialKeyword::Hexproof
+            | OfficialKeyword::Shroud
+            | OfficialKeyword::Indestructible
+            | OfficialKeyword::Prowess
+            | OfficialKeyword::Ward
+            | OfficialKeyword::Scry
+            | OfficialKeyword::Surveil
+            | OfficialKeyword::Cycling,
+            _,
+        )
+        | (
+            OfficialKeyword::Devoid | OfficialKeyword::Defender | OfficialKeyword::Vigilance,
+            ExecutionMetric::RawOpeningComposition | ExecutionMetric::SynergyDescription,
+        ) => None,
+    }
+}
+
+pub(crate) fn keyword_rules_receipt_supports_metric_with_gate(
+    receipt: &ExactKeywordRulesRuntimeReceipt,
+    metric: ExecutionMetric,
+    registry: KeywordLiveBridgeRegistry,
+) -> bool {
+    if !receipt.has_exact_contract() || !registry.has_exact_contract() {
+        return false;
+    }
+    let keyword = receipt.keyword_rules.keyword;
+    let Some(required) = required_keyword_live_bridge_capabilities(keyword, metric) else {
+        return false;
+    };
+    if receipt.delegated_clause.required_live_bridge_capabilities() != required {
+        return false;
+    }
+    keyword_live_bridge_registry_has_registration(registry, keyword, required)
+}
+
 fn executor_id_matches_version(executor_id: &str, executor_version: &str) -> bool {
     match executor_version {
+        KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION => executor_id == KEYWORD_RULES_RUNTIME_EXECUTOR_ID,
         ATOMIC_TRANSACTION_EXECUTOR_VERSION => matches!(
             executor_id,
             "abstract-play.atomic.hand-mana"
@@ -3175,6 +4419,9 @@ fn executor_id_matches_version(executor_id: &str, executor_version: &str) -> boo
                 | "abstract-play.ability.trigger.temporary-power-toughness"
                 | "abstract-play.ability.trigger.become-monarch"
                 | "abstract-play.ability.static.all-creature-types"
+                | "abstract-play.ability.trigger.table-resource"
+                | "abstract-play.ability.resolution.mill"
+                | "abstract-play.ability.trigger.storm-copy"
         ),
         INTERACTION_RUNTIME_EXECUTOR_VERSION => matches!(
             executor_id,
@@ -3256,15 +4503,34 @@ fn executor_id_matches_version(executor_id: &str, executor_version: &str) -> boo
                 | "abstract-play.land.entry.two-opponents"
                 | "abstract-play.land.fetch-two-basic-land-types"
         ),
+        BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION => matches!(
+            executor_id,
+            "abstract-play.bounded-oracle.casting-additional-cost"
+                | "abstract-play.bounded-oracle.resolution"
+                | "abstract-play.bounded-oracle.activated"
+                | "abstract-play.bounded-oracle.triggered"
+                | "abstract-play.bounded-oracle.triggered-modal"
+                | "abstract-play.bounded-oracle.static"
+                | "abstract-play.bounded-oracle.replacement"
+                | "abstract-play.bounded-oracle.modal"
+                | "abstract-play.bounded-oracle.special-action"
+        ),
+        PRINTED_COST_RUNTIME_EXECUTOR_VERSION => executor_id == PRINTED_COST_RUNTIME_EXECUTOR_ID,
+        FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION => executor_id == FACE_LAYOUT_EXECUTOR_ID,
         CHARACTERISTIC_EXECUTOR_VERSION => matches!(
             executor_id,
-            "abstract-play.characteristic.modal-double-faced-relationship"
+            "abstract-play.characteristic.double-faced-relationship"
                 | "abstract-play.characteristic.mana-cost"
                 | "abstract-play.characteristic.mana-value"
                 | "abstract-play.characteristic.colors"
                 | "abstract-play.characteristic.color-indicator"
                 | "abstract-play.characteristic.power"
                 | "abstract-play.characteristic.toughness"
+                | "abstract-play.characteristic.loyalty"
+                | "abstract-play.characteristic.defense"
+                | "abstract-play.characteristic.hand-modifier"
+                | "abstract-play.characteristic.life-modifier"
+                | "abstract-play.characteristic.attraction-lights"
                 | "abstract-play.characteristic.card-type-profile"
                 | "abstract-play.characteristic.printed-combat-keyword.deathtouch"
                 | "abstract-play.characteristic.printed-combat-keyword.double-strike"
@@ -3282,6 +4548,7 @@ fn executor_id_matches_version(executor_id: &str, executor_version: &str) -> boo
                 | "abstract-play.characteristic.printed-combat-keyword.defender"
                 | "abstract-play.characteristic.printed-keyword.equip"
                 | "abstract-play.characteristic.printed-keyword.cumulative-upkeep"
+                | "abstract-play.characteristic.printed-keyword.devoid"
         ),
         CHARACTERISTIC_ORACLE_EXECUTOR_VERSION => matches!(
             executor_id,
@@ -3297,6 +4564,9 @@ fn executor_id_supports_metric(
     executor_version: &str,
     metric: ExecutionMetric,
 ) -> bool {
+    if executor_id == KEYWORD_RULES_RUNTIME_EXECUTOR_ID {
+        return false;
+    }
     if !executor_id_matches_version(executor_id, executor_version) {
         return false;
     }
@@ -3308,6 +4578,54 @@ fn executor_id_supports_metric(
         | ExecutionMetric::InterferenceTiming
         | ExecutionMetric::BracketRating => true,
     }
+}
+
+fn executor_binding_supports_metric(binding: &ExecutorBinding, metric: ExecutionMetric) -> bool {
+    if binding.executor_id != KEYWORD_RULES_RUNTIME_EXECUTOR_ID {
+        return executor_id_supports_metric(
+            &binding.executor_id,
+            &binding.executor_version,
+            metric,
+        );
+    }
+    if binding.executor_version != KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION {
+        return false;
+    }
+    let registry = production_keyword_live_bridge_registry();
+    if !registry.has_exact_contract() {
+        return false;
+    }
+    let mut matching_registrations =
+        registry
+            .registrations
+            .iter()
+            .copied()
+            .filter(|registration| {
+                let Some(required) =
+                    required_keyword_live_bridge_capabilities(registration.keyword, metric)
+                else {
+                    return false;
+                };
+                let Some(rule_dependency) =
+                    keyword_live_bridge_rule_dependency(registration.keyword)
+                else {
+                    return false;
+                };
+                registration.capabilities == required
+                    && binding
+                        .rule_dependencies
+                        .contains(&keyword_live_bridge_registration_dependency(*registration))
+                    && required.iter().all(|capability| {
+                        binding
+                            .rule_dependencies
+                            .contains(&format!("keyword-live-bridge:{}", capability.stable_id()))
+                    })
+                    && binding
+                        .rule_dependencies
+                        .iter()
+                        .any(|dependency| dependency == rule_dependency)
+            });
+    matching_registrations.next().is_some() && matching_registrations.next().is_none()
 }
 
 fn runtime_receipt_parts(
@@ -3371,6 +4689,16 @@ fn runtime_receipt_parts(
         RetainedRuntimeReceipt::LiveAbility(receipt) => (
             &receipt.binding,
             &receipt.capabilities,
+            &receipt.source_evidence,
+        ),
+        RetainedRuntimeReceipt::BoundedOracle(receipt) => (
+            &receipt.binding,
+            &receipt.capabilities,
+            &receipt.source_evidence,
+        ),
+        RetainedRuntimeReceipt::KeywordRules(receipt) => (
+            &receipt.keyword_rules.binding,
+            &receipt.keyword_rules.capabilities,
             &receipt.source_evidence,
         ),
     }
@@ -3437,6 +4765,83 @@ fn executor_binding(
     if capabilities.contains(&RuntimeCapability::ExactBargainKeyword) {
         rule_dependencies.push("CR 702.166a".into());
     }
+    if capabilities.contains(&RuntimeCapability::ExactImprintAbilityWord) {
+        rule_dependencies.push("CR 207.2c".into());
+        rule_dependencies.push("typed-ability-word:imprint".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactMetalcraftAbilityWord) {
+        rule_dependencies.push("CR 207.2c".into());
+        rule_dependencies.push("typed-ability-word:metalcraft".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactThresholdAbilityWord) {
+        rule_dependencies.push("CR 207.2c".into());
+        rule_dependencies.push("typed-ability-word:threshold".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactDelayedDrawbackLifecycle) {
+        rule_dependencies.push("CR 104.3h".into());
+        rule_dependencies.push("CR 500.7".into());
+        rule_dependencies.push("CR 603.7".into());
+        rule_dependencies.push("typed-bounded-oracle:delayed-drawback-lifecycle".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactAttachmentStaticEffect) {
+        rule_dependencies.push("typed-bounded-oracle:live-attachment-target".into());
+        if let RetainedRuntimeReceipt::BoundedOracle(receipt) = receipt {
+            for effect in receipt.clause.effects() {
+                match effect {
+                    crate::bounded_oracle_runtime::Effect::ModifyPowerToughness(change) => {
+                        add_attachment_kind_rule_dependency(
+                            &change.objects,
+                            &mut rule_dependencies,
+                        );
+                        rule_dependencies.push("CR 613.4c".into());
+                    }
+                    crate::bounded_oracle_runtime::Effect::Restriction(
+                        crate::bounded_oracle_runtime::Restriction::DoesNotUntapDuring {
+                            object,
+                            ..
+                        },
+                    ) => {
+                        add_attachment_kind_rule_dependency(object, &mut rule_dependencies);
+                        rule_dependencies.push("CR 502.2".into());
+                    }
+                    crate::bounded_oracle_runtime::Effect::Restriction(restriction) => {
+                        let (object, rule) = match restriction {
+                            crate::bounded_oracle_runtime::Restriction::CannotAttack {
+                                object,
+                                ..
+                            } => (object, "CR 508.1c"),
+                            crate::bounded_oracle_runtime::Restriction::MustAttackEachCombatIfAble {
+                                object,
+                                ..
+                            } => (object, "CR 508.1d"),
+                            crate::bounded_oracle_runtime::Restriction::CannotBlock {
+                                object,
+                                ..
+                            } => (object, "CR 509.1a"),
+                            crate::bounded_oracle_runtime::Restriction::CannotBeBlocked {
+                                object,
+                                ..
+                            } => (object, "CR 509.1b"),
+                            crate::bounded_oracle_runtime::Restriction::ActivatedAbilitiesCannotBeActivated {
+                                object,
+                                ..
+                            } => (object, "CR 602.1b"),
+                            _ => continue,
+                        };
+                        add_attachment_kind_rule_dependency(object, &mut rule_dependencies);
+                        rule_dependencies.push(rule.into());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if capabilities.contains(&RuntimeCapability::ExactMillKeyword) {
+        rule_dependencies.push("CR 701.13".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactStormKeyword) {
+        rule_dependencies.push("CR 702.40".into());
+    }
     if capabilities.contains(&RuntimeCapability::ExactOverloadKeyword) {
         rule_dependencies.push("CR 702.96a".into());
     }
@@ -3445,16 +4850,164 @@ fn executor_binding(
     }
     if capabilities.contains(&RuntimeCapability::ExactEnchantKeyword) {
         rule_dependencies.push("CR 702.5".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:enchant".into());
+        }
     }
     if capabilities.contains(&RuntimeCapability::ExactEquipKeyword) {
         rule_dependencies.push("CR 702.6".into());
     }
     if capabilities.contains(&RuntimeCapability::ExactScryKeyword) {
         rule_dependencies.push("CR 701.18".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:scry".into());
+        }
+    }
+    for (capability, tag, rule) in [
+        (
+            RuntimeCapability::ExactBoundedOracleProgram,
+            "typed-bounded-oracle:transactional-clause",
+            "CR 609",
+        ),
+        (
+            RuntimeCapability::ExactCannotBeBlockedRestriction,
+            "typed-bounded-oracle:cannot-be-blocked",
+            "CR 509.1",
+        ),
+        (
+            RuntimeCapability::ExactChannelKeyword,
+            "bounded-mechanic:channel",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactCyclingKeyword,
+            "bounded-mechanic:cycling",
+            "CR 702.29",
+        ),
+        (
+            RuntimeCapability::ExactTypecyclingKeyword,
+            "bounded-mechanic:typecycling",
+            "CR 702.29",
+        ),
+        (
+            RuntimeCapability::ExactTreasureKeyword,
+            "bounded-mechanic:treasure",
+            "CR 111.10",
+        ),
+        (
+            RuntimeCapability::ExactFoodKeyword,
+            "bounded-mechanic:food",
+            "CR 111.10b",
+        ),
+        (
+            RuntimeCapability::ExactProwessKeyword,
+            "bounded-mechanic:prowess",
+            "CR 702.108",
+        ),
+        (
+            RuntimeCapability::ExactWardKeyword,
+            "bounded-mechanic:ward",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactSurveilKeyword,
+            "bounded-mechanic:surveil",
+            "CR 701",
+        ),
+        (
+            RuntimeCapability::ExactCrewKeyword,
+            "bounded-mechanic:crew",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactSplitSecondKeyword,
+            "bounded-mechanic:split-second",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactEvokeKeyword,
+            "bounded-mechanic:evoke",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactManifestKeyword,
+            "bounded-mechanic:manifest",
+            "CR 701",
+        ),
+        (
+            RuntimeCapability::ExactPartnerKeyword,
+            "bounded-mechanic:partner",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactTransformKeyword,
+            "bounded-mechanic:transform",
+            "CR 701",
+        ),
+        (
+            RuntimeCapability::ExactParadigmKeyword,
+            "bounded-mechanic:paradigm",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactDoubleKeyword,
+            "bounded-mechanic:double",
+            "CR 701",
+        ),
+        (
+            RuntimeCapability::ExactLandfallAbilityWord,
+            "bounded-mechanic:landfall",
+            "CR 207.2c",
+        ),
+        (
+            RuntimeCapability::ExactFerociousAbilityWord,
+            "bounded-mechanic:ferocious",
+            "CR 207.2c",
+        ),
+        (
+            RuntimeCapability::ExactDashKeyword,
+            "bounded-mechanic:dash",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactGiftKeyword,
+            "bounded-mechanic:gift",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactMobilizeKeyword,
+            "bounded-mechanic:mobilize",
+            "CR 702",
+        ),
+        (
+            RuntimeCapability::ExactAbilityWordMarker,
+            "bounded-mechanic:ability-word",
+            "CR 207.2c",
+        ),
+        (
+            RuntimeCapability::ExactProtectionKeyword,
+            "typed-keyword:protection",
+            "CR 702.16",
+        ),
+    ] {
+        if capabilities.contains(&capability) {
+            rule_dependencies.push(tag.into());
+            rule_dependencies.push(rule.into());
+        }
     }
     if capabilities.contains(&RuntimeCapability::OptionalUncastSpellCopy) {
         rule_dependencies.push("CR 707.10".into());
         rule_dependencies.push("CR 707.10c".into());
+    }
+    if let RetainedRuntimeReceipt::BoundedOracle(receipt) = receipt {
+        for program in &receipt.mechanic_programs {
+            if let MechanicProcedure::AbilityWord(procedure) = program.procedure() {
+                rule_dependencies.push(format!(
+                    "bounded-ability-word:{}",
+                    procedure.printed_label.trim().to_ascii_lowercase()
+                ));
+            }
+        }
     }
     if matches!(receipt, RetainedRuntimeReceipt::Interaction(_)) {
         rule_dependencies.push("CR 115.1".into());
@@ -3473,23 +5026,254 @@ fn executor_binding(
             LiveAbilityShape::Ward => rule_dependencies.push("CR 702.21".into()),
             LiveAbilityShape::AuraSpellTargeting => rule_dependencies.push("CR 702.5".into()),
             LiveAbilityShape::ScryResolution => rule_dependencies.push("CR 701.18".into()),
+            LiveAbilityShape::MillResolution => rule_dependencies.push("CR 701.13".into()),
+            LiveAbilityShape::StormCopyTrigger => rule_dependencies.push("CR 702.40".into()),
             _ => {}
         }
         if receipt.owns_exact_treasure_token_keyword() {
             rule_dependencies.push("CR 111.10a".into());
         }
     }
+    if let RetainedRuntimeReceipt::KeywordRules(receipt) = receipt {
+        rule_dependencies.extend(receipt.keyword_rules.official_rule_ids.iter().cloned());
+        rule_dependencies.extend(
+            receipt
+                .delegated_clause
+                .required_live_bridge_capabilities()
+                .iter()
+                .map(|capability| format!("keyword-live-bridge:{}", capability.stable_id())),
+        );
+        let registry = production_keyword_live_bridge_registry();
+        let mut registrations = registry
+            .registrations
+            .iter()
+            .copied()
+            .filter(|registration| registration.keyword == receipt.keyword_rules.keyword);
+        if let Some(registration) = registrations.next()
+            && registrations.next().is_none()
+            && registration.capabilities
+                == receipt.delegated_clause.required_live_bridge_capabilities()
+        {
+            rule_dependencies.push(keyword_live_bridge_registration_dependency(registration));
+        }
+    }
     rule_dependencies.sort();
     rule_dependencies.dedup();
 
-    let mut evidence_tests = vec![
-        format!(
-            "runtime-executor:{}@{}",
-            runtime_binding.executor_id, runtime_binding.executor_version
-        ),
-        format!("runtime-receipt:{}", runtime_binding.receipt_schema_version),
-        "runtime-source:oracle-clause-and-type-binding".into(),
-    ];
+    let mut evidence_tests = match receipt {
+        RetainedRuntimeReceipt::Atomic(receipt) => match &receipt.transaction {
+            TypedAtomicTransaction::HandMana { .. } => vec![
+                "ability_program::tests::hand_exile_fixed_mana_transaction_is_name_independent_and_exact",
+                "simulation::tests::atomic_hand_mana_is_rename_independent_plannable_and_not_a_rule_of_law_spell",
+            ],
+            TypedAtomicTransaction::SacrificeRitual { .. } => vec![
+                "ability_program::tests::additional_creature_cost_transactions_bind_cost_before_resolution",
+                "ability_program::tests::additional_cost_mutations_own_and_reject_every_sibling_clause",
+            ],
+            TypedAtomicTransaction::NameLinkedGraveyardRitual { .. } => vec![
+                "ability_program::tests::name_linked_graveyard_mana_is_one_exact_cast_transaction",
+                "simulation::tests::atomic_name_linked_graveyard_ritual_runtime_revalidation_rejects_mutated_ir",
+            ],
+            TypedAtomicTransaction::SacrificeTutor { .. } => vec![
+                "ability_program::tests::additional_creature_cost_transactions_bind_cost_before_resolution",
+                "simulation::tests::countered_atomic_tutor_commits_mana_and_sacrifice_but_not_search_resolution",
+            ],
+            TypedAtomicTransaction::ThresholdRitual { .. } => vec![
+                "ability_program::tests::threshold_mana_is_one_exact_replacement_transaction",
+                "simulation::tests::atomic_threshold_uses_the_pre_spell_graveyard_snapshot_in_runtime_and_planner",
+            ],
+            TypedAtomicTransaction::SearchRandomDiscardShuffle { .. } => vec![
+                "ability_program::tests::search_random_discard_shuffle_preserves_exact_order_and_selection",
+                "simulation::tests::atomic_random_discard_includes_the_searched_card_before_shuffling",
+            ],
+            TypedAtomicTransaction::TemporaryLandSacrificeManaGrant { .. } => vec![
+                "ability_program::tests::temporary_land_sacrifice_mana_grant_is_name_independent_and_complete",
+                "simulation::tests::atomic_rain_of_filth_grant_is_resolution_gated_exact_and_expires",
+            ],
+            TypedAtomicTransaction::BargainSearchCastOrHand { .. } => vec![
+                "ability_program::tests::bargain_search_cast_or_hand_is_name_independent_and_complete",
+                "simulation::tests::atomic_beseech_bargain_costs_are_transactional_and_countered_search_is_skipped",
+            ],
+            TypedAtomicTransaction::OpponentChoiceSearchSplit => vec![
+                "ability_program::tests::opponent_choice_search_split_is_name_independent_and_complete",
+                "simulation::tests::atomic_intuition_stale_duplicate_falls_back_and_countered_path_is_atomic",
+            ],
+        },
+        RetainedRuntimeReceipt::GraveyardReclamation(_) => vec![
+            "ability_program::graveyard_reclamation_tests::current_graveyard_reclamation_root_is_name_independent_and_fully_typed",
+            "simulation::tests::graveyard_reclamation_runtime_preserves_physical_identity_and_order",
+        ],
+        RetainedRuntimeReceipt::SpellResolutionMana(_) => vec![
+            "simulation::tests::spell_resolution_mana_requires_the_complete_typed_root",
+            "simulation::tests::planner_functional_gate_rejects_descriptor_only_spell_mana",
+        ],
+        RetainedRuntimeReceipt::ConditionalManaSource(_) => vec![
+            "simulation::tests::conditional_artifact_mana_receipts_are_exact_and_fail_closed",
+            "simulation::tests::reviewed_primer_setup_admission_is_capability_based_for_fast_mana_families",
+        ],
+        RetainedRuntimeReceipt::SacrificeSelfMana(_) => vec![
+            "simulation::tests::sacrifice_self_any_color_mana_requires_the_exact_complete_ability",
+            "simulation::tests::planner_sacrifices_exact_one_shot_permanent_only_after_downstream_spend",
+        ],
+        RetainedRuntimeReceipt::Interaction(_) => vec![
+            "interaction_runtime::tests::mutations_extra_effects_and_partial_roots_fail_closed",
+            "interaction_runtime::tests::compiled_program_bridge_requires_one_complete_contiguous_root",
+            "simulation::tests::exact_interaction_programs_are_held_without_legal_goldfish_targets",
+        ],
+        RetainedRuntimeReceipt::Tutor(_) => vec![
+            "tutor_runtime::tests::compiled_program_bridge_preserves_the_complete_tutor_root",
+            "runtime_receipts::interaction_and_tutor_receipt_tests::tutor_receipts_bind_order_life_and_trigger_conditions",
+            "simulation::tests::exact_tutor_programs_drive_ordered_search_life_and_upkeep_resolution",
+        ],
+        RetainedRuntimeReceipt::RestrictionProtection(_) => vec![
+            "restriction_protection_runtime::tests::mutations_fail_closed",
+            "simulation::tests::exact_restrictions_drive_targetless_holding_and_opponent_turn_lock",
+            "simulation::tests::exact_complete_protection_is_the_only_reviewed_hand_protection_program",
+        ],
+        RetainedRuntimeReceipt::Reviewed(receipt) => match &receipt.program {
+            ReviewedRuntimeProgram::AlternativeCast(_) => vec![
+                "alternative_cast_runtime::tests::mutations_fail_closed",
+                "simulation::tests::exact_alternative_cast_choices_preserve_cost_zone_target_and_resolution",
+            ],
+            ReviewedRuntimeProgram::CharacteristicOracle(_) => vec![
+                "characteristic_oracle_runtime::tests::mutations_fail_closed",
+                "simulation::tests::oracle_characteristic_receipts_use_the_live_compiled_characteristic",
+            ],
+            ReviewedRuntimeProgram::ContinuousTrigger(_) => vec![
+                "continuous_trigger_runtime::tests::mutations_fail_closed",
+                "simulation::tests::exact_continuous_and_trigger_programs_drive_live_state",
+            ],
+            ReviewedRuntimeProgram::ManaNetwork(_) => vec![
+                "mana_network_runtime::tests::exact_network_families_retain_complete_typed_dependencies",
+                "mana_network_runtime::tests::nearby_network_mutations_and_partial_roots_fail_closed",
+                "runtime_receipts::mana_network_receipt_tests::mana_network_receipts_bind_complete_exact_roots_and_fail_closed",
+                "execution_coverage::tests::mana_network_receipts_execute_every_exact_root_clause_without_overlap",
+                "simulation::tests::exact_mana_network_programs_drive_live_sources_grants_and_bounce_entry",
+            ],
+            ReviewedRuntimeProgram::ObjectLifecycle(_) => vec![
+                "object_lifecycle_runtime::tests::mutations_fail_closed",
+                "simulation::tests::exact_object_lifecycle_programs_preserve_identity_and_order",
+            ],
+            ReviewedRuntimeProgram::UtilityModal(_) => vec![
+                "utility_modal_runtime::tests::mutations_fail_closed",
+                "simulation::tests::exact_utility_modal_programs_preserve_cost_target_and_order",
+            ],
+        },
+        RetainedRuntimeReceipt::Land(_) => vec![
+            "land_runtime::tests::fixed_one_mana_land_clauses_are_exact_and_mutations_fail_closed",
+            "land_runtime::tests::exact_tapped_entry_families_are_typed_and_mutations_fail_closed",
+            "land_runtime::tests::fetchland_lifecycle_requires_the_complete_two_subtype_shape",
+            "simulation::tests::exact_land_runtime_drives_mana_colors_entry_delay_and_life_payment",
+        ],
+        RetainedRuntimeReceipt::LiveAbility(receipt) => match receipt.shape {
+            LiveAbilityShape::FlashPermission => vec![
+                "ability_program::tests::flash_permission_is_typed_name_independent_and_fail_closed",
+                "simulation::tests::flash_permission_is_consumed_by_the_live_opponent_end_step_cast_window",
+            ],
+            LiveAbilityShape::Ward => vec![
+                "ability_program::tests::ward_preserves_trigger_controller_cost_and_nonpayment_consequence",
+                "simulation::tests::ward_consumer_preserves_exact_generic_payment_and_nonpayment_result",
+            ],
+            LiveAbilityShape::AuraSpellTargeting => vec![
+                "ability_program::tests::enchant_creature_preserves_aura_target_scope_and_fails_closed",
+                "simulation::tests::positive_aura_attachment_requires_the_exact_typed_enchant_restriction",
+            ],
+            LiveAbilityShape::ScryResolution => vec![
+                "ability_program::tests::scry_preserves_count_player_library_choices_and_resolution_order",
+                "simulation::tests::typed_scry_moves_rejected_seen_cards_to_bottom_before_the_linked_draw",
+            ],
+            LiveAbilityShape::StaticCreatureModifier | LiveAbilityShape::ControllerTokenTrigger => {
+                vec![
+                    "simulation::tests::alela_and_archon_triggers_create_real_flying_combat_objects",
+                    "simulation::tests::keyword_reminder_text_preserves_equipment_and_team_grants",
+                ]
+            }
+            LiveAbilityShape::DrawTrigger | LiveAbilityShape::FixedDrawResolution => vec![
+                "simulation::tests::combat_draw_triggers_preserve_per_creature_per_player_and_damage_step_semantics",
+                "simulation::tests::typed_spell_draw_two_does_not_make_activated_permanent_engines_draw_on_cast",
+            ],
+            LiveAbilityShape::UpkeepTokenLife
+            | LiveAbilityShape::QuestCounterLifecycle
+            | LiveAbilityShape::BecomeMonarchTrigger => vec![
+                "simulation::tests::monarch_and_quest_state_drive_typed_token_creation_across_turns",
+                "simulation::tests::fourth_end_step_quest_counter_uses_leftover_mana_and_the_token_attacks_next_turn",
+            ],
+            LiveAbilityShape::CreatureTypeChoice
+            | LiveAbilityShape::ChosenCreatureTypeMarker
+            | LiveAbilityShape::TriggerMultiplier
+            | LiveAbilityShape::AllCreatureTypes => vec![
+                "simulation::tests::chosen_type_anthem_uses_normalized_creature_characteristics_not_names",
+                "simulation::tests::typed_entry_and_chosen_type_trigger_multipliers_change_runtime_events",
+            ],
+            LiveAbilityShape::SpellCostReduction | LiveAbilityShape::AlternativeSpellCost => vec![
+                "simulation::tests::planner_exposes_distinct_printed_and_alternative_cost_cast_actions_name_independently",
+                "simulation::tests::four_flyer_alternative_cost_taps_exact_eligible_objects_and_removes_them_from_combat",
+            ],
+            LiveAbilityShape::EquipmentAttach => vec![
+                "simulation::tests::zero_cost_haste_equipment_enables_a_new_creature_without_card_name_logic",
+                "simulation::tests::combat_equipment_targets_current_attackers_until_typed_haste_enables_newcomer",
+            ],
+            LiveAbilityShape::CumulativeUpkeep => vec![
+                "simulation::tests::cumulative_upkeep_uses_real_mana_then_sacrifices_when_the_scaled_cost_fails",
+                "simulation::tests::cumulative_endpoints_obey_threat_attempt_resolution_order",
+            ],
+            LiveAbilityShape::FixedManaActivation => vec![
+                "simulation::tests::typed_entry_and_chosen_type_trigger_multipliers_change_runtime_events",
+                "simulation::tests::planner_functional_gate_rejects_descriptor_only_spell_mana",
+            ],
+            LiveAbilityShape::TemporaryPowerToughnessTrigger => vec![
+                "simulation::tests::alela_and_archon_triggers_create_real_flying_combat_objects",
+                "simulation::tests::typed_entry_and_chosen_type_trigger_multipliers_change_runtime_events",
+            ],
+            LiveAbilityShape::TableResourceTrigger => vec![
+                "simulation::tests::normal_three_opponent_activity_executes_reviewed_tax_and_second_spell_engines",
+                "simulation::tests::controller_spell_cast_triggers_add_retained_mana_and_lotho_treasure",
+            ],
+            LiveAbilityShape::MillResolution | LiveAbilityShape::StormCopyTrigger => vec![
+                "ability_program::tests::mill_and_storm_compile_as_resolution_and_cast_trigger_with_target_choice",
+                "simulation::tests::graveyard_storm_program_rejects_each_required_clause_and_cost_mutation",
+            ],
+        },
+        RetainedRuntimeReceipt::BoundedOracle(_) => vec![
+            "bounded_oracle_runtime::tests::compiles_every_target_oracle_span_and_retains_addresses",
+            "bounded_oracle_runtime::tests::every_target_parser_path_rejects_an_unparsed_continuation",
+            "bounded_oracle_consumer::tests::consumer_version_and_compiled_clause_contract_are_exact",
+            "bounded_oracle_consumer::tests::every_effect_variant_has_a_real_mutation_path",
+            "bounded_oracle_consumer::tests::every_cost_variant_commits_and_failed_cost_sequences_roll_back",
+            "bounded_oracle_consumer::tests::target_amount_filter_and_relationship_variants_validate",
+            "bounded_oracle_consumer::tests::costs_commit_on_counter_but_effect_failure_rolls_back_everything",
+            "simulation::tests::bounded_oracle_programs_drive_live_trajectory_state",
+        ],
+        RetainedRuntimeReceipt::KeywordRules(_) => vec![
+            "keyword_rules_runtime::tests::static_keyword_execution_is_transactional_and_exact",
+            "keyword_production_bridge::tests::conservative_static_keyword_slice_installs_exact_typed_state_and_evidence",
+            "keyword_production_bridge::tests::flash_defender_and_haste_queries_consume_the_installed_kernel_state",
+            "simulation::static_keyword_production_tests::delegated_shroud_is_consumed_by_controller_and_opponent_targeting_queries",
+            "execution_coverage::tests::delegated_devoid_receipt_uses_the_registered_production_bridge",
+        ],
+    };
+    if capabilities.contains(&RuntimeCapability::ExactCannotBeBlockedRestriction) {
+        evidence_tests.extend([
+            "bounded_oracle_runtime::tests::source_cannot_be_blocked_compiles_to_a_live_battlefield_restriction",
+            "bounded_oracle_simulation::tests::cannot_be_blocked_restriction_changes_combat_legality_after_registration",
+            "runtime_receipts::bounded_mechanic_receipt_tests::cannot_be_blocked_receipt_proves_the_exact_live_combat_restriction",
+        ]);
+    }
+    if capabilities.contains(&RuntimeCapability::ExactAttachmentStaticEffect) {
+        evidence_tests.extend([
+            "bounded_oracle_runtime::tests::exact_attachment_static_clauses_compile_to_typed_current_attachments",
+            "bounded_oracle_simulation::tests::attachment_static_effects_follow_the_current_target_without_mutating_base_state",
+            "bounded_oracle_simulation::tests::attachment_restrictions_follow_the_current_target_and_fail_closed_across_action_paths",
+            "bounded_oracle_simulation::tests::incomplete_attachment_semantics_cannot_enter_or_bypass_the_live_bridge",
+            "bounded_oracle_simulation::tests::missing_and_illegal_attachments_fail_closed_before_registration",
+            "bounded_oracle_simulation::tests::equipment_static_effects_are_live_through_the_same_attachment_contract",
+            "runtime_receipts::bounded_mechanic_receipt_tests::attachment_static_receipts_require_the_exact_live_attachment_family",
+        ]);
+    }
+    let mut evidence_tests = evidence_tests
+        .drain(..)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     evidence_tests.sort();
     evidence_tests.dedup();
 
@@ -3517,6 +5301,22 @@ fn executor_binding(
     }
 }
 
+fn add_attachment_kind_rule_dependency(
+    object: &crate::bounded_oracle_runtime::ObjectRef,
+    dependencies: &mut Vec<String>,
+) {
+    let crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { kind } = object else {
+        return;
+    };
+    dependencies.push(
+        match kind {
+            crate::bounded_oracle_runtime::AttachmentKind::Aura => "CR 303.4",
+            crate::bounded_oracle_runtime::AttachmentKind::Equipment => "CR 301.5",
+        }
+        .into(),
+    );
+}
+
 fn characteristic_executor_binding(
     receipt: &CharacteristicRuntimeReceipt,
     card_revision_sha256: &str,
@@ -3533,6 +5333,12 @@ fn characteristic_executor_binding(
         CharacteristicSubject::Power | CharacteristicSubject::Toughness => {
             vec!["CR 208".to_string()]
         }
+        CharacteristicSubject::Loyalty => vec!["CR 209".to_string(), "CR 306.5b".to_string()],
+        CharacteristicSubject::Defense => vec!["CR 210".to_string(), "CR 310.4b".to_string()],
+        CharacteristicSubject::HandModifier | CharacteristicSubject::LifeModifier => {
+            vec!["CR 312.3".to_string()]
+        }
+        CharacteristicSubject::AttractionLights => vec!["CR 717.3".to_string()],
         CharacteristicSubject::CardTypeProfile => vec!["CR 205".to_string()],
         CharacteristicSubject::PrintedCombatKeyword(_) => vec!["CR 702".to_string()],
     };
@@ -3547,6 +5353,13 @@ fn characteristic_executor_binding(
             CharacteristicFaceBinding::ModalDoubleFacedBack => {
                 "typed-characteristic:modal-double-faced-back"
             }
+            CharacteristicFaceBinding::TransformDoubleFacedFront => {
+                "typed-characteristic:transform-double-faced-front"
+            }
+            CharacteristicFaceBinding::TransformDoubleFacedBack => {
+                "typed-characteristic:transform-double-faced-back"
+            }
+            CharacteristicFaceBinding::ExactFace(_) => "typed-characteristic:exact-retained-face",
         }
         .into(),
     );
@@ -3554,15 +5367,147 @@ fn characteristic_executor_binding(
     rule_dependencies.dedup();
 
     let mut evidence_tests = vec![
-        format!(
-            "runtime-executor:{}@{}",
-            receipt.binding.executor_id, receipt.binding.executor_version
-        ),
-        format!("runtime-receipt:{}", receipt.binding.receipt_schema_version),
-        "runtime-capability:typed-characteristic".into(),
+        "execution_coverage::tests::characteristic_bindings_are_typed_face_bound_and_metric_scoped"
+            .to_string(),
+        "runtime_receipts::tests::characteristic_receipts_are_exact_hashed_and_fail_closed"
+            .to_string(),
+        "execution_coverage::tests::modal_dfc_face_relationships_and_characteristics_bind_exactly"
+            .to_string(),
     ];
     evidence_tests.sort();
 
+    ExecutorBinding {
+        receipt_schema_version: receipt.binding.receipt_schema_version.into(),
+        executor_id: receipt.binding.executor_id.into(),
+        executor_version: receipt.binding.executor_version.into(),
+        ability_program_version: receipt.source_evidence.ability_program_version.into(),
+        runtime_source_evidence_sha256: receipt.source_evidence.source_evidence_sha256.clone(),
+        normalized_oracle_sha256: receipt.source_evidence.normalized_oracle_sha256.clone(),
+        normalized_oracle_clause_sha256s: receipt
+            .source_evidence
+            .normalized_oracle_clause_sha256s
+            .clone(),
+        covered_oracle_clauses: receipt
+            .source_evidence
+            .covered_oracle_clauses
+            .iter()
+            .map(OracleClauseBinding::from)
+            .collect(),
+        type_line_sha256: receipt.source_evidence.type_line_sha256.clone(),
+        relevant_type_role_mask: receipt.source_evidence.relevant_type_role_mask,
+        card_revision_sha256: card_revision_sha256.into(),
+        leaf_evidence_sha256: leaf_evidence_sha256.into(),
+        rule_dependencies,
+        evidence_tests,
+    }
+}
+
+fn printed_cost_executor_binding(
+    receipt: &PrintedCostRuntimeReceipt,
+    card_revision_sha256: &str,
+    leaf_evidence_sha256: &str,
+) -> ExecutorBinding {
+    let mut rule_dependencies = vec![
+        "CR 106".to_string(),
+        "CR 107.4".to_string(),
+        "CR 118".to_string(),
+        "CR 202".to_string(),
+        "CR 601.2f".to_string(),
+        "CR 601.2h".to_string(),
+        "typed-payment:exact-printed-symbol-program".to_string(),
+        "typed-payment:explicit-symbol-choices".to_string(),
+        "typed-payment:staged-resource-commit".to_string(),
+    ];
+    rule_dependencies.sort();
+    rule_dependencies.dedup();
+    let mut evidence_tests = vec![
+        "printed_cost_runtime::tests::parser_retains_faces_and_every_closed_symbol_family"
+            .to_string(),
+        "printed_cost_runtime::tests::exact_payment_records_hybrid_phyrexian_snow_variable_and_half_provenance"
+            .to_string(),
+        "printed_cost_runtime::tests::legendary_source_and_land_drop_symbols_consume_their_exact_provenance"
+            .to_string(),
+        "runtime_receipts::tests::printed_cost_receipts_bind_the_complete_typed_payment_contract"
+            .to_string(),
+        "bounded_oracle_simulation::tests::printed_cost_bridge_commits_exact_payment_once_and_rolls_back_failure"
+            .to_string(),
+    ];
+    evidence_tests.sort();
+    evidence_tests.dedup();
+
+    ExecutorBinding {
+        receipt_schema_version: receipt.binding.receipt_schema_version.into(),
+        executor_id: receipt.binding.executor_id.into(),
+        executor_version: receipt.binding.executor_version.into(),
+        ability_program_version: receipt.source_evidence.ability_program_version.into(),
+        runtime_source_evidence_sha256: receipt.source_evidence.source_evidence_sha256.clone(),
+        normalized_oracle_sha256: receipt.source_evidence.normalized_oracle_sha256.clone(),
+        normalized_oracle_clause_sha256s: receipt
+            .source_evidence
+            .normalized_oracle_clause_sha256s
+            .clone(),
+        covered_oracle_clauses: receipt
+            .source_evidence
+            .covered_oracle_clauses
+            .iter()
+            .map(OracleClauseBinding::from)
+            .collect(),
+        type_line_sha256: receipt.source_evidence.type_line_sha256.clone(),
+        relevant_type_role_mask: receipt.source_evidence.relevant_type_role_mask,
+        card_revision_sha256: card_revision_sha256.into(),
+        leaf_evidence_sha256: leaf_evidence_sha256.into(),
+        rule_dependencies,
+        evidence_tests,
+    }
+}
+
+fn face_layout_executor_binding(
+    receipt: &FaceLayoutRuntimeReceipt,
+    card_revision_sha256: &str,
+    leaf_evidence_sha256: &str,
+) -> ExecutorBinding {
+    let mut rule_dependencies = match &receipt.program {
+        FaceLayoutProgram::SingleFace { .. } => vec!["CR 108".to_string()],
+        FaceLayoutProgram::Split { .. } => vec!["CR 709".to_string()],
+        FaceLayoutProgram::TwoFace {
+            kind: crate::face_layout_runtime::FaceLayoutKind::Flip,
+            ..
+        } => vec!["CR 710".to_string()],
+        FaceLayoutProgram::TwoFace {
+            kind:
+                crate::face_layout_runtime::FaceLayoutKind::Transform
+                | crate::face_layout_runtime::FaceLayoutKind::ModalDoubleFaced
+                | crate::face_layout_runtime::FaceLayoutKind::DoubleFacedToken,
+            ..
+        }
+        | FaceLayoutProgram::Meld { .. } => vec!["CR 712".to_string()],
+        FaceLayoutProgram::TwoFace {
+            kind: crate::face_layout_runtime::FaceLayoutKind::Adventure,
+            ..
+        } => vec!["CR 715".to_string()],
+        FaceLayoutProgram::TwoFace {
+            kind: crate::face_layout_runtime::FaceLayoutKind::Prepare,
+            ..
+        } => vec!["CR 722".to_string()],
+        FaceLayoutProgram::TwoFace {
+            kind: crate::face_layout_runtime::FaceLayoutKind::Reversible,
+            ..
+        } => vec!["CR 108".to_string()],
+    };
+    rule_dependencies.push("typed-face-layout:exact-source-envelope".into());
+    rule_dependencies.sort();
+    rule_dependencies.dedup();
+    let mut evidence_tests = vec![
+        "face_layout_runtime::tests::every_supported_two_face_layout_compiles_without_names"
+            .to_string(),
+        "face_layout_runtime::tests::transform_flip_adventure_and_prepare_consume_live_transitions"
+            .to_string(),
+        "face_layout_runtime::tests::meld_uses_only_stable_component_kind_and_id".to_string(),
+        "execution_coverage::tests::all_supported_multiface_layouts_bind_exact_face_runtime"
+            .to_string(),
+    ];
+    evidence_tests.sort();
+    evidence_tests.dedup();
     ExecutorBinding {
         receipt_schema_version: receipt.binding.receipt_schema_version.into(),
         executor_id: receipt.binding.executor_id.into(),
@@ -3743,6 +5688,8 @@ fn validate_leaf_disposition_shape(leaf: &ExecutionCoverageLeaf) -> Result<(), S
             )
             && every_metric_irrelevant)
         || (matches!(leaf.subject, CoverageLeafSubject::ProducedMana) && every_metric_irrelevant)
+        || (matches!(leaf.subject, CoverageLeafSubject::LegacyCommanderLegality)
+            && every_metric_irrelevant)
         || (matches!(
             &leaf.subject,
             CoverageLeafSubject::RelatedComponent(component)
@@ -3770,21 +5717,28 @@ fn validate_leaf_disposition_shape(leaf: &ExecutionCoverageLeaf) -> Result<(), S
                     match &entry.disposition {
                         CoverageDisposition::FullyExecutable { binding } => {
                             executor_binding_shape_valid(binding, &leaf.evidence_sha256)
-                                && (characteristic_binding_matches_leaf(binding, &leaf.subject)
+                                && (face_layout_binding_matches_leaf(binding, &leaf.subject)
+                                    || characteristic_binding_matches_leaf(binding, &leaf.subject)
+                                    || printed_cost_binding_matches_leaf(binding, &leaf.subject)
                                     || exact_runtime_keyword_binding_matches_leaf(
                                         binding,
                                         &leaf.subject,
                                     ))
-                                && executor_id_supports_metric(
-                                    &binding.executor_id,
-                                    &binding.executor_version,
-                                    entry.metric,
-                                )
+                                && executor_binding_supports_metric(binding, entry.metric)
                         }
                         CoverageDisposition::BlockingUnsupported { .. } => true,
                         _ => false,
                     }
                 }
+                _ if leaf.kind == CoverageLeafKind::RelatedComponent => match &entry.disposition {
+                    CoverageDisposition::FullyExecutable { binding } => {
+                        executor_binding_shape_valid(binding, &leaf.evidence_sha256)
+                            && face_layout_binding_matches_leaf(binding, &leaf.subject)
+                            && executor_binding_supports_metric(binding, entry.metric)
+                    }
+                    CoverageDisposition::BlockingUnsupported { .. } => true,
+                    _ => false,
+                },
                 _ if matches!(
                     leaf.kind,
                     CoverageLeafKind::OracleRulesText | CoverageLeafKind::AtomicityGuard
@@ -3793,11 +5747,7 @@ fn validate_leaf_disposition_shape(leaf: &ExecutionCoverageLeaf) -> Result<(), S
                     match &entry.disposition {
                         CoverageDisposition::FullyExecutable { binding } => {
                             executor_binding_shape_valid(binding, &leaf.evidence_sha256)
-                                && executor_id_supports_metric(
-                                    &binding.executor_id,
-                                    &binding.executor_version,
-                                    entry.metric,
-                                )
+                                && executor_binding_supports_metric(binding, entry.metric)
                         }
                         CoverageDisposition::BlockingUnsupported { .. } => true,
                         _ => false,
@@ -3826,7 +5776,93 @@ fn exact_runtime_keyword_binding_matches_leaf(
     let CoverageLeafSubject::Keyword(keyword) = subject else {
         return false;
     };
-    match keyword.trim().to_ascii_lowercase().as_str() {
+    let normalized_keyword = keyword.trim().to_ascii_lowercase();
+    let delegated_keyword = match normalized_keyword.as_str() {
+        "defender" => Some(OfficialKeyword::Defender),
+        "devoid" => Some(OfficialKeyword::Devoid),
+        "vigilance" => Some(OfficialKeyword::Vigilance),
+        _ => None,
+    };
+    if let Some(keyword) = delegated_keyword {
+        let registry = production_keyword_live_bridge_registry();
+        let mut registrations = registry
+            .registrations
+            .iter()
+            .copied()
+            .filter(|registration| registration.keyword == keyword);
+        if registry.has_exact_contract()
+            && binding.executor_id == KEYWORD_RULES_RUNTIME_EXECUTOR_ID
+            && binding.executor_version == KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION
+            && let Some(registration) = registrations.next()
+            && registrations.next().is_none()
+            && keyword_live_bridge_rule_dependency(keyword).is_some_and(|dependency| {
+                binding
+                    .rule_dependencies
+                    .iter()
+                    .any(|candidate| candidate == dependency)
+            })
+            && binding
+                .rule_dependencies
+                .contains(&keyword_live_bridge_registration_dependency(registration))
+            && registration.capabilities.iter().all(|capability| {
+                binding.rule_dependencies.iter().any(|dependency| {
+                    dependency == &format!("keyword-live-bridge:{}", capability.stable_id())
+                })
+            })
+        {
+            return true;
+        }
+    }
+    let bounded_tag = match normalized_keyword.as_str() {
+        "channel" => Some("bounded-mechanic:channel"),
+        "cycling" => Some("bounded-mechanic:cycling"),
+        "typecycling" => Some("bounded-mechanic:typecycling"),
+        "treasure" => Some("bounded-mechanic:treasure"),
+        "food" => Some("bounded-mechanic:food"),
+        "prowess" => Some("bounded-mechanic:prowess"),
+        "ward" => Some("bounded-mechanic:ward"),
+        "enchant" => Some("bounded-mechanic:enchant"),
+        "scry" => Some("bounded-mechanic:scry"),
+        "surveil" => Some("bounded-mechanic:surveil"),
+        "crew" => Some("bounded-mechanic:crew"),
+        "split second" => Some("bounded-mechanic:split-second"),
+        "evoke" => Some("bounded-mechanic:evoke"),
+        "manifest" => Some("bounded-mechanic:manifest"),
+        "partner" => Some("bounded-mechanic:partner"),
+        "transform" => Some("bounded-mechanic:transform"),
+        "paradigm" => Some("bounded-mechanic:paradigm"),
+        "double" => Some("bounded-mechanic:double"),
+        "landfall" => Some("bounded-mechanic:landfall"),
+        "ferocious" => Some("bounded-mechanic:ferocious"),
+        "dash" => Some("bounded-mechanic:dash"),
+        "gift" => Some("bounded-mechanic:gift"),
+        "mobilize" => Some("bounded-mechanic:mobilize"),
+        _ => None,
+    };
+    if bounded_tag.is_some_and(|tag| {
+        binding.executor_version == BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION
+            && binding
+                .executor_id
+                .starts_with("abstract-play.bounded-oracle.")
+            && binding
+                .rule_dependencies
+                .iter()
+                .any(|dependency| dependency == tag)
+    }) {
+        return true;
+    }
+    if binding.executor_version == BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION
+        && binding
+            .executor_id
+            .starts_with("abstract-play.bounded-oracle.")
+        && binding
+            .rule_dependencies
+            .iter()
+            .any(|dependency| dependency == &format!("bounded-ability-word:{normalized_keyword}"))
+    {
+        return true;
+    }
+    match normalized_keyword.as_str() {
         "flashback" => {
             binding.executor_id == "abstract-play.graveyard-reclamation.sevinne"
                 && binding.executor_version == GRAVEYARD_RECLAMATION_EXECUTOR_VERSION
@@ -3842,6 +5878,55 @@ fn exact_runtime_keyword_binding_matches_leaf(
                     .rule_dependencies
                     .iter()
                     .any(|dependency| dependency == "CR 702.166a")
+        }
+        "imprint" => {
+            binding.executor_id == "abstract-play.conditional-mana.imprint-linked-card-colors"
+                && binding.executor_version == CONDITIONAL_MANA_SOURCE_EXECUTOR_VERSION
+                && binding
+                    .rule_dependencies
+                    .iter()
+                    .any(|dependency| dependency == "typed-ability-word:imprint")
+        }
+        "metalcraft" => {
+            binding.executor_id == "abstract-play.conditional-mana.metalcraft-any-color"
+                && binding.executor_version == CONDITIONAL_MANA_SOURCE_EXECUTOR_VERSION
+                && binding
+                    .rule_dependencies
+                    .iter()
+                    .any(|dependency| dependency == "typed-ability-word:metalcraft")
+        }
+        "threshold" => {
+            binding.executor_id == "abstract-play.atomic.threshold-ritual"
+                && binding.executor_version == ATOMIC_TRANSACTION_EXECUTOR_VERSION
+                && binding
+                    .rule_dependencies
+                    .iter()
+                    .any(|dependency| dependency == "typed-ability-word:threshold")
+        }
+        "devoid" => false,
+        "protection" => {
+            binding.executor_id == "abstract-play.protection.complete-turn"
+                && binding.executor_version == RESTRICTION_PROTECTION_EXECUTOR_VERSION
+                && binding
+                    .rule_dependencies
+                    .iter()
+                    .any(|dependency| dependency == "typed-keyword:protection")
+        }
+        "mill" => {
+            binding.executor_id == "abstract-play.ability.resolution.mill"
+                && binding.executor_version == LIVE_ABILITY_EXECUTOR_VERSION
+                && binding
+                    .rule_dependencies
+                    .iter()
+                    .any(|dependency| dependency == "CR 701.13")
+        }
+        "storm" => {
+            binding.executor_id == "abstract-play.ability.trigger.storm-copy"
+                && binding.executor_version == LIVE_ABILITY_EXECUTOR_VERSION
+                && binding
+                    .rule_dependencies
+                    .iter()
+                    .any(|dependency| dependency == "CR 702.40")
         }
         "flash" => {
             binding.executor_id == "abstract-play.ability.static.flash-permission"
@@ -3935,8 +6020,8 @@ fn exact_runtime_keyword_binding_matches_leaf(
                     .any(|dependency| dependency == "CR 702.6")
         }
         "treasure" => {
-            binding.executor_id == "abstract-play.ability.trigger.draw"
-                && binding.executor_version == LIVE_ABILITY_EXECUTOR_VERSION
+            binding.executor_version == LIVE_ABILITY_EXECUTOR_VERSION
+                && executor_id_matches_version(&binding.executor_id, &binding.executor_version)
                 && binding
                     .rule_dependencies
                     .iter()
@@ -3955,7 +6040,7 @@ fn characteristic_binding_matches_leaf(
     }
     match subject {
         CoverageLeafSubject::FaceRelationship => {
-            binding.executor_id == "abstract-play.characteristic.modal-double-faced-relationship"
+            binding.executor_id == "abstract-play.characteristic.double-faced-relationship"
         }
         CoverageLeafSubject::ManaCost => {
             binding.executor_id == "abstract-play.characteristic.mana-cost"
@@ -3971,6 +6056,21 @@ fn characteristic_binding_matches_leaf(
         CoverageLeafSubject::Toughness => {
             binding.executor_id == "abstract-play.characteristic.toughness"
         }
+        CoverageLeafSubject::Loyalty => {
+            binding.executor_id == "abstract-play.characteristic.loyalty"
+        }
+        CoverageLeafSubject::Defense => {
+            binding.executor_id == "abstract-play.characteristic.defense"
+        }
+        CoverageLeafSubject::HandModifier => {
+            binding.executor_id == "abstract-play.characteristic.hand-modifier"
+        }
+        CoverageLeafSubject::LifeModifier => {
+            binding.executor_id == "abstract-play.characteristic.life-modifier"
+        }
+        CoverageLeafSubject::AttractionLights => {
+            binding.executor_id == "abstract-play.characteristic.attraction-lights"
+        }
         CoverageLeafSubject::TypeLine => {
             binding.executor_id == "abstract-play.characteristic.card-type-profile"
         }
@@ -3978,6 +6078,31 @@ fn characteristic_binding_matches_leaf(
             .is_some_and(|subject| binding.executor_id == subject.executor_id()),
         _ => false,
     }
+}
+
+fn printed_cost_binding_matches_leaf(
+    binding: &ExecutorBinding,
+    subject: &CoverageLeafSubject,
+) -> bool {
+    matches!(subject, CoverageLeafSubject::ManaCost)
+        && binding.executor_id == PRINTED_COST_RUNTIME_EXECUTOR_ID
+        && binding.executor_version == PRINTED_COST_RUNTIME_EXECUTOR_VERSION
+}
+
+fn face_layout_binding_matches_leaf(
+    binding: &ExecutorBinding,
+    subject: &CoverageLeafSubject,
+) -> bool {
+    binding.executor_id == FACE_LAYOUT_EXECUTOR_ID
+        && binding.executor_version == FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION
+        && match subject {
+            CoverageLeafSubject::FaceRelationship => true,
+            CoverageLeafSubject::RelatedComponent(component) => matches!(
+                component.trim().to_ascii_lowercase().as_str(),
+                "meld_part" | "meld_result"
+            ),
+            _ => false,
+        }
 }
 
 fn leaf_subject_matches_kind(leaf: &ExecutionCoverageLeaf) -> bool {
@@ -4535,7 +6660,8 @@ fn validate_card(card: &CardCoverageManifest) -> Result<(), CoverageManifestErro
         .faces
         .iter()
         .map(printed_characteristic_leaf_count)
-        .sum::<usize>();
+        .sum::<usize>()
+        + card_policy_leaf_count(&card.source_record);
     if source_schema_leaves != 1
         || unreviewed_field_leaves != expected_unreviewed_field_leaves
         || required_face_structure_leaves != card.faces.len()
