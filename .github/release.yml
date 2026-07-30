@@ -1,0 +1,41 @@
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: Analysis and Scoring
+      labels:
+        - analysis
+        - scoring
+        - bracket
+        - timing
+    - title: Rules, Simulation, and Coverage
+      labels:
+        - rules
+        - simulation
+        - coverage
+        - oracle
+    - title: Data and Imports
+      labels:
+        - data
+        - import
+        - imports
+    - title: App and Workflow
+      labels:
+        - desktop
+        - interface
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Build and Release
+      labels:
+        - build
+        - release
+        - packaging
+    - title: Maintenance
+      labels:
+        - maintenance
+        - refactor
+    - title: Other Changes
+      labels:
+        - "*"

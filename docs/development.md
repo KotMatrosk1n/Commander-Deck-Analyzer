@@ -20,15 +20,22 @@ npm run dev
 
 ```powershell
 node scripts\check-workspace-paths.mjs
+node scripts\check-release-version.mjs v0.0.1
 cd apps\desktop
 npm run check
 cargo fmt --manifest-path src-tauri\Cargo.toml --check
-cargo clippy --locked --manifest-path src-tauri\Cargo.toml -- -D warnings
 cargo check --locked --manifest-path src-tauri\Cargo.toml
+cargo clippy --locked --manifest-path src-tauri\Cargo.toml -- -D warnings
+npm run notices -- --target x86_64-pc-windows-msvc
 ```
 
-Run the relevant local validation before opening a pull request. The hosted
-workflow checks the public product source and does not package a release.
+Run the relevant local validation before opening a pull request. The Compile
+workflow checks the product source. The Release workflow accepts an existing
+version tag and creates a draft NSIS installer. It does not publish the draft.
+See [Release process](releases.md) for the complete checklist.
+
+After changing either lockfile, regenerate the dependency notices and include
+the updated inventory with the change.
 
 ## Pull request scope
 

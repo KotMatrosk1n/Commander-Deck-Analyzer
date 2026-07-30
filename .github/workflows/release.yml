@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.tag }}
+      release_version: ${{ steps.version.outputs.version }}
+      source_sha: ${{ steps.source.outputs.sha }}
+      signing_status: ${{ steps.assets.outputs.signing_status }}
+
+    steps:
+      - name: Validate release tag
+        id: version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release tag must use vX.Y.Z."
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          "tag=$($env:RELEASE_TAG)" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Check out release tag
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.17.0
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Confirm release source
+        id: source
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sourceSha = (git rev-parse HEAD).Trim()
+          $exactTag = (git describe --tags --exact-match HEAD).Trim()
+          if ($exactTag -ne $env:RELEASE_TAG) {
+            throw "Checked out commit does not match $($env:RELEASE_TAG)."
+          }
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not fetch origin/main."
+          }
+          git merge-base --is-ancestor $sourceSha refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release source is not part of origin/main."
+          }
+
+          node scripts/check-workspace-paths.mjs
+          node scripts/check-release-version.mjs $env:RELEASE_TAG
+          "sha=$sourceSha" >> $env:GITHUB_OUTPUT
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/desktop
+        run: npm run check
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy,rustfmt
+          targets: x86_64-pc-windows-msvc
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+
+      - name: Check Rust source
+        run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Lint Rust source
+        run: cargo clippy --locked --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
+
+      - name: Regenerate dependency notices
+        working-directory: apps/desktop
+        run: |
+          npm run notices -- --target x86_64-pc-windows-msvc
+          git diff --exit-code -- src-tauri/resources/OPEN_SOURCE_LICENSES.md
+
+      - name: Build Windows installer
+        working-directory: apps/desktop
+        run: npm run tauri -- build --ci --target x86_64-pc-windows-msvc -- --locked
+
+      - name: Prepare release assets
+        id: assets
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bundleDirectory = Join-Path $PWD "apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installers = @(Get-ChildItem -LiteralPath $bundleDirectory -Filter "*_x64-setup.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected one NSIS installer, found $($installers.Count)."
+          }
+
+          $installer = $installers[0]
+          $expectedName = "Commander Deck Analyzer_$($env:RELEASE_VERSION)_x64-setup.exe"
+          if ($installer.Name -ne $expectedName) {
+            throw "Expected $expectedName, found $($installer.Name)."
+          }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+          if ($signature.Status -ne "NotSigned") {
+            throw "Expected an unsigned installer, found $($signature.Status)."
+          }
+
+          $checksumPath = Join-Path $bundleDirectory "SHA256SUMS.txt"
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($installer.Name)" | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
+
+          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
+          "signing_status=$($signature.Status)" >> $env:GITHUB_OUTPUT
+          "Authenticode status: $($signature.Status)" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload reviewed assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: commander-deck-analyzer-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          retention-days: 3
+          path: |
+            ${{ steps.assets.outputs.installer }}
+            ${{ steps.assets.outputs.checksum }}
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download reviewed assets
+        uses: actions/download-artifact@v4
+        with:
+          name: commander-deck-analyzer-${{ needs.build.outputs.release_version }}
+          path: release-assets
+
+      - name: Verify release source and assets
+        id: assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          SIGNING_STATUS: ${{ needs.build.outputs.signing_status }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:SIGNING_STATUS -ne "NotSigned") {
+            throw "Unexpected Authenticode status $($env:SIGNING_STATUS)."
+          }
+
+          $tagObject = gh api "repos/$($env:GITHUB_REPOSITORY)/git/ref/tags/$($env:RELEASE_TAG)" | ConvertFrom-Json
+          $tagSha = $tagObject.object.sha
+          $tagType = $tagObject.object.type
+          for ($depth = 0; $tagType -eq "tag" -and $depth -lt 5; $depth++) {
+            $tagObject = gh api "repos/$($env:GITHUB_REPOSITORY)/git/tags/$tagSha" | ConvertFrom-Json
+            $tagSha = $tagObject.object.sha
+            $tagType = $tagObject.object.type
+          }
+          if ($tagType -ne "commit" -or $tagSha -ne $env:SOURCE_SHA) {
+            throw "The remote tag no longer points to the reviewed source commit."
+          }
+
+          $comparison = gh api "repos/$($env:GITHUB_REPOSITORY)/compare/$($env:SOURCE_SHA)...main" | ConvertFrom-Json
+          if ($comparison.status -notin @("ahead", "identical")) {
+            throw "The reviewed source commit is no longer part of main."
+          }
+
+          $installerName = "Commander Deck Analyzer_$($env:RELEASE_VERSION)_x64-setup.exe"
+          $installer = Get-Item -LiteralPath (Join-Path $PWD "release-assets/$installerName")
+          $checksum = Get-Item -LiteralPath (Join-Path $PWD "release-assets/SHA256SUMS.txt")
+          $files = @(Get-ChildItem -LiteralPath (Join-Path $PWD "release-assets") -File)
+          if ($files.Count -ne 2) {
+            throw "Expected two release assets, found $($files.Count)."
+          }
+
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedChecksum = "$hash  $installerName"
+          $recordedChecksum = (Get-Content -Raw -LiteralPath $checksum.FullName).Trim()
+          if ($recordedChecksum -ne $expectedChecksum) {
+            throw "The installer checksum does not match."
+          }
+
+          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "checksum=$($checksum.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+          INSTALLER_PATH: ${{ steps.assets.outputs.installer }}
+          CHECKSUM_PATH: ${{ steps.assets.outputs.checksum }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            throw "A release already exists for $($env:RELEASE_TAG)."
+          }
+
+          gh release create "$env:RELEASE_TAG" `
+            "$env:INSTALLER_PATH" `
+            "$env:CHECKSUM_PATH" `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --draft `
+            --verify-tag `
+            --generate-notes `
+            --title "Commander Deck Analyzer v$($env:RELEASE_VERSION)"
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub did not create the draft release."
+          }
