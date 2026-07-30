@@ -310,7 +310,8 @@ pub fn compile_face_down_merge_keyword_program(
             face_up_cost: parse_mana_cost(cost)?,
             ward_cost: parse_mana_cost(DISGUISE_WARD_COST)?,
         }
-    } else if let Some(cost) = core.strip_prefix("Mutate ") {
+    } else {
+        let cost = core.strip_prefix("Mutate ")?;
         if reminder != MUTATE_REMINDER
             || layout != SourceLayout::Mutate
             || !type_line_has_card_type(exact_source_type_line, "Creature")
@@ -320,8 +321,6 @@ pub fn compile_face_down_merge_keyword_program(
         FaceDownMergeKeywordKind::Mutate {
             alternative_cost: parse_mana_cost(cost)?,
         }
-    } else {
-        return None;
     };
 
     if !source_context_supports(&kind, exact_source_type_line, layout) {

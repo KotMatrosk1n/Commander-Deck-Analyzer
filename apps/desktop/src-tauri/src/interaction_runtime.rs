@@ -300,13 +300,11 @@ fn compile_targeted_permanent(lower: &str) -> Option<InteractionRuntimeProgram> 
         (InteractionAction::Destroy, target)
     } else if let Some(target) = lower.strip_prefix("exile target ") {
         (InteractionAction::Exile, target)
-    } else if let Some(target) = lower
-        .strip_prefix("return target ")
-        .and_then(|target| target.strip_suffix(" to its owner's hand"))
-    {
-        (InteractionAction::ReturnToOwnersHand, target)
     } else {
-        return None;
+        let target = lower
+            .strip_prefix("return target ")
+            .and_then(|target| target.strip_suffix(" to its owner's hand"))?;
+        (InteractionAction::ReturnToOwnersHand, target)
     };
     let target = parse_permanent_target(target)?;
     Some(InteractionRuntimeProgram::TargetedPermanent { action, target })

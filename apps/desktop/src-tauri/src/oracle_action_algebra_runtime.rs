@@ -1379,10 +1379,9 @@ fn parse_fight(source: &str) -> Option<ActionKind> {
 fn parse_tap_untap(source: &str) -> Option<ActionKind> {
     let (operation, operand_source) = if let Some(operand) = source.strip_prefix("Tap ") {
         (true, operand)
-    } else if let Some(operand) = source.strip_prefix("Untap ") {
-        (false, operand)
     } else {
-        return None;
+        let operand = source.strip_prefix("Untap ")?;
+        (false, operand)
     };
     if operand_source.contains(" or ") {
         return None;
@@ -1480,23 +1479,20 @@ fn parse_copy_token(source: &str) -> Option<ActionKind> {
         (PlayerOperand::You, body)
     } else if let Some(body) = source.strip_prefix("You create ") {
         (PlayerOperand::You, body)
-    } else if let Some(body) = source.strip_prefix("Target player creates ") {
-        (PlayerOperand::TargetPlayer, body)
     } else {
-        return None;
+        let body = source.strip_prefix("Target player creates ")?;
+        (PlayerOperand::TargetPlayer, body)
     };
     let (tapped, source_operand) = if let Some(source) = body
         .strip_prefix("a tapped token that's a copy of ")
         .or_else(|| body.strip_prefix("one tapped token that's a copy of "))
     {
         (true, source)
-    } else if let Some(source) = body
-        .strip_prefix("a token that's a copy of ")
-        .or_else(|| body.strip_prefix("one token that's a copy of "))
-    {
-        (false, source)
     } else {
-        return None;
+        let source = body
+            .strip_prefix("a token that's a copy of ")
+            .or_else(|| body.strip_prefix("one token that's a copy of "))?;
+        (false, source)
     };
     Some(ActionKind::CreateCopyToken {
         player,
@@ -2487,10 +2483,9 @@ fn parse_zoned_card_selection(source: &str) -> Option<(CardSelection, Zone)> {
         (card, ZoneOwner::You, Zone::Hand)
     } else if let Some(card) = source.strip_suffix(" from your graveyard") {
         (card, ZoneOwner::You, Zone::Graveyard)
-    } else if let Some(card) = source.strip_suffix(" from exile") {
-        (card, ZoneOwner::You, Zone::Exile)
     } else {
-        return None;
+        let card = source.strip_suffix(" from exile")?;
+        (card, ZoneOwner::You, Zone::Exile)
     };
     let (cardinality, filter) = parse_search_selection(card_source)?;
     Some((

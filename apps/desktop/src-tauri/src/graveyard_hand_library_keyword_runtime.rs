@@ -798,13 +798,11 @@ fn parse_forecast(source: &str) -> Option<(ZoneKeywordKind, String)> {
         == "Tap two untapped white and/or blue creatures you control, Reveal this card from your hand"
     {
         ForecastCost::TapTwoWhiteOrBlueCreaturesAndReveal
-    } else if let Some(mana_and_reveal) = cost_text
-        .strip_suffix(", Reveal this card from your hand")
-        .or_else(|| cost_text.strip_suffix(", Reveal this creature from your hand"))
-    {
-        ForecastCost::ManaAndReveal(parse_mana_cost(mana_and_reveal)?)
     } else {
-        return None;
+        let mana_and_reveal = cost_text
+            .strip_suffix(", Reveal this card from your hand")
+            .or_else(|| cost_text.strip_suffix(", Reveal this creature from your hand"))?;
+        ForecastCost::ManaAndReveal(parse_mana_cost(mana_and_reveal)?)
     };
     if reminder.is_none_or(|reminder| {
         reminder != "Activate only during your upkeep and only once each turn."

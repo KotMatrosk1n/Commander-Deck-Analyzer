@@ -780,10 +780,9 @@ fn compile_count_or_aggregate_phrase(
             (DynamicQueryAggregate::GreatestManaValue, rest)
         } else if let Some(rest) = phrase.strip_prefix("the total power of ") {
             (DynamicQueryAggregate::SumPower, rest)
-        } else if let Some(rest) = phrase.strip_prefix("the total toughness of ") {
-            (DynamicQueryAggregate::SumToughness, rest)
         } else {
-            return None;
+            let rest = phrase.strip_prefix("the total toughness of ")?;
+            (DynamicQueryAggregate::SumToughness, rest)
         };
     let (zone, predicate) = classify_query_zone(noun_phrase)?;
     Some(DynamicOracleQuery {

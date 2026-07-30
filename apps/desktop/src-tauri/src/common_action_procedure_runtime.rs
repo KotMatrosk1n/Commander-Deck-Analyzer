@@ -651,10 +651,9 @@ fn parse_amass(source: &str) -> Option<CommonActionKind> {
     let body = strip_optional_terminal_period(core).strip_prefix("amass ")?;
     let (subtype, amount_text) = if let Some(amount) = body.strip_prefix("Orcs ") {
         (ArmySubtype::Orc, amount)
-    } else if let Some(amount) = body.strip_prefix("Zombies ") {
-        (ArmySubtype::Zombie, amount)
     } else {
-        return None;
+        let amount = body.strip_prefix("Zombies ")?;
+        (ArmySubtype::Zombie, amount)
     };
     let amount = parse_amount(amount_text)?;
     let ResolvedAmount::Fixed(fixed) = amount else {

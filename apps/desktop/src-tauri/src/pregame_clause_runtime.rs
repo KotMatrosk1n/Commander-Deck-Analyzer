@@ -244,10 +244,9 @@ pub fn compile_pregame_clause_program(
         PregameClauseKind::ExplicitSelfCommanderPermission
     } else if let Some(copy_limit) = parse_deck_copy_limit(exact_source) {
         PregameClauseKind::DeckCopyLimit(copy_limit)
-    } else if let Some(opening_hand) = parse_opening_hand_program(&normalized_lower) {
-        PregameClauseKind::OpeningHand(opening_hand)
     } else {
-        return None;
+        let opening_hand = parse_opening_hand_program(&normalized_lower)?;
+        PregameClauseKind::OpeningHand(opening_hand)
     };
 
     let semantic_digest = pregame_semantic_digest(exact_source, &kind);

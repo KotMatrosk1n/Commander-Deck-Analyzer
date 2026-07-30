@@ -8500,10 +8500,10 @@ fn parse_loyalty_activation_cost(
             return Some(Err(unsupported(address, text)));
         };
         LoyaltyCost::Add(amount)
-    } else if let Some(amount) = text
-        .strip_prefix('\u{2212}')
-        .or_else(|| text.strip_prefix('-'))
-    {
+    } else {
+        let amount = text
+            .strip_prefix('\u{2212}')
+            .or_else(|| text.strip_prefix('-'))?;
         if amount == "X" {
             LoyaltyCost::Remove(Amount::X)
         } else {
@@ -8512,8 +8512,6 @@ fn parse_loyalty_activation_cost(
             };
             LoyaltyCost::Remove(Amount::Constant(amount))
         }
-    } else {
-        return None;
     };
 
     if !words(source_type_line)
@@ -9255,10 +9253,9 @@ fn parse_cast_trigger_event(event: &str) -> Option<Trigger> {
         (PlayerRef::You, spell)
     } else if let Some(spell) = event.strip_prefix("an opponent casts ") {
         (PlayerRef::Opponent, spell)
-    } else if let Some(spell) = event.strip_prefix("a player casts ") {
-        (PlayerRef::Any, spell)
     } else {
-        return None;
+        let spell = event.strip_prefix("a player casts ")?;
+        (PlayerRef::Any, spell)
     };
     if spell_text == "this object spell" {
         return Some(Trigger::SourceCast);
@@ -9303,10 +9300,9 @@ fn parse_card_draw_trigger_event(event: &str) -> Option<Trigger> {
         (PlayerRef::You, text)
     } else if let Some(text) = event.strip_prefix("an opponent draws ") {
         (PlayerRef::Opponent, text)
-    } else if let Some(text) = event.strip_prefix("a player draws ") {
-        (PlayerRef::Any, text)
     } else {
-        return None;
+        let text = event.strip_prefix("a player draws ")?;
+        (PlayerRef::Any, text)
     };
     let occurrence_this_turn = match draw_text {
         "a card" => None,
@@ -10270,10 +10266,9 @@ fn parse_signed_power_toughness_amount(text: &str) -> Option<(bool, Amount)> {
     let text = text.trim();
     let (negative, magnitude) = if let Some(magnitude) = text.strip_prefix('-') {
         (true, magnitude)
-    } else if let Some(magnitude) = text.strip_prefix('+') {
-        (false, magnitude)
     } else {
-        return None;
+        let magnitude = text.strip_prefix('+')?;
+        (false, magnitude)
     };
     Some((negative, parse_english_amount(magnitude)?))
 }
@@ -11297,10 +11292,9 @@ fn parse_mana_count_expression(
     }
     let (subject, player, controller) = if let Some(subject) = lower.strip_suffix(" you control") {
         (subject, PlayerRef::You, Some(PlayerRef::You))
-    } else if let Some(subject) = lower.strip_suffix(" on the battlefield") {
-        (subject, PlayerRef::Any, None)
     } else {
-        return None;
+        let subject = lower.strip_suffix(" on the battlefield")?;
+        (subject, PlayerRef::Any, None)
     };
     let subject = subject.strip_suffix(" card").unwrap_or(subject).trim();
     let mut filter =
@@ -11413,10 +11407,9 @@ fn parse_count_expression(text: &str) -> Option<CountExpression> {
             PlayerRef::Opponent,
             Some(PlayerRef::Opponent),
         )
-    } else if let Some(subject) = lower.strip_suffix(" on the battlefield") {
-        (subject.to_owned(), PlayerRef::Any, None)
     } else {
-        return None;
+        let subject = lower.strip_suffix(" on the battlefield")?;
+        (subject.to_owned(), PlayerRef::Any, None)
     };
     let subject = subject
         .strip_suffix(" cards")

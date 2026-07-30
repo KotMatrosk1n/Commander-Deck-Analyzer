@@ -344,14 +344,13 @@ fn compile_singleton_keyword(source: &str) -> Option<CompiledParts> {
             return None;
         }
         TargetingProtectionKind::Hexproof { qualities }
-    } else if let Some(quality_text) = lower.strip_prefix("protection from ") {
+    } else {
+        let quality_text = lower.strip_prefix("protection from ")?;
         let qualities = parse_quality_list_with_original(core.get("Protection from ".len()..)?)?;
         if reminder.is_some_and(|value| !canonical_protection_reminder(value, quality_text)) {
             return None;
         }
         TargetingProtectionKind::Protection { qualities }
-    } else {
-        return None;
     };
 
     Some(CompiledParts {
@@ -415,15 +414,14 @@ fn compile_enchanted_creature_protection(source: &str) -> Option<CompiledParts> 
         body.strip_suffix(". This effect doesn't remove this Aura.")
     {
         (quality, AttachmentExceptionPolicy::GrantingAuraOnly)
-    } else if let Some(quality) = body.strip_suffix(
+    } else {
+        let quality = body.strip_suffix(
         ". This effect doesn't remove Auras and Equipment you control that are already attached to it.",
-    ) {
+    )?;
         (
             quality,
             AttachmentExceptionPolicy::ControlledAurasAndEquipmentAlreadyAttached,
         )
-    } else {
-        return None;
     };
     let qualities = parse_quality_list_with_original(quality_text)?;
     Some(CompiledParts {

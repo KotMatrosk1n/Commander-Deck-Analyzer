@@ -991,10 +991,9 @@ fn parse_create_token_effect(source: &str) -> Option<ActivatedEffect> {
         .or_else(|| body.strip_suffix(" creature tokens."))?;
     let (count, body) = if let Some(rest) = body.strip_prefix("a ") {
         (1, rest)
-    } else if let Some(rest) = body.strip_prefix("two ") {
-        (2, rest)
     } else {
-        return None;
+        let rest = body.strip_prefix("two ")?;
+        (2, rest)
     };
     let mut words = body.split_whitespace();
     let pair = parse_power_toughness(words.next()?)?;
@@ -1016,10 +1015,9 @@ fn parse_copy_spell_effect(source: &str) -> Option<ActivatedEffect> {
     let (copies, suffix) =
         if let Some(suffix) = source.strip_prefix("Copy target instant or sorcery spell twice. ") {
             (2, suffix)
-        } else if let Some(suffix) = source.strip_prefix("Copy target instant or sorcery spell. ") {
-            (1, suffix)
         } else {
-            return None;
+            let suffix = source.strip_prefix("Copy target instant or sorcery spell. ")?;
+            (1, suffix)
         };
     let expected = if copies == 1 {
         "You may choose new targets for the copy."

@@ -4556,14 +4556,13 @@ fn compile_static_creature_modifier_clause(
                 body,
                 "aura",
             )
-        } else if let Some(body) = lower.strip_prefix("equipped creature ") {
+        } else {
+            let body = lower.strip_prefix("equipped creature ")?;
             (
                 StaticCreatureModifierTarget::CreatureEquippedBySource,
                 body,
                 "equipment",
             )
-        } else {
-            return None;
         };
 
     if !type_line_has_card_type(type_line, required_subtype) {
@@ -6158,10 +6157,9 @@ fn parse_mill_effect(lower: &str) -> Option<MillEffect> {
 fn parse_tap_effect(lower: &str) -> Option<(bool, TargetSelector)> {
     let (tap, target) = if let Some(target) = lower.strip_prefix("tap ") {
         (true, target)
-    } else if let Some(target) = lower.strip_prefix("untap ") {
-        (false, target)
     } else {
-        return None;
+        let target = lower.strip_prefix("untap ")?;
+        (false, target)
     };
     let selector = match target {
         "this permanent" => TargetSelector::SelfPermanent,
