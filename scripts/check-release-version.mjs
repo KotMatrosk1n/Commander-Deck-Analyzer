@@ -72,13 +72,25 @@ if (!fs.existsSync(path.join(root, notesPath))) {
   const repository =
     "https://github.com/KotMatrosk1n/Commander-Deck-Analyzer";
   const firstReleaseUrl = `${repository}/commits/v${expected}`;
-  const comparisonUrl = new RegExp(
-    `${repository.replaceAll("/", "\\/")}\\/compare\\/v\\d+\\.\\d+\\.\\d+\\.\\.\\.v${expected.replaceAll(".", "\\.")}`,
-  );
+  const changelogPrefix = "**Full Changelog**: ";
+  const changelogLine = notes
+    .split(/\r?\n/)
+    .find((line) => line.startsWith(changelogPrefix));
+  const changelogUrl = changelogLine?.slice(changelogPrefix.length);
+  const comparisonPrefix = `${repository}/compare/v`;
+  const comparisonSuffix = `...v${expected}`;
+  const previousVersion =
+    changelogUrl?.startsWith(comparisonPrefix) &&
+    changelogUrl.endsWith(comparisonSuffix)
+      ? changelogUrl.slice(
+          comparisonPrefix.length,
+          changelogUrl.length - comparisonSuffix.length,
+        )
+      : null;
   const validChangelog =
     expected === "0.0.1"
-      ? notes.includes(firstReleaseUrl)
-      : comparisonUrl.test(notes);
+      ? changelogUrl === firstReleaseUrl
+      : previousVersion !== null && /^\d+\.\d+\.\d+$/.test(previousVersion);
   if (!validChangelog) {
     failures.push(
       `${notesPath}: full changelog link does not match the release history`,
