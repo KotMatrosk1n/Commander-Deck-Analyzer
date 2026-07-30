@@ -1,14 +1,14 @@
-# Third-party notices
+# Third Party Notices
 
-Commander Deck Analyzer is an unofficial fan-made analysis tool. It is not
+Commander Deck Analyzer is an unofficial fan made analysis tool. It is not
 approved by, sponsored by, or affiliated with Wizards of the Coast.
 
-## Open-source software
+## Open Source Software
 
-The application uses open-source Rust and JavaScript packages under their
-respective licenses. Exact package versions are recorded in `Cargo.lock` and
-`package-lock.json`. Copyright and license terms distributed with those
-packages continue to apply.
+The application uses open source Rust and JavaScript packages under their
+respective licenses. The complete locked package inventory and the license
+texts distributed by those packages are recorded in
+[Open source licenses](apps/desktop/src-tauri/resources/OPEN_SOURCE_LICENSES.md).
 
 ## Magic and Wizards of the Coast
 
@@ -34,7 +34,7 @@ https://scryfall.com/
 Scryfall API and bulk data:
 https://scryfall.com/docs/api
 
-User-requested public deck imports may contact Archidekt, Deckstats, or
+Public deck imports requested by the user may contact Archidekt, Deckstats, or
 Scryfall Decks. Moxfield links use Moxfield's own export workflow.
 
 Archidekt:

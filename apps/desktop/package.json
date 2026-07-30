@@ -1,12 +1,13 @@
 {
   "name": "commander-deck-analyzer",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "check": "npm run build",
+    "notices": "node scripts/generate-third-party-notices.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
