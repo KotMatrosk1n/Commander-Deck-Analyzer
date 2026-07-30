@@ -40,6 +40,14 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function normalizedTextBytes(filePath) {
+  const text = readFileSync(filePath, "utf8")
+    .replace(/^\uFEFF/, "")
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n");
+  return Buffer.from(text, "utf8");
+}
+
 function markdownCell(value) {
   return String(value ?? "not declared")
     .replaceAll("\\", "\\\\")
@@ -262,8 +270,8 @@ output.push(
   "## Generation Scope",
   "",
   `* Windows target: \`${windowsTarget}\`.`,
-  `* Cargo.lock SHA 256: \`${sha256(readFileSync(cargoLockPath))}\`.`,
-  `* package-lock.json SHA 256: \`${sha256(readFileSync(packageLockPath))}\`.`,
+  `* Cargo.lock normalized text SHA 256: \`${sha256(normalizedTextBytes(cargoLockPath))}\`.`,
+  `* package-lock.json normalized text SHA 256: \`${sha256(normalizedTextBytes(packageLockPath))}\`.`,
   `* Included ${cargoDependencies.length} Cargo packages and ${npmDependencies.length} npm packages, with ${textsByHash.size} distinct license or notice texts.`,
   "* The Cargo inventory follows normal dependency edges for the Windows target.",
   "* The npm inventory includes packages marked for production by the lockfile.",
