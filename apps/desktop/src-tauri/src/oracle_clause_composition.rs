@@ -11,8 +11,8 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const ORACLE_CLAUSE_COMPOSITION_COMPILER_VERSION: &str =
-    "oracle-clause-composition-compiler-0.2";
-pub const ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION: &str = "oracle-clause-composition-runtime-0.1";
+    "oracle-clause-composition-compiler-0.3";
+pub const ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION: &str = "oracle-clause-composition-runtime-0.2";
 pub const ORACLE_CLAUSE_COMPOSITION_RULES_CONTEXT_VERSION: &str =
     "magic-comprehensive-rules-2026-06-19";
 
@@ -22,7 +22,7 @@ pub const fn oracle_clause_composition_production_adapter_connected() -> bool {
     false
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum OracleCompositionSemanticContext {
     #[default]
     CardFace,
@@ -139,6 +139,7 @@ pub struct SequenceSeparator {
 pub enum ConjunctionKind {
     And,
     But,
+    Comma,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1152,7 +1153,7 @@ impl CompositionParser<'_> {
     ) -> Result<Option<OracleCompositionNode>, OracleCompositionError> {
         let connectors = recognized_connectors(fragment, scan);
         if connectors.is_empty() {
-            return Ok(None);
+            return self.parse_comma_conjunction(span, fragment, scan, depth);
         }
 
         let then_connectors = connectors
@@ -1196,6 +1197,50 @@ impl CompositionParser<'_> {
             self.build_conjunction_from_connectors(span, fragment, &safe, depth)
                 .map(Some)
         }
+    }
+
+    fn parse_comma_conjunction(
+        &mut self,
+        span: SourceSpan,
+        fragment: &str,
+        scan: &LocalScan,
+        depth: u8,
+    ) -> Result<Option<OracleCompositionNode>, OracleCompositionError> {
+        let comma_indices = fragment
+            .char_indices()
+            .filter_map(|(index, character)| {
+                (character == ',' && scan.is_top_level(index)).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if comma_indices.is_empty() {
+            return Ok(None);
+        }
+
+        let mut parts = Vec::with_capacity(comma_indices.len() + 1);
+        let mut separators = Vec::with_capacity(comma_indices.len());
+        let mut start = 0usize;
+        for comma in comma_indices {
+            let part = trim_local(fragment, SourceSpan::new(start, comma));
+            if part.is_empty() {
+                return Ok(None);
+            }
+            parts.push(self.parse_fragment(offset_span(span.start, part), depth + 1)?);
+            separators.push(ConjunctionSeparator {
+                kind: ConjunctionKind::Comma,
+                span: SourceSpan::new(span.start + comma, span.start + comma + 1),
+            });
+            start = comma + 1;
+        }
+        let final_part = trim_local(fragment, SourceSpan::new(start, fragment.len()));
+        if final_part.is_empty() {
+            return Ok(None);
+        }
+        parts.push(self.parse_fragment(offset_span(span.start, final_part), depth + 1)?);
+        Ok(Some(OracleCompositionNode::Conjunction {
+            span,
+            parts,
+            separators,
+        }))
     }
 
     fn build_sequence_from_connectors(
@@ -1662,10 +1707,13 @@ fn trim_span(source: &str, span: SourceSpan) -> SourceSpan {
 
 fn trim_local(source: &str, span: SourceSpan) -> SourceSpan {
     let mut trimmed = trim_span(source, span);
-    while let Some(character) = trimmed
-        .slice(source)
-        .and_then(|text| text.chars().next_back())
-    {
+    loop {
+        let Some(character) = trimmed
+            .slice(source)
+            .and_then(|text| text.chars().next_back())
+        else {
+            break;
+        };
         if !matches!(character, ',') {
             break;
         }

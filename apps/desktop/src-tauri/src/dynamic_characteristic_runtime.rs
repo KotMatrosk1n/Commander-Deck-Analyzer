@@ -32,18 +32,10 @@ impl DynamicCharacteristicSubject {
 pub(crate) enum DynamicPlayerScope {
     Controller,
     TargetOpponent,
-    // Retained in the player-scope vocabulary; direct opponent references currently use TargetOpponent.
-    #[allow(dead_code)]
     ChosenOpponent,
-    // Retained in the player-scope vocabulary; defending-player values currently use zone queries.
-    #[allow(dead_code)]
     DefendingPlayer,
     OpponentWithMost,
-    // Retained in the player-scope vocabulary; multiplayer aggregates currently use zone queries.
-    #[allow(dead_code)]
     Opponents,
-    // Retained in the player-scope vocabulary; table-wide aggregates currently use zone queries.
-    #[allow(dead_code)]
     AllPlayers,
 }
 
@@ -80,11 +72,7 @@ pub(crate) enum DynamicQueryAggregate {
     GreatestManaValue,
     SumPower,
     SumToughness,
-    // Retained in the query vocabulary; colored symbol totals currently use Devotion sources.
-    #[allow(dead_code)]
     ManaSymbolCount(CharacteristicColor),
-    // Retained in the query vocabulary; counter totals currently use PermanentCounters sources.
-    #[allow(dead_code)]
     CounterCount,
 }
 
@@ -103,14 +91,8 @@ pub(crate) enum DynamicChoiceReason {
     CastX,
     LifePaid,
     PermanentsSacrificed,
-    // Retained in the choice vocabulary; numeric characteristic choices do not currently select types.
-    #[allow(dead_code)]
     CreatureType,
-    // Retained in the choice vocabulary; numeric characteristic choices do not currently select colors.
-    #[allow(dead_code)]
     Color,
-    // Retained in the choice vocabulary; numeric characteristic choices do not currently select players.
-    #[allow(dead_code)]
     Player,
     DeckConstructionNumber,
 }
@@ -119,8 +101,6 @@ pub(crate) enum DynamicChoiceReason {
 pub(crate) enum DynamicRandomReason {
     PrintedSize,
     PrintedLoyalty,
-    // Retained in the random-result vocabulary; coin outcomes currently use their mechanic runtime.
-    #[allow(dead_code)]
     CoinResult,
 }
 
@@ -143,8 +123,6 @@ pub(crate) enum DynamicCopySource {
 pub(crate) enum DynamicValueSource {
     Query(DynamicOracleQuery),
     LifeTotal(DynamicPlayerScope),
-    // Retained for state resolution; hand-size phrases currently compile as zone queries.
-    #[allow(dead_code)]
     HandSize(DynamicPlayerScope),
     Devotion(CharacteristicColor),
     PermanentCounters {

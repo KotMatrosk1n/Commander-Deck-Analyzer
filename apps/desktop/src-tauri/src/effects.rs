@@ -75,7 +75,7 @@ use crate::utility_modal_runtime::{
     CompiledUtilityModal, UtilityModalCardInput, compile_utility_modal_runtime,
 };
 
-pub(crate) const EFFECT_DESCRIPTOR_VERSION: &str = "oracle-effects-0.39";
+pub(crate) const EFFECT_DESCRIPTOR_VERSION: &str = "oracle-effects-0.49";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EffectMagnitude {
@@ -308,6 +308,10 @@ impl StructuralCharacteristicProfile {
 
     pub(crate) fn initial_defense(&self) -> Option<u16> {
         Some(self.defense?.counters)
+    }
+
+    pub(crate) fn attraction_visits_on_roll(&self, roll: u8) -> Option<bool> {
+        self.attraction_lights?.visits_on_roll(roll)
     }
 }
 
@@ -1009,8 +1013,6 @@ fn compile_additional_oracle_clauses(
     (bounded, delegated)
 }
 
-// Kept explicit because this compiler boundary carries independent source evidence.
-#[allow(clippy::too_many_arguments)]
 fn append_additional_oracle_clauses(
     bounded: &mut Vec<BoundedOracleClause>,
     delegated: &mut Vec<DelegatedKeywordClause>,
@@ -1338,8 +1340,6 @@ fn compile_mechanic_programs(card: &CardDefinition) -> Vec<MechanicProgram> {
     programs
 }
 
-// Kept explicit because each printed field is independently audited into the profile.
-#[allow(clippy::too_many_arguments)]
 fn compile_structural_characteristic_profile(
     layout: &str,
     oracle_text: &str,

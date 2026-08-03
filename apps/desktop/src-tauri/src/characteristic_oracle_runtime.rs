@@ -60,6 +60,16 @@ impl ExactTypeLineProcedure {
         self.standard_card_types.contains(&card_type)
     }
 
+    pub(crate) fn has_subtype(&self, subtype: &str) -> bool {
+        self.subtypes
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(subtype.trim()))
+    }
+
+    pub(crate) fn uses_only_comprehensive_type_words(&self) -> bool {
+        self.rules_scope == TypeLineRulesScope::Comprehensive
+    }
+
     pub(crate) fn canonical_evidence_payload(&self) -> String {
         let supertypes = self
             .standard_supertypes
@@ -294,6 +304,14 @@ pub(crate) struct ExactColorSetProcedure {
 }
 
 impl ExactColorSetProcedure {
+    pub(crate) fn contains(self, color: CharacteristicColor) -> bool {
+        self.mask & characteristic_color_bit(color) != 0
+    }
+
+    pub(crate) fn is_colorless(self) -> bool {
+        self.mask == 0
+    }
+
     pub(crate) fn canonical_evidence_payload(self, subject: &str) -> String {
         format!("{subject}:mask={:02x}", self.mask)
     }
@@ -456,6 +474,13 @@ impl PrintedStatProcedure {
             Self::Infinite => return Some(EvaluatedPrintedStat::Infinite),
         };
         Some(EvaluatedPrintedStat::Finite(value))
+    }
+
+    pub(crate) fn apply_augment_delta(self, host_value: ExactRational) -> Option<ExactRational> {
+        let Self::AugmentDelta(delta) = self else {
+            return None;
+        };
+        host_value.checked_add(delta)
     }
 
     pub(crate) fn canonical_evidence_payload(self, subject: &str) -> String {
@@ -743,6 +768,12 @@ pub(crate) struct AttractionLightsProcedure {
 }
 
 impl AttractionLightsProcedure {
+    pub(crate) fn visits_on_roll(self, roll: u8) -> Option<bool> {
+        (1..=6)
+            .contains(&roll)
+            .then(|| self.lit_roll_mask & (1 << (roll - 1)) != 0)
+    }
+
     pub(crate) fn canonical_evidence_payload(self) -> String {
         format!("attraction-lights:mask={:02x}", self.lit_roll_mask)
     }

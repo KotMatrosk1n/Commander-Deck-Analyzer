@@ -28,6 +28,7 @@ use crate::semantic_store::SemanticPackageSnapshot;
 use crate::semantics::{COMBO_CATALOG_VERSION, compile_deck_with_rules_and_semantic_overrides};
 use crate::simulation::{
     SIMULATION_ENGINE_VERSION, simulate_opening_hands_with_mana, simulate_win_speed_with_mana,
+    simulate_win_speed_with_mana_for_calibration,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -55,8 +56,15 @@ pub struct AnalysisSnapshots {
     pub comprehensive_rules: Option<ComprehensiveRulesSnapshot>,
 }
 
+#[derive(Debug)]
+pub(crate) struct CalibrationAnalysisOutput {
+    pub report: AnalysisReport,
+    pub interaction_scenarios: Vec<crate::interaction_scenarios::ScenarioReport>,
+}
+
 struct InternalAnalysisOptions {
     cache: Option<AnalysisCache>,
+    retain_calibration_scenarios: bool,
 }
 
 #[derive(Debug)]
@@ -94,19 +102,25 @@ pub async fn analyze(
         repository,
         combo_store,
         snapshots,
-        InternalAnalysisOptions { cache },
+        InternalAnalysisOptions {
+            cache,
+            retain_calibration_scenarios: false,
+        },
         request,
         cancellation,
         report,
     )
     .await
+    .map(|output| output.report)
 }
 
 /// The analyzer has one reproducible pilot policy while preserving the
 /// caller's explicit interaction profile. Legacy mulligan, pilot, and declared
 /// intent knobs are ignored; workload and interaction controls remain explicit
 /// reproducibility inputs. Workloads are validated instead of being silently
-/// overwritten or clamped.
+/// overwritten or clamped. Historical calibration-v1 manifests use a separate
+/// crate-private, adapter-validated boundary; calibration-v2 remains frozen to
+/// the production policy.
 ///
 /// Online card-resolution consent and an explicit reproducibility seed are
 /// operational inputs rather than evaluation policy, so those two values are
@@ -122,7 +136,6 @@ fn with_objective_production_policy(
             "Opening-hand and paired-game trial counts must match.".into(),
         ));
     }
-    #[cfg(not(test))]
     let local_diagnostic_count_allowed = false;
     if !ALLOWED_PRODUCTION_SIMULATION_COUNTS.contains(&opening_hand_simulations)
         && !local_diagnostic_count_allowed
@@ -157,6 +170,61 @@ fn with_objective_production_policy(
     Ok(request)
 }
 
+/// Run the production analyzer while retaining bounded paired interaction
+/// episodes for an offline calibration corpus. This path never accepts a
+/// desktop cache, and its non-serializable output is crate-private.
+pub(crate) async fn analyze_for_calibration(
+    repository: CardRepository,
+    combo_store: ComboStore,
+    snapshots: AnalysisSnapshots,
+    request: AnalyzeRequest,
+    cancellation: Arc<AtomicBool>,
+    report: impl Fn(AnalysisProgress) + Clone + Send + Sync + 'static,
+) -> Result<CalibrationAnalysisOutput, AnalysisError> {
+    analyze_internal(
+        repository,
+        combo_store,
+        snapshots,
+        InternalAnalysisOptions {
+            cache: None,
+            retain_calibration_scenarios: true,
+        },
+        request,
+        cancellation,
+        report,
+    )
+    .await
+}
+
+/// Run the cacheless analyzer for a historical calibration-v1 manifest while
+/// retaining only the serializable report. The calibration adapter validates
+/// that manifest's broader, bounded offline workload and strategy options
+/// before reaching this crate-private boundary. Desktop callers cannot use
+/// this path to bypass the production workload or fixed strategic policy.
+pub(crate) async fn analyze_for_legacy_calibration(
+    repository: CardRepository,
+    combo_store: ComboStore,
+    snapshots: AnalysisSnapshots,
+    request: AnalyzeRequest,
+    cancellation: Arc<AtomicBool>,
+    report: impl Fn(AnalysisProgress) + Clone + Send + Sync + 'static,
+) -> Result<AnalysisReport, AnalysisError> {
+    analyze_internal(
+        repository,
+        combo_store,
+        snapshots,
+        InternalAnalysisOptions {
+            cache: None,
+            retain_calibration_scenarios: false,
+        },
+        request,
+        cancellation,
+        report,
+    )
+    .await
+    .map(|output| output.report)
+}
+
 async fn analyze_internal(
     repository: CardRepository,
     combo_store: ComboStore,
@@ -165,8 +233,11 @@ async fn analyze_internal(
     request: AnalyzeRequest,
     cancellation: Arc<AtomicBool>,
     report: impl Fn(AnalysisProgress) + Clone + Send + Sync + 'static,
-) -> Result<AnalysisReport, AnalysisError> {
-    let InternalAnalysisOptions { cache } = internal_options;
+) -> Result<CalibrationAnalysisOutput, AnalysisError> {
+    let InternalAnalysisOptions {
+        cache,
+        retain_calibration_scenarios,
+    } = internal_options;
     let AnalysisSnapshots {
         policy: policy_snapshot,
         semantics: semantic_snapshot,
@@ -349,7 +420,10 @@ async fn analyze_internal(
                 cached_report.recommendation.confidence
             ),
         );
-        return Ok(cached_report);
+        return Ok(CalibrationAnalysisOutput {
+            report: cached_report,
+            interaction_scenarios: Vec::new(),
+        });
     }
 
     let policy_definitions = definitions
@@ -571,46 +645,60 @@ async fn analyze_internal(
     let game_cancel = cancellation.clone();
     let game_report = report.clone();
     let game_run_id = request.run_id.clone();
-    let (mut win_speed, early_execution_witnesses) = tokio::task::spawn_blocking(move || {
-        let interaction_label = interaction_progress_label(game_options.interaction_profile);
-        let progress = |interference: bool, completed: u32, total: u32| {
-            let ratio = completed as f32 / total.max(1) as f32;
-            let (stage, label, base) = if interference {
-                (AnalysisStage::Interference, interaction_label, 0.72)
-            } else {
-                (AnalysisStage::Goldfish, "Simulate baseline plans", 0.50)
+    let (mut win_speed, interaction_scenarios, early_execution_witnesses) =
+        tokio::task::spawn_blocking(move || {
+            let interaction_label = interaction_progress_label(game_options.interaction_profile);
+            let progress = |interference: bool, completed: u32, total: u32| {
+                let ratio = completed as f32 / total.max(1) as f32;
+                let (stage, label, base) = if interference {
+                    (AnalysisStage::Interference, interaction_label, 0.72)
+                } else {
+                    (AnalysisStage::Goldfish, "Simulate baseline plans", 0.50)
+                };
+                emit(
+                    &game_report,
+                    &game_run_id,
+                    stage,
+                    label,
+                    completed,
+                    total,
+                    base + ratio * 0.22,
+                    &format!("{completed} / {total} modeled games"),
+                );
             };
-            emit(
-                &game_report,
-                &game_run_id,
-                stage,
-                label,
-                completed,
-                total,
-                base + ratio * 0.22,
-                &format!("{completed} / {total} modeled games"),
-            );
-        };
-        simulate_win_speed_with_mana(
-            &game_deck,
-            &game_mana,
-            &game_options,
-            seed,
-            &game_cancel,
-            progress,
-        )
-        .and_then(|report| {
-            crate::simulation::find_early_route_execution_witnesses(
-                &game_deck,
-                &game_mana,
-                &game_options,
-                &game_cancel,
-            )
-            .map(|witnesses| (report, witnesses))
+            let simulation = if retain_calibration_scenarios {
+                simulate_win_speed_with_mana_for_calibration(
+                    &game_deck,
+                    &game_mana,
+                    &game_options,
+                    seed,
+                    &game_cancel,
+                    progress,
+                )
+                .map(|output| (output.report, output.scenario_reports))
+            } else {
+                simulate_win_speed_with_mana(
+                    &game_deck,
+                    &game_mana,
+                    &game_options,
+                    seed,
+                    &game_cancel,
+                    progress,
+                )
+                .map(|report| (report, Vec::new()))
+            };
+            simulation.and_then(|(report, scenarios)| {
+                crate::simulation::find_early_route_execution_witnesses(
+                    &game_deck,
+                    &game_mana,
+                    &game_options,
+                    &game_cancel,
+                )
+                .map(|witnesses| (report, scenarios, witnesses))
+            })
         })
-    })
-    .await
-    .map_err(|error| AnalysisError::Worker(error.to_string()))??;
+        .await
+        .map_err(|error| AnalysisError::Worker(error.to_string()))??;
     let mut early_turn_evaluation =
         crate::early_turn_evaluator::evaluate_early_turn_routes(&compiled, &mana_model);
     early_turn_evaluation.execution_witnesses = early_execution_witnesses;
@@ -840,7 +928,10 @@ async fn analyze_internal(
             report_result.recommendation.likely_bracket, report_result.recommendation.confidence
         ),
     );
-    Ok(report_result)
+    Ok(CalibrationAnalysisOutput {
+        report: report_result,
+        interaction_scenarios,
+    })
 }
 
 fn resolve_deck_identity(

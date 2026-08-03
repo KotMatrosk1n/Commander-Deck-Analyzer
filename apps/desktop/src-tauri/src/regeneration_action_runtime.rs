@@ -53,8 +53,6 @@ pub enum EarlierRegenerationClauseOwner {
     OfficialKeywordRuntime,
 }
 
-// Kept inline because this public classification contract is matched throughout production.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegenerationClauseClassification {
     Program(RegenerationActionProgram),

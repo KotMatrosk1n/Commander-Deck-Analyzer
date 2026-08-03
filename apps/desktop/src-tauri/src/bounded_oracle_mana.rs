@@ -123,6 +123,9 @@ pub enum DerivedManaSourceScope {
 pub enum ManaComposition {
     Exact(Vec<ManaColor>),
     OneOf(Vec<Vec<ManaColor>>),
+    /// Printed alternatives whose branches may use different composition
+    /// families, such as a fixed color or a previously chosen color.
+    Alternatives(Vec<ManaComposition>),
     AnyOneColor,
     AnyCombination(ManaColorDomain),
     DifferentColors(ManaColorDomain),
@@ -142,6 +145,7 @@ pub struct SpellSpendFilter {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpendCardType {
+    Artifact,
     Creature,
     Planeswalker,
 }
@@ -154,6 +158,8 @@ pub enum SpendZone {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpendPurpose {
     CastSpell(SpellSpendFilter),
+    ActivateAbility,
+    ActivateArtifactAbility,
     ActivateCreatureAbility,
     ActivateLandSourceAbility,
 }
@@ -871,24 +877,28 @@ fn parse_spend_restriction(text: &str) -> Result<SpendRestriction, ManaExpressio
         ]));
     }
     let purpose = match body {
-        "cast creature spells" => SpendPurpose::CastSpell(SpellSpendFilter {
-            card_type: Some(SpendCardType::Creature),
-            from: None,
-            minimum_mana_value: None,
-            mana_cost_contains_x: false,
-            chosen_creature_type: false,
-            monocolored_of_produced_color: false,
-            cannot_be_countered: false,
-        }),
-        "cast planeswalker spells" => SpendPurpose::CastSpell(SpellSpendFilter {
-            card_type: Some(SpendCardType::Planeswalker),
-            from: None,
-            minimum_mana_value: None,
-            mana_cost_contains_x: false,
-            chosen_creature_type: false,
-            monocolored_of_produced_color: false,
-            cannot_be_countered: false,
-        }),
+        "cast a creature spell" | "cast creature spells" => {
+            SpendPurpose::CastSpell(SpellSpendFilter {
+                card_type: Some(SpendCardType::Creature),
+                from: None,
+                minimum_mana_value: None,
+                mana_cost_contains_x: false,
+                chosen_creature_type: false,
+                monocolored_of_produced_color: false,
+                cannot_be_countered: false,
+            })
+        }
+        "cast a planeswalker spell" | "cast planeswalker spells" => {
+            SpendPurpose::CastSpell(SpellSpendFilter {
+                card_type: Some(SpendCardType::Planeswalker),
+                from: None,
+                minimum_mana_value: None,
+                mana_cost_contains_x: false,
+                chosen_creature_type: false,
+                monocolored_of_produced_color: false,
+                cannot_be_countered: false,
+            })
+        }
         "cast spells from your graveyard" => SpendPurpose::CastSpell(SpellSpendFilter {
             card_type: None,
             from: Some(SpendZone::Graveyard),
@@ -918,8 +928,24 @@ fn parse_spend_restriction(text: &str) -> Result<SpendRestriction, ManaExpressio
             monocolored_of_produced_color: true,
             cannot_be_countered: false,
         }),
+        "activate abilities" => SpendPurpose::ActivateAbility,
+        "activate abilities of artifacts" => SpendPurpose::ActivateArtifactAbility,
         "activate abilities of creatures" => SpendPurpose::ActivateCreatureAbility,
         "activate abilities of land sources" => SpendPurpose::ActivateLandSourceAbility,
+        "cast artifact spells or activate abilities of artifacts" => {
+            return Ok(SpendRestriction::AnyOf(vec![
+                SpendPurpose::CastSpell(SpellSpendFilter {
+                    card_type: Some(SpendCardType::Artifact),
+                    from: None,
+                    minimum_mana_value: None,
+                    mana_cost_contains_x: false,
+                    chosen_creature_type: false,
+                    monocolored_of_produced_color: false,
+                    cannot_be_countered: false,
+                }),
+                SpendPurpose::ActivateArtifactAbility,
+            ]));
+        }
         "cast creature spells or activate abilities of creatures" => {
             return Ok(SpendRestriction::AnyOf(vec![
                 SpendPurpose::CastSpell(SpellSpendFilter {

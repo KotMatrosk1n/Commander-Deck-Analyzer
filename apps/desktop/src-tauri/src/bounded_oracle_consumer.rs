@@ -24,15 +24,16 @@ use crate::bounded_oracle_mana::{
     ResourceCostComponent as TypedResourceCostComponent, parse_resource_cost_expression,
 };
 use crate::bounded_oracle_runtime::{
-    ActivationRestriction, AlternativeCost, Amount, AnimateEffect, AttachmentKind,
-    BOUNDED_ORACLE_RUNTIME_VERSION, BottomOrder, BounceWithControllerCopyEffect,
+    ActivationRestriction, AlternativeCost, Amount, AnimateEffect, AtomicResourceCost,
+    AttachmentKind, BOUNDED_ORACLE_RUNTIME_VERSION, BottomOrder, BounceWithControllerCopyEffect,
     BoundedOracleClause, CardType, CastCopyEffect, CastPermission, CastTiming, ChoiceCount,
-    ClauseAddress, Color, Comparison, Condition, CopyDestination, CopyEffect, CopyException, Cost,
-    CountExpression, CounterKind, Duration, Effect, ExileCollectionEffect, ExtraTurnEffect,
-    GrantedAbility, Keyword, LibraryProcedure, LoyaltyCost, ManaChoice, ManaCost, ManaProduction,
-    ObjectEventKind, ObjectFilter, ObjectRef, ObjectSelection, ObjectState, PaymentOrLoseEffect,
-    PlayerActionKind, PlayerRef, PowerToughnessChange, PowerToughnessOperation, ReminderSemantics,
-    RepeatSchedule, ReplacementEffect, ReplacementEvent, Restriction, SearchDestination,
+    ClauseAddress, CoinFlipResult, Color, CombatStep, Comparison, Condition, CopyDestination,
+    CopyEffect, CopyException, Cost, CountExpression, CounterKind, DayNightDesignation, Duration,
+    Effect, ExileCollectionEffect, ExtraTurnEffect, GrantedAbility, Keyword, LibraryProcedure,
+    LoyaltyCost, ManaChoice, ManaCost, ManaProduction, ObjectEventKind, ObjectFilter, ObjectRef,
+    ObjectSelection, ObjectState, PaymentOrLoseEffect, PlayerActionKind, PlayerRef,
+    PowerToughnessChange, PowerToughnessOperation, ReminderSemantics, RepeatSchedule,
+    ReplacementEffect, ReplacementEvent, Restriction, RulesTextChoiceKind, SearchDestination,
     SearchLibrary, SearchOrdinal, SelectedZoneMove, SetCharacteristics, SpecialActionTiming, Step,
     Supertype, Target, TargetAmount, TargetFilter, TargetRelationship, Timing, TokenCreation,
     TokenDefinition, TokenSpecification, TopLibraryExile, Trigger, TriggerSubject, TurnPlayer,
@@ -49,7 +50,7 @@ pub use bounded_oracle_action_stack::{
     counter_pending_action, pending_action_clause_has_live_contract, resolve_pending_action,
 };
 
-pub const BOUNDED_ORACLE_CONSUMER_VERSION: &str = "bounded-oracle-consumer-0.9";
+pub const BOUNDED_ORACLE_CONSUMER_VERSION: &str = "bounded-oracle-consumer-0.16";
 
 pub type ObjectId = u64;
 pub type PlayerId = u8;
@@ -61,6 +62,22 @@ pub enum TriggerEvent {
     },
     ObjectAttacked {
         object: ObjectId,
+    },
+    ObjectBlocked {
+        blocker: ObjectId,
+        blocked: ObjectId,
+    },
+    SchemeSetInMotion {
+        object: ObjectId,
+    },
+    ObjectTappedForMana {
+        object: ObjectId,
+    },
+    AttachmentTargetEvent {
+        attachment_source: ObjectId,
+        object: ObjectId,
+        kind: AttachmentKind,
+        event: ObjectEventKind,
     },
     SpellCast {
         player: PlayerId,
@@ -93,6 +110,23 @@ pub enum TriggerEvent {
         source: ObjectId,
         player: PlayerId,
         amount: u32,
+    },
+    DamageToPlayer {
+        source: ObjectId,
+        player: PlayerId,
+        amount: u32,
+        combat: bool,
+    },
+    CombatDamageToObject {
+        source: ObjectId,
+        object: ObjectId,
+        amount: u32,
+    },
+    DamageToObject {
+        source: ObjectId,
+        object: ObjectId,
+        amount: u32,
+        combat: bool,
     },
     BecameTarget {
         object: ObjectId,
@@ -128,6 +162,18 @@ pub enum SelectedTarget {
     Object(ObjectId),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryEndChoice {
+    Top,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LibraryEndSelection {
+    pub chooser: PlayerId,
+    pub choice: LibraryEndChoice,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplacementOccurrence {
     pub event: ReplacementEvent,
@@ -142,6 +188,11 @@ pub struct ExecutionContext {
     pub source: ObjectId,
     pub window: ActionWindow,
     pub active_player: PlayerId,
+    pub defending_player: Option<PlayerId>,
+    pub current_step: Option<Step>,
+    pub combat_step: Option<CombatStep>,
+    pub attackers_declared: bool,
+    pub blockers_declared: bool,
     pub sorcery_timing: bool,
     pub instant_timing: bool,
     pub is_mana_ability: bool,
@@ -153,10 +204,22 @@ pub struct ExecutionContext {
     pub x_value: u32,
     pub chosen_amount: Option<u32>,
     pub chosen_creature_type: Option<String>,
+    pub chosen_basic_land_type: Option<String>,
+    pub chosen_color: Option<Color>,
     pub selected_modes: Vec<u16>,
+    pub previously_selected_modes: BTreeSet<u16>,
+    pub selected_mode_chooser: Option<PlayerId>,
     pub object_choices: BTreeMap<u8, Vec<ObjectId>>,
+    pub player_choices: BTreeMap<u8, Vec<PlayerId>>,
+    pub per_player_object_choices: BTreeMap<PlayerId, Vec<ObjectId>>,
+    pub library_end_choices: BTreeMap<u8, LibraryEndSelection>,
     pub library_choices: BTreeMap<PlayerId, OrderedLibraryChoice>,
     pub card_was_cast_with_alternative_cost: bool,
+    pub card_was_cast_using_escape: bool,
+    pub card_was_kicked: bool,
+    pub card_was_cast_using_teamwork: bool,
+    pub you_attacked_this_turn: bool,
+    pub opponent_lost_life_this_turn: bool,
     pub first_resolution_of_named_spell: bool,
     pub payment_declined: bool,
     pub optional_effect_declined: bool,
@@ -164,7 +227,15 @@ pub struct ExecutionContext {
     pub gift_promised: bool,
     pub source_was_in_opening_hand: bool,
     pub playing_first: bool,
+    pub spells_cast_by_actor_this_turn: u32,
     pub selected_card_name: Option<String>,
+    pub selected_card_name_is_nonland: Option<bool>,
+    pub selected_rules_text: Option<String>,
+    pub cast_from_zone: Option<Zone>,
+    pub source_attacking_alone: bool,
+    pub creatures_attacked_this_turn: u32,
+    pub attack_tax_generic_paid: BTreeMap<ObjectId, u32>,
+    pub mana_spent_to_cast_triggering_spell: u32,
     /// Optional concrete mana composition for a typed production effect.
     /// When absent, the reference consumer chooses the first deterministic
     /// legal composition.
@@ -186,6 +257,11 @@ impl ExecutionContext {
             source,
             window,
             active_player: actor,
+            defending_player: None,
+            current_step: None,
+            combat_step: None,
+            attackers_declared: false,
+            blockers_declared: false,
             sorcery_timing: true,
             instant_timing: true,
             is_mana_ability: false,
@@ -197,10 +273,22 @@ impl ExecutionContext {
             x_value: 0,
             chosen_amount: None,
             chosen_creature_type: None,
+            chosen_basic_land_type: None,
+            chosen_color: None,
             selected_modes: Vec::new(),
+            previously_selected_modes: BTreeSet::new(),
+            selected_mode_chooser: None,
             object_choices: BTreeMap::new(),
+            player_choices: BTreeMap::new(),
+            per_player_object_choices: BTreeMap::new(),
+            library_end_choices: BTreeMap::new(),
             library_choices: BTreeMap::new(),
             card_was_cast_with_alternative_cost: false,
+            card_was_cast_using_escape: false,
+            card_was_kicked: false,
+            card_was_cast_using_teamwork: false,
+            you_attacked_this_turn: false,
+            opponent_lost_life_this_turn: false,
             first_resolution_of_named_spell: false,
             payment_declined: true,
             optional_effect_declined: false,
@@ -208,7 +296,15 @@ impl ExecutionContext {
             gift_promised: false,
             source_was_in_opening_hand: false,
             playing_first: true,
+            spells_cast_by_actor_this_turn: 0,
             selected_card_name: None,
+            selected_card_name_is_nonland: None,
+            selected_rules_text: None,
+            cast_from_zone: None,
+            source_attacking_alone: false,
+            creatures_attacked_this_turn: 0,
+            attack_tax_generic_paid: BTreeMap::new(),
+            mana_spent_to_cast_triggering_spell: 0,
             mana_production_choice: None,
             accepted_library_card: None,
             commander_controlled: false,
@@ -253,9 +349,12 @@ pub struct PhysicalObject {
     pub token: bool,
     pub tapped: bool,
     pub attacking: bool,
+    pub blocking: bool,
     pub prepared: bool,
     pub face_down: bool,
     pub active_face: u8,
+    /// Current level of a Class permanent. Non-Class objects use zero.
+    pub class_level: u8,
     pub front: ObjectCharacteristics,
     pub back: Option<ObjectCharacteristics>,
     pub counters: BTreeMap<String, u32>,
@@ -313,6 +412,7 @@ pub struct PlayerState {
     pub mana: ManaPool,
     pub commander_identity: Vec<Color>,
     pub library: Vec<ObjectId>,
+    pub counters: BTreeMap<String, u32>,
     pub chosen_creature_type: Option<String>,
     pub maximum_hand_size: Option<u32>,
 }
@@ -366,6 +466,16 @@ pub struct SpellReductionRecord {
     pub mana: ManaCost,
     pub per: CountExpression,
     pub maximum_reduction: Option<ManaCost>,
+    pub condition: Option<Condition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpellIncreaseRecord {
+    pub order: u64,
+    pub source_identity: ObjectId,
+    pub object: ObjectRef,
+    pub mana: ManaCost,
+    pub per: CountExpression,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,11 +527,44 @@ pub struct GameResultRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevealHandRecord {
+    pub order: u64,
+    pub source_identity: ObjectId,
+    pub player: PlayerId,
+    pub cards: Vec<ObjectId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandInspectionRecord {
+    pub order: u64,
+    pub source_identity: ObjectId,
+    pub viewer: PlayerId,
+    pub player: PlayerId,
+    pub cards: Vec<ObjectId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevealedCardRecord {
+    pub order: u64,
+    pub source_identity: ObjectId,
+    pub player: PlayerId,
+    pub card: ObjectId,
+    pub as_additional_cost: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedStepRecord {
     pub order: u64,
     pub source_identity: ObjectId,
     pub player: PlayerId,
     pub step: Step,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NextUntapPreventionRecord {
+    pub order: u64,
+    pub source_identity: ObjectId,
+    pub object_identities: Vec<ObjectId>,
 }
 
 pub trait OracleStateAdapter {
@@ -459,17 +602,52 @@ pub trait OracleStateAdapter {
     fn register_activation_reduction(&mut self, record: ActivationReductionRecord);
     fn spell_reductions(&self) -> Vec<SpellReductionRecord>;
     fn register_spell_reduction(&mut self, record: SpellReductionRecord);
+    fn spell_increases(&self) -> Vec<SpellIncreaseRecord>;
+    fn register_spell_increase(&mut self, record: SpellIncreaseRecord);
     fn register_scheduled_copy(&mut self, record: ScheduledCopyRecord);
     fn register_cast_permission(&mut self, record: CastPermissionRecord);
     fn register_extra_turn(&mut self, record: ExtraTurnRecord);
     fn register_payment_or_lose(&mut self, record: PaymentOrLoseRecord);
     fn register_game_result(&mut self, record: GameResultRecord);
     fn game_results(&self) -> Vec<GameResultRecord>;
+    fn register_revealed_hand(&mut self, record: RevealHandRecord);
+    fn register_hand_inspection(&mut self, record: HandInspectionRecord);
+    fn register_revealed_card(&mut self, record: RevealedCardRecord);
     fn register_skipped_step(&mut self, record: SkippedStepRecord);
+    fn next_untap_preventions(&self) -> Vec<NextUntapPreventionRecord>;
+    fn register_next_untap_prevention(&mut self, record: NextUntapPreventionRecord);
+    fn consume_next_untap_prevention(&mut self, order: u64);
     fn looked_at(&self, player: PlayerId) -> Vec<ObjectId>;
     fn put_looked_at(&mut self, player: PlayerId, objects: Vec<ObjectId>);
     fn loyalty_ability_activated_this_turn(&self, source: ObjectId) -> bool;
     fn record_loyalty_ability_activation(&mut self, source: ObjectId) -> Result<(), String>;
+    fn chosen_card_name(&self, source: ObjectId) -> Option<String>;
+    fn set_chosen_card_name(&mut self, source: ObjectId, name: String) -> Result<(), String>;
+    fn chosen_color(&self, source: ObjectId) -> Option<Color>;
+    fn set_chosen_color(&mut self, source: ObjectId, color: Color) -> Result<(), String>;
+    fn die_roll(&self, source: ObjectId) -> Option<(u16, u16)>;
+    fn set_die_roll(&mut self, source: ObjectId, sides: u16, result: u16) -> Result<(), String>;
+    fn coin_flip(&self, source: ObjectId) -> Option<CoinFlipResult>;
+    fn set_coin_flip(&mut self, source: ObjectId, result: CoinFlipResult) -> Result<(), String>;
+    fn intensity(&self, source: ObjectId) -> Option<u16>;
+    fn initialize_intensity(&mut self, source: ObjectId, amount: u16) -> Result<bool, String>;
+    fn chosen_option(&self, source: ObjectId) -> Option<String>;
+    fn set_chosen_option(&mut self, source: ObjectId, option: String) -> Result<(), String>;
+    fn chosen_rules_text(&self, source: ObjectId) -> Option<(RulesTextChoiceKind, String)>;
+    fn set_chosen_rules_text(
+        &mut self,
+        source: ObjectId,
+        kind: RulesTextChoiceKind,
+        value: String,
+    ) -> Result<(), String>;
+    fn day_night_designation(&self) -> Option<DayNightDesignation>;
+    fn establish_day_if_unset(&mut self) -> bool;
+    fn exhaust_ability_was_activated(&self, source: ObjectId, ability_key: &str) -> bool;
+    fn mark_exhaust_ability_activated(
+        &mut self,
+        source: ObjectId,
+        ability_key: String,
+    ) -> Result<(), String>;
     fn record_mutation(&mut self, description: String);
 }
 
@@ -484,14 +662,28 @@ pub struct InMemoryOracleState {
     pub restriction_effects: Vec<RestrictionRecord>,
     pub activation_reductions: Vec<ActivationReductionRecord>,
     pub spell_reductions: Vec<SpellReductionRecord>,
+    pub spell_increases: Vec<SpellIncreaseRecord>,
     pub scheduled_copies: Vec<ScheduledCopyRecord>,
     pub cast_permissions: Vec<CastPermissionRecord>,
     pub extra_turns: Vec<ExtraTurnRecord>,
     pub payment_or_lose: Vec<PaymentOrLoseRecord>,
     pub game_results: Vec<GameResultRecord>,
+    pub revealed_hands: Vec<RevealHandRecord>,
+    pub hand_inspections: Vec<HandInspectionRecord>,
+    pub revealed_cards: Vec<RevealedCardRecord>,
     pub skipped_steps: Vec<SkippedStepRecord>,
+    pub next_untap_preventions: Vec<NextUntapPreventionRecord>,
     pub looked_at: BTreeMap<PlayerId, Vec<ObjectId>>,
     pub loyalty_activations_this_turn: BTreeSet<ObjectId>,
+    pub chosen_card_names: BTreeMap<ObjectId, String>,
+    pub chosen_colors: BTreeMap<ObjectId, Color>,
+    pub die_rolls: BTreeMap<ObjectId, (u16, u16)>,
+    pub coin_flips: BTreeMap<ObjectId, CoinFlipResult>,
+    pub intensities: BTreeMap<ObjectId, u16>,
+    pub chosen_options: BTreeMap<ObjectId, String>,
+    pub chosen_rules_text: BTreeMap<ObjectId, (RulesTextChoiceKind, String)>,
+    pub day_night_designation: Option<DayNightDesignation>,
+    pub exhaust_activations: BTreeSet<(ObjectId, String)>,
     pub mutation_log: Vec<String>,
     next_object_id: ObjectId,
     next_order: u64,
@@ -509,14 +701,28 @@ impl Default for InMemoryOracleState {
             restriction_effects: Vec::new(),
             activation_reductions: Vec::new(),
             spell_reductions: Vec::new(),
+            spell_increases: Vec::new(),
             scheduled_copies: Vec::new(),
             cast_permissions: Vec::new(),
             extra_turns: Vec::new(),
             payment_or_lose: Vec::new(),
             game_results: Vec::new(),
+            revealed_hands: Vec::new(),
+            hand_inspections: Vec::new(),
+            revealed_cards: Vec::new(),
             skipped_steps: Vec::new(),
+            next_untap_preventions: Vec::new(),
             looked_at: BTreeMap::new(),
             loyalty_activations_this_turn: BTreeSet::new(),
+            chosen_card_names: BTreeMap::new(),
+            chosen_colors: BTreeMap::new(),
+            die_rolls: BTreeMap::new(),
+            coin_flips: BTreeMap::new(),
+            intensities: BTreeMap::new(),
+            chosen_options: BTreeMap::new(),
+            chosen_rules_text: BTreeMap::new(),
+            day_night_designation: None,
+            exhaust_activations: BTreeSet::new(),
             mutation_log: Vec::new(),
             next_object_id: 1,
             next_order: 1,
@@ -555,6 +761,21 @@ impl InMemoryOracleState {
 
     pub fn begin_turn(&mut self) {
         self.loyalty_activations_this_turn.clear();
+        self.continuous_effects.retain(|record| {
+            !matches!(
+                record.duration,
+                Duration::ThisTurn | Duration::UntilEndOfTurn
+            )
+        });
+        self.restriction_effects.retain(|record| {
+            !matches!(
+                record.restriction,
+                Restriction::AdditionalLandPlays {
+                    duration: Duration::ThisTurn | Duration::UntilEndOfTurn,
+                    ..
+                }
+            )
+        });
     }
 }
 
@@ -611,6 +832,7 @@ impl OracleStateAdapter for InMemoryOracleState {
             .get(&id)
             .cloned()
             .ok_or_else(|| format!("missing object {id}"))?;
+        let previous_zone = object.zone;
         if object.zone == Zone::Library {
             let owner = self
                 .players
@@ -619,8 +841,27 @@ impl OracleStateAdapter for InMemoryOracleState {
             owner.library.retain(|candidate| *candidate != id);
         }
         object.zone = zone;
+        let is_class = object
+            .characteristics()
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Class"));
+        if is_class && previous_zone != Zone::Battlefield && zone == Zone::Battlefield {
+            object.class_level = 1;
+        } else if is_class && previous_zone == Zone::Battlefield && zone != Zone::Battlefield {
+            object.class_level = 0;
+        }
+        if previous_zone == Zone::Battlefield && zone != Zone::Battlefield {
+            self.exhaust_activations.retain(|(source, _)| *source != id);
+            object.counters.clear();
+            object.prepared = false;
+            object.active_face = 0;
+            object.tapped = false;
+            object.face_down = false;
+        }
         if zone != Zone::Battlefield {
             object.attacking = false;
+            object.blocking = false;
         }
         if zone == Zone::Library {
             let owner = self
@@ -672,13 +913,6 @@ impl OracleStateAdapter for InMemoryOracleState {
         if source.zone != Zone::Battlefield || target.zone != Zone::Battlefield {
             return Err("attachment source and target must be on the battlefield".into());
         }
-        if !target
-            .characteristics()
-            .card_types
-            .contains(&CardType::Creature)
-        {
-            return Err("attachment target is not a creature".into());
-        }
         let source_characteristics = source.characteristics();
         let source_is_legal = match attachment.kind {
             AttachmentKind::Aura => {
@@ -704,6 +938,32 @@ impl OracleStateAdapter for InMemoryOracleState {
             return Err(format!(
                 "attachment source {} does not match {:?}",
                 attachment.source, attachment.kind
+            ));
+        }
+        let target_types = &target.characteristics().card_types;
+        let target_is_legal = match attachment.kind {
+            // The specific Enchant filter is validated by the attachment
+            // production runtime. This adapter consumes an already-legal
+            // battlefield attachment, so it preserves the full permanent
+            // domain instead of incorrectly narrowing every Aura to creatures.
+            AttachmentKind::Aura => target_types.iter().any(|card_type| {
+                matches!(
+                    card_type,
+                    CardType::Artifact
+                        | CardType::Battle
+                        | CardType::Creature
+                        | CardType::Enchantment
+                        | CardType::Land
+                        | CardType::Planeswalker
+                        | CardType::Permanent
+                )
+            }),
+            AttachmentKind::Equipment => target_types.contains(&CardType::Creature),
+        };
+        if !target_is_legal {
+            return Err(format!(
+                "attachment target {} is not a legal battlefield target for {:?}",
+                attachment.target, attachment.kind
             ));
         }
         self.attachments.insert(attachment.source, attachment);
@@ -830,6 +1090,16 @@ impl OracleStateAdapter for InMemoryOracleState {
             .sort_by_key(|item| (item.order, item.source_identity));
     }
 
+    fn spell_increases(&self) -> Vec<SpellIncreaseRecord> {
+        self.spell_increases.clone()
+    }
+
+    fn register_spell_increase(&mut self, record: SpellIncreaseRecord) {
+        self.spell_increases.push(record);
+        self.spell_increases
+            .sort_by_key(|item| (item.order, item.source_identity));
+    }
+
     fn register_scheduled_copy(&mut self, record: ScheduledCopyRecord) {
         self.scheduled_copies.push(record);
         self.scheduled_copies
@@ -864,10 +1134,43 @@ impl OracleStateAdapter for InMemoryOracleState {
         self.game_results.clone()
     }
 
+    fn register_revealed_hand(&mut self, record: RevealHandRecord) {
+        self.revealed_hands.push(record);
+        self.revealed_hands
+            .sort_by_key(|item| (item.order, item.source_identity, item.player));
+    }
+
+    fn register_hand_inspection(&mut self, record: HandInspectionRecord) {
+        self.hand_inspections.push(record);
+        self.hand_inspections
+            .sort_by_key(|item| (item.order, item.source_identity, item.viewer, item.player));
+    }
+
+    fn register_revealed_card(&mut self, record: RevealedCardRecord) {
+        self.revealed_cards.push(record);
+        self.revealed_cards
+            .sort_by_key(|item| (item.order, item.source_identity, item.player, item.card));
+    }
+
     fn register_skipped_step(&mut self, record: SkippedStepRecord) {
         self.skipped_steps.push(record);
         self.skipped_steps
             .sort_by_key(|item| (item.order, item.source_identity));
+    }
+
+    fn next_untap_preventions(&self) -> Vec<NextUntapPreventionRecord> {
+        self.next_untap_preventions.clone()
+    }
+
+    fn register_next_untap_prevention(&mut self, record: NextUntapPreventionRecord) {
+        self.next_untap_preventions.push(record);
+        self.next_untap_preventions
+            .sort_by_key(|item| (item.order, item.source_identity));
+    }
+
+    fn consume_next_untap_prevention(&mut self, order: u64) {
+        self.next_untap_preventions
+            .retain(|record| record.order != order);
     }
 
     fn looked_at(&self, player: PlayerId) -> Vec<ObjectId> {
@@ -887,6 +1190,137 @@ impl OracleStateAdapter for InMemoryOracleState {
             return Err(format!(
                 "object {source} already activated a loyalty ability this turn"
             ));
+        }
+        Ok(())
+    }
+
+    fn chosen_card_name(&self, source: ObjectId) -> Option<String> {
+        self.chosen_card_names.get(&source).cloned()
+    }
+
+    fn set_chosen_card_name(&mut self, source: ObjectId, name: String) -> Result<(), String> {
+        if !self.objects.contains_key(&source) {
+            return Err(format!("missing choice source {source}"));
+        }
+        self.chosen_card_names.insert(source, name);
+        Ok(())
+    }
+
+    fn chosen_color(&self, source: ObjectId) -> Option<Color> {
+        self.chosen_colors.get(&source).copied()
+    }
+
+    fn set_chosen_color(&mut self, source: ObjectId, color: Color) -> Result<(), String> {
+        if !self.objects.contains_key(&source) {
+            return Err(format!("missing choice source {source}"));
+        }
+        self.chosen_colors.insert(source, color);
+        Ok(())
+    }
+
+    fn die_roll(&self, source: ObjectId) -> Option<(u16, u16)> {
+        self.die_rolls.get(&source).copied()
+    }
+
+    fn set_die_roll(&mut self, source: ObjectId, sides: u16, result: u16) -> Result<(), String> {
+        if !self.objects.contains_key(&source) {
+            return Err(format!("missing die-roll source {source}"));
+        }
+        if sides < 2 || result == 0 || result > sides {
+            return Err(format!("invalid d{sides} result {result}"));
+        }
+        self.die_rolls.insert(source, (sides, result));
+        Ok(())
+    }
+
+    fn coin_flip(&self, source: ObjectId) -> Option<CoinFlipResult> {
+        self.coin_flips.get(&source).copied()
+    }
+
+    fn set_coin_flip(&mut self, source: ObjectId, result: CoinFlipResult) -> Result<(), String> {
+        if !self.objects.contains_key(&source) {
+            return Err(format!("missing coin-flip source {source}"));
+        }
+        self.coin_flips.insert(source, result);
+        Ok(())
+    }
+
+    fn intensity(&self, source: ObjectId) -> Option<u16> {
+        self.intensities.get(&source).copied()
+    }
+
+    fn initialize_intensity(&mut self, source: ObjectId, amount: u16) -> Result<bool, String> {
+        if !self.objects.contains_key(&source) {
+            return Err(format!("missing intensity source {source}"));
+        }
+        if self.intensities.contains_key(&source) {
+            return Ok(false);
+        }
+        self.intensities.insert(source, amount);
+        Ok(true)
+    }
+
+    fn chosen_option(&self, source: ObjectId) -> Option<String> {
+        self.chosen_options.get(&source).cloned()
+    }
+
+    fn set_chosen_option(&mut self, source: ObjectId, option: String) -> Result<(), String> {
+        if !self.objects.contains_key(&source) {
+            return Err(format!("missing named-choice source {source}"));
+        }
+        if option.trim().is_empty() {
+            return Err("named choice cannot be empty".to_owned());
+        }
+        self.chosen_options.insert(source, option);
+        Ok(())
+    }
+
+    fn chosen_rules_text(&self, source: ObjectId) -> Option<(RulesTextChoiceKind, String)> {
+        self.chosen_rules_text.get(&source).cloned()
+    }
+
+    fn set_chosen_rules_text(
+        &mut self,
+        source: ObjectId,
+        kind: RulesTextChoiceKind,
+        value: String,
+    ) -> Result<(), String> {
+        if !self.objects.contains_key(&source) {
+            return Err(format!("missing rules-text choice source {source}"));
+        }
+        let value = value.trim();
+        if value.is_empty() {
+            return Err("rules-text choice cannot be empty".to_owned());
+        }
+        self.chosen_rules_text
+            .insert(source, (kind, value.to_owned()));
+        Ok(())
+    }
+
+    fn day_night_designation(&self) -> Option<DayNightDesignation> {
+        self.day_night_designation
+    }
+
+    fn establish_day_if_unset(&mut self) -> bool {
+        if self.day_night_designation.is_some() {
+            return false;
+        }
+        self.day_night_designation = Some(DayNightDesignation::Day);
+        true
+    }
+
+    fn exhaust_ability_was_activated(&self, source: ObjectId, ability_key: &str) -> bool {
+        self.exhaust_activations
+            .contains(&(source, ability_key.to_owned()))
+    }
+
+    fn mark_exhaust_ability_activated(
+        &mut self,
+        source: ObjectId,
+        ability_key: String,
+    ) -> Result<(), String> {
+        if !self.exhaust_activations.insert((source, ability_key)) {
+            return Err("exhaust ability was already activated".to_owned());
         }
         Ok(())
     }
@@ -1012,6 +1446,8 @@ pub struct ActionDefinition<'a> {
 
 thread_local! {
     static CONTRACT_DECLARED_TARGETS: RefCell<Option<BTreeSet<u8>>> = const { RefCell::new(None) };
+
+
 }
 
 struct ContractTargetScope {
@@ -1057,12 +1493,8 @@ pub fn clause_has_executable_contract(clause: &BoundedOracleClause) -> bool {
             && clause.reminder().is_none_or(reminder_has_contract)
     })
 }
-
 fn unbridged_damage_contract_enabled() -> bool {
-    #[cfg(not(test))]
-    {
-        false
-    }
+    false
 }
 
 fn timing_has_contract(timing: &Timing) -> bool {
@@ -1095,13 +1527,23 @@ fn trigger_has_contract(trigger: &Trigger) -> bool {
         Trigger::OncePerTurn(trigger) => trigger_has_contract(trigger),
         Trigger::SourceEnters
         | Trigger::SourceCast
+        | Trigger::SchemeSetInMotion
         | Trigger::SourceAttacks
         | Trigger::SourceCombatDamageToPlayer
+        | Trigger::SourceDamageToPlayer
+        | Trigger::AttachmentTargetCombatDamageToPlayer { .. }
         | Trigger::BeginningOfNextEndStep => true,
+        Trigger::SourceBlocks { object } => filter_has_contract(object),
         Trigger::SagaChapterReached { .. } => false,
         Trigger::ObjectEnters(filter)
         | Trigger::ObjectAttacks(filter)
-        | Trigger::CombatDamageToPlayer { source: filter } => filter_has_contract(filter),
+        | Trigger::CombatDamageToPlayer { source: filter }
+        | Trigger::SourceCombatDamageToObject { object: filter } => filter_has_contract(filter),
+        Trigger::ObjectTappedForMana {
+            object: ObjectRef::AttachmentTarget { .. },
+        } => true,
+        Trigger::ObjectTappedForMana { object } => object_ref_has_contract(object),
+        Trigger::AttachmentTargetEvent { .. } => true,
         Trigger::Cast { player, spell } => {
             player_ref_has_contract(player) && filter_has_contract(spell)
         }
@@ -1122,6 +1564,9 @@ fn trigger_has_contract(trigger: &Trigger) -> bool {
         },
         Trigger::LifeGained { player } | Trigger::TokenCreated { player } => {
             player_ref_has_contract(player)
+        }
+        Trigger::DamageToPlayer { source, player } => {
+            filter_has_contract(source) && player_ref_has_contract(player)
         }
         Trigger::PlayerAction {
             player, subject, ..
@@ -1153,9 +1598,18 @@ fn trigger_has_contract(trigger: &Trigger) -> bool {
 
 fn activation_restriction_has_contract(restriction: &ActivationRestriction) -> bool {
     match restriction {
+        ActivationRestriction::All(restrictions) => {
+            !restrictions.is_empty() && restrictions.iter().all(activation_restriction_has_contract)
+        }
         ActivationRestriction::SorceryTiming
         | ActivationRestriction::InstantTiming
         | ActivationRestriction::YourTurn
+        | ActivationRestriction::DuringYourUpkeep
+        | ActivationRestriction::DuringYourTurnBeforeAttackersDeclared
+        | ActivationRestriction::OnceEachTurn
+        | ActivationRestriction::TimesEachTurn(1..=u16::MAX)
+        | ActivationRestriction::Exhaust { .. }
+        | ActivationRestriction::AnyPlayerMayActivate
         | ActivationRestriction::SourceZone(
             Zone::Library
             | Zone::Hand
@@ -1165,14 +1619,17 @@ fn activation_restriction_has_contract(restriction: &ActivationRestriction) -> b
             | Zone::Stack
             | Zone::Command,
         ) => true,
+        ActivationRestriction::TimesEachTurn(0) => false,
     }
 }
 
 fn choice_count_has_contract(count: &ChoiceCount) -> bool {
     match count {
         ChoiceCount::Exactly(amount) => *amount > 0,
+        ChoiceCount::ExactlyWithRepeats(amount) => *amount > 0,
         ChoiceCount::UpTo(amount) => *amount > 0,
         ChoiceCount::Between { minimum, maximum } => *minimum > 0 && minimum <= maximum,
+        ChoiceCount::OneOrMore | ChoiceCount::OneOrBothIfTeamwork => true,
     }
 }
 
@@ -1184,10 +1641,12 @@ fn targets_have_contract(targets: &[Target]) -> bool {
             && target_filter_has_contract(&target.filter)
             && match target.amount {
                 TargetAmount::Exactly(amount) => amount > 0,
-                TargetAmount::UpTo(_) | TargetAmount::All => true,
+                TargetAmount::UpTo(_) | TargetAmount::AnyNumber | TargetAmount::All => true,
             }
             && match &target.relationship {
-                TargetRelationship::Independent | TargetRelationship::DifferentControllers => true,
+                TargetRelationship::Independent
+                | TargetRelationship::DifferentControllers
+                | TargetRelationship::ShareCreatureType => true,
                 TargetRelationship::OtherThan(object) => object_ref_has_contract(object),
             }
     })
@@ -1195,7 +1654,7 @@ fn targets_have_contract(targets: &[Target]) -> bool {
 
 fn target_filter_has_contract(filter: &TargetFilter) -> bool {
     match filter {
-        TargetFilter::Player => true,
+        TargetFilter::Player | TargetFilter::Opponent => true,
         TargetFilter::Object(filter) | TargetFilter::Spell(filter) => filter_has_contract(filter),
         TargetFilter::Any(filters) => {
             filters.len() >= 2 && filters.iter().all(target_filter_has_contract)
@@ -1233,10 +1692,12 @@ fn condition_has_contract(condition: &Condition) -> bool {
             ObjectState::Tapped
             | ObjectState::Untapped
             | ObjectState::Attacking
+            | ObjectState::Blocking
             | ObjectState::Prepared
             | ObjectState::FaceDown,
         ) => true,
         Condition::TargetState { target, .. } => object_ref_has_contract(target),
+        Condition::SpellTargetsState { .. } => true,
         Condition::PowerComparison { object, amount, .. } => {
             filter_has_contract(object) && amount_has_contract(amount)
         }
@@ -1245,18 +1706,47 @@ fn condition_has_contract(condition: &Condition) -> bool {
             cost_has_contract(cost)
         }
         Condition::CardWasCastWithAlternativeCost
+        | Condition::CardWasCastUsingEscape
+        | Condition::CardWasKicked
+        | Condition::CardWasCastUsingTeamwork
+        | Condition::YouAttackedThisTurn
+        | Condition::OpponentLostLifeThisTurn
         | Condition::NotYourTurn
         | Condition::NotThatPlayersTurn
         | Condition::GiftPromised
         | Condition::SourceInOpeningHand
         | Condition::NotPlayingFirst
+        | Condition::ModeSelected(_)
+        | Condition::AnotherSpellCastThisTurn
+        | Condition::SourceAttackingAlone
+        | Condition::SpellCastFromNonHand
+        | Condition::ManaSpentGreaterThanSourcePowerOrToughness
+        | Condition::CastOnlyDuringCombat
+        | Condition::CastOnlyDuringCombatBeforeBlockers
+        | Condition::CastOnlyDuringDeclareBlockers
+        | Condition::CastOnlyDuringCombatAfterBlockers
         | Condition::SourceWasCounteredByThisEffect
         | Condition::FirstResolutionOfNamedSpell => true,
+        Condition::SpellsCastByActorThisTurn { amount, .. } => *amount > 0,
         Condition::GraveyardCardCount { player, amount, .. }
+        | Condition::HandCardCount { player, amount, .. }
         | Condition::CardTypesInGraveyard { player, amount, .. } => {
             player_ref_has_contract(player) && amount_has_contract(amount)
         }
         Condition::SourceHasCounter { .. } => true,
+        Condition::SourceCounterCount {
+            comparison, amount, ..
+        } => *amount > 0 || (*comparison == Comparison::Exactly && *amount == 0),
+        Condition::ObjectCounterCount {
+            object,
+            comparison,
+            amount,
+            ..
+        } => {
+            (matches!(object, ObjectRef::AttachmentTarget { .. })
+                || object_ref_has_contract(object))
+                && (*amount > 0 || (*comparison == Comparison::Exactly && *amount == 0))
+        }
         Condition::CommanderControlled { player } => player_ref_has_contract(player),
         Condition::ObjectIsCardType { object, .. } => object_ref_has_contract(object),
         Condition::UnlessPaid { player, cost } => {
@@ -1267,8 +1757,9 @@ fn condition_has_contract(condition: &Condition) -> bool {
 
 fn cost_has_contract(cost: &Cost) -> bool {
     match cost {
+        Cost::Optional(cost) => cost_has_contract(cost),
         Cost::Mana(cost) => mana_cost_has_contract(cost),
-        Cost::AtomicResource(_) => false,
+        Cost::AtomicResource(cost) => atomic_energy_cost_amount(cost).is_some(),
         Cost::Loyalty(LoyaltyCost::Add(_)) | Cost::Loyalty(LoyaltyCost::Zero) => true,
         Cost::Loyalty(LoyaltyCost::Remove(amount)) => amount_has_contract(amount),
         Cost::Tap(object)
@@ -1277,22 +1768,55 @@ fn cost_has_contract(cost: &Cost) -> bool {
         | Cost::Discard(object)
         | Cost::ExileObject(object)
         | Cost::Unprepare(object) => object_ref_has_contract(object),
-        Cost::ExileSourceFromOwnGraveyard => true,
-        Cost::DiscardSelection(selection) | Cost::ExileSelection(selection) => {
-            selection_has_contract(selection)
+        Cost::ExileSourceFromBattlefield | Cost::ExileSourceFromOwnGraveyard => true,
+        Cost::TapSelection(selection)
+        | Cost::SacrificeSelection(selection)
+        | Cost::DiscardSelection(selection)
+        | Cost::ExileSelection(selection) => selection_has_contract(selection),
+        Cost::ExileSelectionWithTotalManaValue { selection, minimum } => {
+            selection_has_contract(selection) && amount_has_contract(minimum)
         }
         Cost::DiscardHand { player } => player_ref_has_contract(player),
+        Cost::DiscardRandom { player } => player_ref_has_contract(player),
+        Cost::ReturnSelectionToHand(selection) => selection_has_contract(selection),
+        Cost::RevealSelection { selection, .. } => selection_has_contract(selection),
+        Cost::BeholdSelection {
+            battlefield, hand, ..
+        } => filter_has_contract(battlefield) && filter_has_contract(hand),
+        Cost::Waterbend { selection, amount } => {
+            selection_has_contract(selection) && amount_has_contract(amount)
+        }
+        Cost::PutCounter { object, amount, .. } => {
+            object_ref_has_contract(object) && amount_has_contract(amount)
+        }
+        Cost::PutCounterSelection {
+            selection, amount, ..
+        } => selection_has_contract(selection) && amount_has_contract(amount),
         Cost::RemoveCounter { object, amount, .. } => {
             object_ref_has_contract(object) && amount_has_contract(amount)
         }
         Cost::TapCreaturesWithTotalPower { player, minimum } => {
             player_ref_has_contract(player) && amount_has_contract(minimum)
         }
+        Cost::TapCreatureSelectionWithTotalPower { selection, minimum } => {
+            selection_has_contract(selection) && amount_has_contract(minimum)
+        }
         Cost::PayLife(amount) => amount_has_contract(amount),
         Cost::Sacrifice { amount, filter } => {
             amount_has_contract(amount) && filter_has_contract(filter)
         }
     }
+}
+
+fn atomic_energy_cost_amount(cost: &AtomicResourceCost) -> Option<u32> {
+    let mut total = 0u32;
+    for component in &cost.expression().components {
+        let TypedResourceCostComponent::Energy(amount) = component else {
+            return None;
+        };
+        total = total.checked_add(*amount)?;
+    }
+    (total > 0).then_some(total)
 }
 
 fn amount_has_contract(amount: &Amount) -> bool {
@@ -1306,17 +1830,33 @@ fn amount_has_contract(amount: &Amount) -> bool {
 
 fn count_has_contract(count: &CountExpression) -> bool {
     match count {
+        CountExpression::Constant(_) => true,
+        CountExpression::OpponentCount { player }
+        | CountExpression::PartySize { player }
+        | CountExpression::DistinctBasicLandTypes { player }
+        | CountExpression::CreaturesAttackedThisTurn { player } => player_ref_has_contract(player),
+        CountExpression::PowerOf { object } | CountExpression::ToughnessOf { object } => {
+            object_ref_has_contract(object)
+        }
+        CountExpression::HalfLifeTotal { player, .. } => player_ref_has_contract(player),
+        CountExpression::SelectedObjectsTotalPower { .. }
+        | CountExpression::SelectedObjectsTotalToughness { .. } => true,
         CountExpression::MatchingObjects { player, filter }
         | CountExpression::GreatestPower { player, filter } => {
             player_ref_has_contract(player) && filter_has_contract(filter)
         }
-        CountExpression::CountersOn { object, .. } => object_ref_has_contract(object),
+        CountExpression::CountersOn { object, .. }
+        | CountExpression::AttachmentsOn { object, .. } => object_ref_has_contract(object),
         CountExpression::CardsInZone { player, filter, .. } => {
             player_ref_has_contract(player) && filter_has_contract(filter)
         }
         CountExpression::OpponentsDealtCombatDamage { player }
         | CountExpression::Devotion { player, .. } => player_ref_has_contract(player),
         CountExpression::ManaValueOf { object } => object_ref_has_contract(object),
+        CountExpression::LifeLostThisWay {
+            players,
+            amount_each,
+        } => player_ref_has_contract(players) && amount_has_contract(amount_each),
         CountExpression::TriggerEventAmount => true,
         CountExpression::ReplacementEventAmount => true,
     }
@@ -1327,7 +1867,7 @@ fn selection_has_contract(selection: &ObjectSelection) -> bool {
         && filter_has_contract(&selection.filter)
         && match selection.amount {
             TargetAmount::Exactly(amount) | TargetAmount::UpTo(amount) => amount > 0,
-            TargetAmount::All => true,
+            TargetAmount::AnyNumber | TargetAmount::All => true,
         }
 }
 
@@ -1344,11 +1884,14 @@ fn player_ref_has_contract(player: &PlayerRef) -> bool {
         PlayerRef::You
         | PlayerRef::PlayerIdentity(_)
         | PlayerRef::Opponent
+        | PlayerRef::OtherPlayer
         | PlayerRef::Any
-        | PlayerRef::ThatPlayer => true,
+        | PlayerRef::ThatPlayer
+        | PlayerRef::DefendingPlayer => true,
         PlayerRef::TargetPlayer(id) => target_id_has_contract(*id),
         PlayerRef::ControllerOf(object) | PlayerRef::OwnerOf(object) => {
-            object_ref_has_contract(object)
+            matches!(object.as_ref(), ObjectRef::AttachmentTarget { .. })
+                || object_ref_has_contract(object)
         }
     }
 }
@@ -1385,6 +1928,26 @@ fn filter_has_contract(filter: &ObjectFilter) -> bool {
             .power
             .as_ref()
             .is_none_or(|(_, amount)| amount_has_contract(amount))
+        && filter
+            .toughness
+            .as_ref()
+            .is_none_or(|(_, amount)| amount_has_contract(amount))
+        && filter
+            .minimum_counter
+            .as_ref()
+            .is_none_or(|(_, amount)| *amount > 0)
+        && filter.keywords.iter().all(keyword_filter_has_contract)
+        && filter
+            .excluded_keywords
+            .iter()
+            .all(keyword_filter_has_contract)
+}
+
+fn keyword_filter_has_contract(keyword: &Keyword) -> bool {
+    match keyword {
+        Keyword::Ward(cost) => ward_cost_has_contract(cost),
+        _ => true,
+    }
 }
 
 fn mana_cost_has_contract(cost: &ManaCost) -> bool {
@@ -1458,15 +2021,19 @@ fn typed_mana_composition_has_contract(composition: &TypedManaComposition) -> bo
         TypedManaComposition::OneOf(choices) => {
             !choices.is_empty() && choices.iter().all(|choice| !choice.is_empty())
         }
+        TypedManaComposition::Alternatives(alternatives) => {
+            !alternatives.is_empty() && alternatives.iter().all(typed_mana_composition_has_contract)
+        }
         TypedManaComposition::AnyOneColor => true,
         TypedManaComposition::AnyCombination(domain)
         | TypedManaComposition::DifferentColors(domain) => {
             !typed_mana_domain_colors(domain).is_empty()
         }
-        TypedManaComposition::Derived(TypedDerivedManaTypes::CommanderColorIdentity) => true,
         TypedManaComposition::Derived(
-            TypedDerivedManaTypes::ChosenColor
-            | TypedDerivedManaTypes::ChosenColors
+            TypedDerivedManaTypes::CommanderColorIdentity | TypedDerivedManaTypes::ChosenColor,
+        ) => true,
+        TypedManaComposition::Derived(
+            TypedDerivedManaTypes::ChosenColors
             | TypedDerivedManaTypes::ExiledCardsColors
             | TypedDerivedManaTypes::SacrificedLandCouldProduce
             | TypedDerivedManaTypes::ControlledLandsCouldProduce,
@@ -1479,6 +2046,7 @@ fn duration_has_contract(duration: &Duration) -> bool {
         Duration::Permanent
         | Duration::ThisTurn
         | Duration::UntilEndOfTurn
+        | Duration::UntilEndOfNextTurn
         | Duration::WhileSourceOnBattlefield
         | Duration::BeginningOfNextEndStep
         | Duration::BeginningOfNextTurnUpkeep => true,
@@ -1504,6 +2072,7 @@ fn keyword_has_contract(keyword: &Keyword) -> bool {
         Keyword::Lifelink => Some(crate::keyword_rules_runtime::OfficialKeyword::Lifelink),
         Keyword::Menace => Some(crate::keyword_rules_runtime::OfficialKeyword::Menace),
         Keyword::Reach => Some(crate::keyword_rules_runtime::OfficialKeyword::Reach),
+        Keyword::Shroud => Some(crate::keyword_rules_runtime::OfficialKeyword::Shroud),
         Keyword::Trample => Some(crate::keyword_rules_runtime::OfficialKeyword::Trample),
         Keyword::Vigilance => Some(crate::keyword_rules_runtime::OfficialKeyword::Vigilance),
         Keyword::Ward(_) => None,
@@ -1596,20 +2165,102 @@ fn restriction_has_contract(restriction: &Restriction) -> bool {
             duration: Duration::WhileSourceOnBattlefield,
         } => true,
         Restriction::SpellCannotBeCountered { object }
+        | Restriction::SpellCannotBeCopied { object }
         | Restriction::ActivatedAbilitiesCannotBeActivated { object, .. }
         | Restriction::DestroyProtection { object } => object_ref_has_contract(object),
+        Restriction::ActivatedAbilitiesOfMatchingSourcesCannotBeActivated {
+            objects,
+            duration,
+            ..
+        } => filter_has_contract(objects) && duration_has_contract(duration),
+        Restriction::MinimumX { object, minimum } => {
+            object_ref_has_contract(object) && *minimum > 0
+        }
         Restriction::MustAttackEachCombatIfAble { object, duration }
         | Restriction::CannotAttack { object, duration } => {
             object_ref_has_contract(object) && duration_has_contract(duration)
+        }
+        Restriction::AttackCost {
+            attackers,
+            attacked_player,
+            mana_per_attacker,
+            duration,
+        } => {
+            filter_has_contract(attackers)
+                && player_ref_has_contract(attacked_player)
+                && mana_cost_has_contract(mana_per_attacker)
+                && duration_has_contract(duration)
+        }
+        Restriction::EntersUntapped { objects, duration } => {
+            filter_has_contract(objects) && duration_has_contract(duration)
         }
         Restriction::DoesNotUntapDuring {
             object: ObjectRef::AttachmentTarget { .. },
             step: Step::UntapStep,
         } => true,
         Restriction::DoesNotUntapDuring { object, .. } => object_ref_has_contract(object),
+        Restriction::DoesNotUntapDuringIf {
+            object, condition, ..
+        } => object_ref_has_contract(object) && condition_has_contract(condition),
         Restriction::CannotBlock { object, duration }
         | Restriction::CannotBeBlocked { object, duration } => {
             object_ref_has_contract(object) && duration_has_contract(duration)
+        }
+        Restriction::CannotBeBlockedWhen {
+            object,
+            condition,
+            duration,
+        } => {
+            object_ref_has_contract(object)
+                && condition_has_contract(condition)
+                && duration_has_contract(duration)
+        }
+        Restriction::BlockerMustMatch {
+            attacker: ObjectRef::AttachmentTarget { .. },
+            blocker_filter,
+            duration: Duration::WhileSourceOnBattlefield,
+        } => target_filter_has_contract(blocker_filter),
+        Restriction::BlockerMustMatch {
+            attacker,
+            blocker_filter,
+            duration,
+        } => {
+            object_ref_has_contract(attacker)
+                && target_filter_has_contract(blocker_filter)
+                && duration_has_contract(duration)
+        }
+        Restriction::CannotBlockMatching {
+            blocker,
+            attacker_filter,
+            duration,
+        } => {
+            object_ref_has_contract(blocker)
+                && filter_has_contract(attacker_filter)
+                && duration_has_contract(duration)
+        }
+        Restriction::CannotBlockObject {
+            blocker,
+            attacker,
+            duration,
+        } => {
+            object_ref_has_contract(blocker)
+                && object_ref_has_contract(attacker)
+                && duration_has_contract(duration)
+        }
+        Restriction::MustBlockIfAble {
+            blockers,
+            attacker,
+            duration,
+        } => {
+            object_ref_has_contract(blockers)
+                && attacker.as_ref().is_none_or(object_ref_has_contract)
+                && duration_has_contract(duration)
+        }
+        Restriction::AssignCombatDamageUsingToughness {
+            objects, duration, ..
+        } => object_ref_has_contract(objects) && duration_has_contract(duration),
+        Restriction::AssignCombatDamageAsThoughUnblocked { objects, duration } => {
+            object_ref_has_contract(objects) && duration_has_contract(duration)
         }
         Restriction::MatchingSpellsCannotBeCountered { player, filter } => {
             player_ref_has_contract(player) && filter_has_contract(filter)
@@ -1642,13 +2293,56 @@ fn restriction_has_contract(restriction: &Restriction) -> bool {
         }
         Restriction::MaximumHandSize { player, .. }
         | Restriction::LegendRuleDoesNotApply { player } => player_ref_has_contract(player),
+        Restriction::PlayerCannotLoseGame { players, duration }
+        | Restriction::PlayerCannotWinGame { players, duration }
+        | Restriction::NonpositiveLifeDoesNotCauseLoss { players, duration } => {
+            player_ref_has_contract(players) && duration_has_contract(duration)
+        }
+        Restriction::HandsRevealed { players, duration } => {
+            player_ref_has_contract(players) && duration_has_contract(duration)
+        }
+        Restriction::SorcerySpeedCastingOnly { players, duration } => {
+            player_ref_has_contract(players) && duration_has_contract(duration)
+        }
+        Restriction::AttackLimit {
+            player,
+            amount,
+            duration,
+        }
+        | Restriction::AdditionalLandPlays {
+            player,
+            amount,
+            duration,
+        } => player_ref_has_contract(player) && *amount > 0 && duration_has_contract(duration),
+        Restriction::AdditionalBlockCapacity {
+            objects,
+            amount,
+            duration,
+        } => object_ref_has_contract(objects) && *amount > 0 && duration_has_contract(duration),
+        Restriction::IgnoreSummoningSicknessForActivatedAbilities { objects, duration } => {
+            object_ref_has_contract(objects) && duration_has_contract(duration)
+        }
         Restriction::UntapLimit { player, filter, .. } => {
             player_ref_has_contract(player) && filter_has_contract(filter)
         }
         Restriction::TargetingProtection {
             object,
             forbidden_controller,
-        } => object_ref_has_contract(object) && player_ref_has_contract(forbidden_controller),
+            duration,
+        } => {
+            object_ref_has_contract(object)
+                && player_ref_has_contract(forbidden_controller)
+                && duration_has_contract(duration)
+        }
+        Restriction::ObjectsCannotBeTargeted { objects, duration } => {
+            filter_has_contract(objects) && duration_has_contract(duration)
+        }
+        Restriction::PlayersCannotBeTargeted { players, duration } => {
+            player_ref_has_contract(players) && duration_has_contract(duration)
+        }
+        Restriction::EnteringCreaturesDoNotCauseAbilitiesToTrigger { duration } => {
+            duration_has_contract(duration)
+        }
         Restriction::EnchantRestriction { filter } => filter_has_contract(filter),
         Restriction::AlternativeCastPermission(permission) => {
             object_ref_has_contract(&permission.object)
@@ -1702,8 +2396,12 @@ fn replacement_has_contract(replacement: &ReplacementEffect) -> bool {
         ReplacementEffect::MultiplyEvent { event, multiplier } => {
             *multiplier > 0 && replacement_event_has_contract(event)
         }
+        ReplacementEffect::IncreaseEvent { event, addend } => {
+            *addend > 0 && replacement_event_has_contract(event)
+        }
         ReplacementEffect::EntersTapped(replacement) => {
             object_ref_has_contract(&replacement.object)
+                && replacement.when.as_ref().is_none_or(condition_has_contract)
                 && replacement
                     .unless
                     .as_ref()
@@ -1734,6 +2432,18 @@ fn effect_has_contract(effect: &Effect) -> bool {
     match effect {
         Effect::Optional(effects) => !effects.is_empty() && effects.iter().all(effect_has_contract),
         Effect::PayCost(cost) => cost_has_contract(cost),
+        Effect::AddMana(ManaProduction {
+            player: PlayerRef::ControllerOf(object),
+            choices,
+            amount,
+            commander_identity_only: false,
+            scales_with: None,
+            typed: None,
+        }) if matches!(&**object, ObjectRef::AttachmentTarget { .. }) => {
+            !choices.is_empty()
+                && choices.iter().all(|choice| !choice.symbols.is_empty())
+                && amount_has_contract(amount)
+        }
         Effect::AddMana(production) => {
             player_ref_has_contract(&production.player)
                 && production.typed.as_ref().map_or_else(
@@ -1752,18 +2462,43 @@ fn effect_has_contract(effect: &Effect) -> bool {
                     typed_mana_production_has_contract,
                 )
         }
+        Effect::SetClassLevel { level } => matches!(level, 2 | 3),
+        Effect::Tap {
+            object: ObjectRef::AttachmentTarget { .. },
+        }
+        | Effect::Destroy {
+            object: ObjectRef::AttachmentTarget { .. },
+        } => true,
         Effect::Counter { object }
         | Effect::CounterToZone { object, .. }
         | Effect::Destroy { object }
+        | Effect::DestroyWithoutRegeneration { object }
         | Effect::Tap { object }
         | Effect::Untap { object }
+        | Effect::RemoveFromCombat { object }
+        | Effect::Exert { object }
+        | Effect::PreventNextUntap { object }
         | Effect::Transform { object }
+        | Effect::Prepare { object }
         | Effect::ExileSpellAfterResolution { object }
         | Effect::ChooseNewTargets { object } => object_ref_has_contract(object),
+        Effect::MoveToLibraryBottom { object }
+        | Effect::MoveToChosenLibraryEnd { object, .. }
+        | Effect::PutOnLibraryTopInOrder { objects: object } => object_ref_has_contract(object),
+        Effect::PutInLibraryAtPosition {
+            object,
+            position_from_top,
+        } => object_ref_has_contract(object) && *position_from_top > 0,
         Effect::CopyStackObject { object, .. } => object_ref_has_contract(object),
         Effect::ChangeControl { object, controller } => {
             object_ref_has_contract(object) && player_ref_has_contract(controller)
         }
+        Effect::ChangeControlUntil {
+            object,
+            controller: PlayerRef::You,
+            duration,
+        } => object_ref_has_contract(object) && duration_has_contract(duration),
+        Effect::ChangeControlUntil { .. } => false,
         Effect::SkipStep { player, .. }
         | Effect::WinGame { player }
         | Effect::LoseGame { player } => player_ref_has_contract(player),
@@ -1773,12 +2508,35 @@ fn effect_has_contract(effect: &Effect) -> bool {
                 && cost_has_contract(&effect.cost)
                 && trigger_has_contract(&effect.trigger)
         }
+        Effect::MoveZone(ZoneMove {
+            object: ObjectRef::AttachmentTarget { .. },
+            from: Some(Zone::Battlefield),
+            to,
+            delayed_until: None,
+            ..
+        }) => matches!(
+            to,
+            Zone::Hand | Zone::Graveyard | Zone::Exile | Zone::Library
+        ),
         Effect::MoveZone(move_zone) => {
             object_ref_has_contract(&move_zone.object)
                 && move_zone
                     .delayed_until
                     .as_ref()
                     .is_none_or(trigger_has_contract)
+        }
+        Effect::MoveZoneUnderControl {
+            object,
+            controller,
+            from,
+            to,
+            delayed_until,
+            ..
+        } => {
+            object_ref_has_contract(object)
+                && player_ref_has_contract(controller)
+                && from != to
+                && delayed_until.as_ref().is_none_or(trigger_has_contract)
         }
         Effect::MoveSelected(move_zone) => selection_has_contract(&move_zone.selection),
         Effect::SetSelectedTapped { selection, .. } => selection_has_contract(selection),
@@ -1819,8 +2577,20 @@ fn effect_has_contract(effect: &Effect) -> bool {
         }
         Effect::GrantCastPermission(permission) => cast_permission_has_contract(permission),
         Effect::LibraryProcedure(procedure) => match procedure {
+            LibraryProcedure::ShuffleGraveyardIntoLibrary { player } => {
+                player_ref_has_contract(player)
+            }
+            LibraryProcedure::ShuffleHandIntoLibraryAndDrawSame { player } => {
+                player_ref_has_contract(player)
+            }
+            LibraryProcedure::ShuffleHandAndGraveyardIntoLibraryAndDraw { player, amount } => {
+                player_ref_has_contract(player) && amount_has_contract(amount)
+            }
             LibraryProcedure::DiscardHandsAndDraw { player, amount } => {
                 player_ref_has_contract(player) && amount_has_contract(amount)
+            }
+            LibraryProcedure::DiscardHandsAndDrawDiscarded { player, adjustment } => {
+                player_ref_has_contract(player) && (-1..=1).contains(adjustment)
             }
             LibraryProcedure::RevealTopToHandLoseManaValue { player, repeat } => {
                 player_ref_has_contract(player) && amount_has_contract(repeat)
@@ -1835,9 +2605,37 @@ fn effect_has_contract(effect: &Effect) -> bool {
             player_ref_has_contract(player)
         }
         Effect::PutRestOnLibraryBottom { player, order } => {
-            player_ref_has_contract(player) && matches!(order, BottomOrder::AnyOrder)
+            player_ref_has_contract(player)
+                && matches!(
+                    order,
+                    BottomOrder::AnyOrder | BottomOrder::ReplaySeededRandom
+                )
         }
+        Effect::PutRestOfLookedAt {
+            player,
+            destination,
+        } => {
+            player_ref_has_contract(player)
+                && matches!(destination, Zone::Hand | Zone::Graveyard | Zone::Exile)
+        }
+        Effect::ReorderLookedAtOnLibraryTop { player } => player_ref_has_contract(player),
         Effect::CreateToken(creation) => token_creation_has_contract(creation),
+        Effect::CreateTokenAttached {
+            creation, target, ..
+        } => token_creation_has_contract(creation) && object_ref_has_contract(target),
+        Effect::CreateTokenAndAttachSource {
+            creation,
+            attachment,
+            ..
+        } => token_creation_has_contract(creation) && object_ref_has_contract(attachment),
+        Effect::Attach {
+            attachment, target, ..
+        } => object_ref_has_contract(attachment) && object_ref_has_contract(target),
+        Effect::ResolveTargetChoice { object } => object_ref_has_contract(object),
+        Effect::ResolvePlayerTargetChoice { player } => player_ref_has_contract(player),
+        Effect::ChoosePlayer { chooser, eligible } => {
+            player_ref_has_contract(chooser) && player_ref_has_contract(eligible)
+        }
         Effect::CreateTokenWithDelayedMove {
             creation, trigger, ..
         } => token_creation_has_contract(creation) && trigger_has_contract(trigger),
@@ -1851,14 +2649,55 @@ fn effect_has_contract(effect: &Effect) -> bool {
                 && amount_has_contract(amount)
                 && delayed_until.as_ref().is_none_or(trigger_has_contract)
         }
+        Effect::DrawRevealDiscardIfNonland { player } => player_ref_has_contract(player),
+        Effect::DrawThenDiscardUnless {
+            player,
+            draw,
+            discard,
+            alternative,
+            ..
+        } => {
+            player_ref_has_contract(player)
+                && *draw > 0
+                && *discard > 0
+                && filter_has_contract(alternative)
+        }
+        Effect::ChooseCardName { .. } | Effect::ChooseColor => true,
+        Effect::RollDie { sides } => *sides >= 2,
+        Effect::FlipCoin => true,
+        Effect::Proliferate { .. } => true,
+        Effect::InitializeIntensity { .. } => true,
+        Effect::ChooseNamedOption { options } => {
+            !options.is_empty()
+                && options.iter().all(|option| !option.trim().is_empty())
+                && options.iter().collect::<BTreeSet<_>>().len() == options.len()
+        }
+        Effect::ChooseRulesText { .. } => true,
+        Effect::EstablishDayIfUnset => true,
+        Effect::EachPlayerSacrifices { filter, amount } => {
+            filter_has_contract(filter) && *amount > 0
+        }
+        Effect::PlayersSacrifice {
+            players,
+            filter,
+            amount,
+        } => player_ref_has_contract(players) && filter_has_contract(filter) && *amount > 0,
+        Effect::RevealHand { player } => player_ref_has_contract(player),
+        Effect::LookAtHand { viewer, player } => {
+            player_ref_has_contract(viewer) && player_ref_has_contract(player)
+        }
         Effect::Discard(selection) => selection_has_contract(selection),
+        Effect::Connive { object, discard } => {
+            object_ref_has_contract(object) && selection_has_contract(discard)
+        }
         Effect::GainLife { player, amount }
         | Effect::LoseLife { player, amount }
         | Effect::PayLife { player, amount }
         | Effect::Scry { player, amount }
         | Effect::Surveil { player, amount }
         | Effect::Mill { player, amount }
-        | Effect::LookAtTop { player, amount } => {
+        | Effect::LookAtTop { player, amount }
+        | Effect::RevealTop { player, amount } => {
             player_ref_has_contract(player) && amount_has_contract(amount)
         }
         Effect::Damage {
@@ -1881,8 +2720,25 @@ fn effect_has_contract(effect: &Effect) -> bool {
         Effect::Manifest { player, card } => {
             player_ref_has_contract(player) && object_ref_has_contract(card)
         }
+        Effect::PutPlayerCounter {
+            player,
+            counter,
+            amount,
+        } => {
+            player_ref_has_contract(player)
+                && !counter.trim().is_empty()
+                && amount_has_contract(amount)
+        }
         Effect::PutCounter { object, amount, .. } => {
+            (matches!(object, ObjectRef::AttachmentTarget { .. })
+                || object_ref_has_contract(object))
+                && amount_has_contract(amount)
+        }
+        Effect::RemoveCounter { object, amount, .. } => {
             object_ref_has_contract(object) && amount_has_contract(amount)
+        }
+        Effect::MoveAllCounters { from, to } => {
+            object_ref_has_contract(from) && object_ref_has_contract(to)
         }
         Effect::ModifyPowerToughness(PowerToughnessChange {
             objects: ObjectRef::AttachmentTarget { .. },
@@ -1890,17 +2746,27 @@ fn effect_has_contract(effect: &Effect) -> bool {
                 PowerToughnessOperation::Add
                 | PowerToughnessOperation::Subtract
                 | PowerToughnessOperation::AddPowerSubtractToughness
-                | PowerToughnessOperation::SubtractPowerAddToughness,
-            power: Amount::Constant(_),
-            toughness: Amount::Constant(_),
-            duration: Duration::WhileSourceOnBattlefield,
-        }) => true,
+                | PowerToughnessOperation::SubtractPowerAddToughness
+                | PowerToughnessOperation::Switch,
+            power,
+            toughness,
+            duration,
+        }) => {
+            amount_has_contract(power)
+                && amount_has_contract(toughness)
+                && duration_has_contract(duration)
+        }
         Effect::ModifyPowerToughness(change) => {
             object_ref_has_contract(&change.objects)
                 && amount_has_contract(&change.power)
                 && amount_has_contract(&change.toughness)
                 && duration_has_contract(&change.duration)
         }
+        Effect::GrantKeyword {
+            objects: ObjectRef::AttachmentTarget { .. },
+            keywords,
+            duration: Duration::WhileSourceOnBattlefield,
+        } => !keywords.is_empty() && keywords.iter().all(keyword_has_contract),
         Effect::GrantKeyword {
             objects,
             keywords,
@@ -1912,6 +2778,11 @@ fn effect_has_contract(effect: &Effect) -> bool {
                 && duration_has_contract(duration)
         }
         Effect::GrantAbility {
+            objects: ObjectRef::AttachmentTarget { .. },
+            ability,
+            duration: Duration::WhileSourceOnBattlefield,
+        } => granted_ability_has_contract(ability),
+        Effect::GrantAbility {
             objects,
             ability,
             duration,
@@ -1920,9 +2791,18 @@ fn effect_has_contract(effect: &Effect) -> bool {
                 && granted_ability_has_contract(ability)
                 && duration_has_contract(duration)
         }
+        Effect::LoseAllAbilities {
+            object: ObjectRef::AttachmentTarget { .. },
+            duration: Duration::WhileSourceOnBattlefield,
+        } => true,
         Effect::LoseAllAbilities { object, duration } => {
             object_ref_has_contract(object) && duration_has_contract(duration)
         }
+        Effect::SetCharacteristics(SetCharacteristics {
+            object: ObjectRef::AttachmentTarget { .. },
+            duration: Duration::WhileSourceOnBattlefield,
+            ..
+        }) => true,
         Effect::SetCharacteristics(change) => {
             object_ref_has_contract(&change.object)
                 && change.base_power.as_ref().is_none_or(amount_has_contract)
@@ -1931,6 +2811,15 @@ fn effect_has_contract(effect: &Effect) -> bool {
                     .as_ref()
                     .is_none_or(amount_has_contract)
                 && duration_has_contract(&change.duration)
+        }
+        Effect::SetCreatureTypeToChoice { object, duration } => {
+            object_ref_has_contract(object) && duration_has_contract(duration)
+        }
+        Effect::SetColorToChoice { object, duration } => {
+            object_ref_has_contract(object) && duration_has_contract(duration)
+        }
+        Effect::SetBasicLandTypeToChoice { object, duration } => {
+            object_ref_has_contract(object) && duration_has_contract(duration)
         }
         Effect::Restriction(restriction) => restriction_has_contract(restriction),
         Effect::Replacement(replacement) => replacement_has_contract(replacement),
@@ -1991,7 +2880,29 @@ fn effect_has_contract(effect: &Effect) -> bool {
                     .as_ref()
                     .is_none_or(mana_cost_has_contract)
         }
+        Effect::ReduceSpellCostWhen {
+            object,
+            mana,
+            condition,
+        } => {
+            object_ref_has_contract(object)
+                && mana_cost_has_contract(mana)
+                && condition_has_contract(condition)
+        }
+        Effect::IncreaseSpellCost { object, mana, per } => {
+            object_ref_has_contract(object)
+                && mana_cost_has_contract(mana)
+                && count_has_contract(per)
+        }
         Effect::ChooseMode { count } => choice_count_has_contract(count),
+        Effect::ChooseModeBy { chooser, count } => {
+            player_ref_has_contract(chooser) && choice_count_has_contract(count)
+        }
+        Effect::ChooseModeNotPreviouslyChosen { count } => choice_count_has_contract(count),
+        Effect::ChooseModeFrom {
+            count,
+            option_count,
+        } => choice_count_has_contract(count) && *option_count > 0,
         Effect::StandaloneRuleProgram(_) => false,
         Effect::Conditional {
             condition,
@@ -2021,11 +2932,13 @@ fn reminder_has_contract(reminder: &ReminderSemantics) -> bool {
         | ReminderSemantics::FoodDefinition(definition)
         | ReminderSemantics::ClueDefinition(definition)
         | ReminderSemantics::BloodDefinition(definition)
-        | ReminderSemantics::GoldDefinition(definition) => {
+        | ReminderSemantics::GoldDefinition(definition)
+        | ReminderSemantics::LanderDefinition(definition) => {
             token_definition_has_contract(definition)
         }
         ReminderSemantics::TrampleExplanation
         | ReminderSemantics::HexproofExplanation
+        | ReminderSemantics::PlayerShroudProcedure
         | ReminderSemantics::IndestructibleExplanation
         | ReminderSemantics::ProwessProcedure
         | ReminderSemantics::ManifestProcedure
@@ -2034,16 +2947,49 @@ fn reminder_has_contract(reminder: &ReminderSemantics) -> bool {
         | ReminderSemantics::PreparedProcedure
         | ReminderSemantics::SpellCommanderProcedure
         | ReminderSemantics::ParadigmProcedure
+        | ReminderSemantics::GiftCardProcedure
+        | ReminderSemantics::ConniveProcedure
+        | ReminderSemantics::UndauntedProcedure
+        | ReminderSemantics::PartyComposition
         | ReminderSemantics::FlashProcedure
         | ReminderSemantics::UntapSymbolProcedure
+        | ReminderSemantics::StunCounterProcedure
+        | ReminderSemantics::ExertProcedure
+        | ReminderSemantics::BoastProcedure
+        | ReminderSemantics::ExhaustProcedure
+        | ReminderSemantics::HistoricDefinition
+        | ReminderSemantics::ProliferateProcedure
+        | ReminderSemantics::AdventureProcedure
+        | ReminderSemantics::OmenProcedure
         | ReminderSemantics::TransformOrigin { .. }
         | ReminderSemantics::CharacteristicLossExplanation => true,
+        ReminderSemantics::ZoneQualification { object, .. } => object_ref_has_contract(object),
+        ReminderSemantics::TeamworkProcedure { minimum_power } => {
+            amount_has_contract(minimum_power)
+        }
+        ReminderSemantics::KickerSacrificeProcedure { amount, filter } => {
+            amount_has_contract(amount) && filter_has_contract(filter)
+        }
+        ReminderSemantics::CollectEvidenceProcedure { minimum }
+        | ReminderSemantics::BlightProcedure { amount: minimum }
+        | ReminderSemantics::EnergyCounterExplanation { amount: minimum } => {
+            amount_has_contract(minimum)
+        }
+        ReminderSemantics::BeholdProcedure { subtype } => !subtype.trim().is_empty(),
+        ReminderSemantics::WaterbendProcedure { amount } => amount_has_contract(amount),
+        ReminderSemantics::IncrementProcedure => true,
+        ReminderSemantics::FearProcedure => true,
         ReminderSemantics::SurveilProcedure { amount }
-        | ReminderSemantics::ScryProcedure { amount } => amount_has_contract(amount),
+        | ReminderSemantics::ScryProcedure { amount }
+        | ReminderSemantics::HideawayProcedure { amount }
+        | ReminderSemantics::AfterlifeProcedure { amount } => amount_has_contract(amount),
         ReminderSemantics::MillProcedure { player, amount, .. } => {
             player_ref_has_contract(player) && amount_has_contract(amount)
         }
         ReminderSemantics::CrewProcedure { required_power } => amount_has_contract(required_power),
+        ReminderSemantics::StationProcedure { creature_threshold } => {
+            creature_threshold.is_none_or(|threshold| threshold > 0)
+        }
         ReminderSemantics::CyclingProcedure { cost } => mana_cost_has_contract(cost),
         ReminderSemantics::TypecyclingProcedure { cost, filter, .. } => {
             mana_cost_has_contract(cost) && filter_has_contract(filter)
@@ -2052,6 +2998,7 @@ fn reminder_has_contract(reminder: &ReminderSemantics) -> bool {
         ReminderSemantics::DevotionProcedure { .. } => true,
         ReminderSemantics::FlashbackProcedure | ReminderSemantics::EscapeProcedure => true,
         ReminderSemantics::DashProcedure { cost } => mana_cost_has_contract(cost),
+        ReminderSemantics::OutlastProcedure { cost } => mana_cost_has_contract(cost),
         ReminderSemantics::GiftProcedure { token, .. } => token_definition_has_contract(token),
         ReminderSemantics::MobilizeProcedure { amount, token } => {
             amount_has_contract(amount) && token_definition_has_contract(token)
@@ -2075,7 +3022,19 @@ pub fn execute_clause<S: OracleStateAdapter>(
             "compiled clause has no complete bounded execution contract".to_owned(),
         ));
     }
-    execute_action(
+    let exhaust_key = matches!(
+        clause.activation_restriction(),
+        Some(ActivationRestriction::Exhaust { .. })
+    )
+    .then(|| clause.semantic_digest().to_owned());
+    if exhaust_key
+        .as_deref()
+        .is_some_and(|key| state.exhaust_ability_was_activated(context.source, key))
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    let checkpoint = exhaust_key.as_ref().map(|_| state.checkpoint());
+    let receipt = execute_action(
         state,
         ActionDefinition {
             timing: clause.timing(),
@@ -2086,7 +3045,15 @@ pub fn execute_clause<S: OracleStateAdapter>(
             activation_restriction: clause.activation_restriction(),
         },
         context,
-    )
+    )?;
+    if let Some(key) = exhaust_key {
+        if let Err(error) = state.mark_exhaust_ability_activated(context.source, key) {
+            state.restore(checkpoint.expect("Exhaust execution retained a checkpoint"));
+            return Err(ExecutionError::Adapter(error));
+        }
+        state.record_mutation(format!("exhaust_activated:{}", context.source));
+    }
+    Ok(receipt)
 }
 
 pub fn execute_granted_ability<S: OracleStateAdapter>(
@@ -2138,6 +3105,15 @@ pub fn execute_action<S: OracleStateAdapter>(
 ) -> Result<ExecutionReceipt, ExecutionError> {
     if !timing_matches(state, action.timing, context)? {
         return Err(ExecutionError::TimingMismatch);
+    }
+    if matches!(action.timing, Timing::Activated)
+        && !matches!(
+            action.activation_restriction,
+            Some(ActivationRestriction::AnyPlayerMayActivate)
+        )
+        && source_controller(state, context)? != context.actor
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
     }
     if let Some(restriction) = action.activation_restriction
         && !activation_restriction_holds(state, restriction, context)?
@@ -2206,13 +3182,15 @@ fn timing_matches<S: OracleStateAdapter>(
         | (Timing::Replacement, ActionWindow::Replacement) => true,
         (Timing::Triggered(trigger), ActionWindow::Triggered(event)) => {
             trigger_matches(state, trigger, event, context)?
+                && !entering_creature_trigger_is_suppressed(state, event, context)?
         }
         (Timing::TriggeredModalHeader { trigger, choices }, ActionWindow::Triggered(event)) => {
             trigger_matches(state, trigger, event, context)?
-                && choice_count_matches(choices, &context.selected_modes)
+                && !entering_creature_trigger_is_suppressed(state, event, context)?
+                && choice_count_matches(choices, &context.selected_modes, context)
         }
         (Timing::ModalHeader { choices }, ActionWindow::ModalHeader) => {
-            choice_count_matches(choices, &context.selected_modes)
+            choice_count_matches(choices, &context.selected_modes, context)
         }
         (
             Timing::ModalBranch {
@@ -2231,16 +3209,58 @@ fn timing_matches<S: OracleStateAdapter>(
     })
 }
 
-fn choice_count_matches(count: &ChoiceCount, selected: &[u16]) -> bool {
+fn entering_creature_trigger_is_suppressed<S: OracleStateAdapter>(
+    state: &S,
+    event: &TriggerEvent,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    let TriggerEvent::ObjectEntered { object } = event else {
+        return Ok(false);
+    };
+    let entering = effective_object(state, *object, context)?;
+    if entering.zone != Zone::Battlefield
+        || !entering
+            .characteristics()
+            .card_types
+            .contains(&CardType::Creature)
+    {
+        return Ok(false);
+    }
+    for record in sorted_restrictions(state) {
+        let Restriction::EnteringCreaturesDoNotCauseAbilitiesToTrigger { duration } =
+            &record.restriction
+        else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn choice_count_matches(count: &ChoiceCount, selected: &[u16], context: &ExecutionContext) -> bool {
     let unique = selected.iter().copied().collect::<BTreeSet<_>>();
-    if unique.len() != selected.len() {
+    if !matches!(count, ChoiceCount::ExactlyWithRepeats(_)) && unique.len() != selected.len() {
         return false;
     }
     match count {
         ChoiceCount::Exactly(amount) => selected.len() == usize::from(*amount),
+        ChoiceCount::ExactlyWithRepeats(amount) => selected.len() == usize::from(*amount),
         ChoiceCount::UpTo(amount) => selected.len() <= usize::from(*amount),
         ChoiceCount::Between { minimum, maximum } => {
             selected.len() >= usize::from(*minimum) && selected.len() <= usize::from(*maximum)
+        }
+        ChoiceCount::OneOrMore => !selected.is_empty(),
+        ChoiceCount::OneOrBothIfTeamwork => {
+            selected.len()
+                == if context.card_was_cast_using_teamwork {
+                    2
+                } else {
+                    1
+                }
         }
     }
 }
@@ -2273,6 +3293,10 @@ pub(crate) fn trigger_matches<S: OracleStateAdapter>(
             event,
             TriggerEvent::SpellCast { spell, .. } if *spell == context.source
         ),
+        Trigger::SchemeSetInMotion => matches!(
+            event,
+            TriggerEvent::SchemeSetInMotion { object } if *object == context.source
+        ),
         Trigger::ObjectEnters(filter) => match event {
             TriggerEvent::ObjectEntered { object } => {
                 object_matches_filter(state, *object, filter, context)?
@@ -2285,9 +3309,36 @@ pub(crate) fn trigger_matches<S: OracleStateAdapter>(
             }
             _ => false,
         },
+        Trigger::ObjectTappedForMana { object } => match event {
+            TriggerEvent::ObjectTappedForMana {
+                object: actual_object,
+            } => resolve_objects(state, object, context)?.contains(actual_object),
+            _ => false,
+        },
+        Trigger::AttachmentTargetEvent {
+            kind,
+            event: expected,
+        } => matches!(
+            event,
+            TriggerEvent::AttachmentTargetEvent {
+                attachment_source,
+                kind: actual_kind,
+                event: actual,
+                ..
+            } if *attachment_source == context.source
+                && actual == expected
+                && actual_kind == kind
+        ),
         Trigger::SourceAttacks => {
             matches!(event, TriggerEvent::ObjectAttacked { object } if *object == context.source)
         }
+        Trigger::SourceBlocks { object } => match event {
+            TriggerEvent::ObjectBlocked { blocker, blocked } => {
+                *blocker == context.source
+                    && object_matches_filter(state, *blocked, object, context)?
+            }
+            _ => false,
+        },
         Trigger::Cast { player, spell } => match event {
             TriggerEvent::SpellCast {
                 player: actual_player,
@@ -2325,6 +3376,19 @@ pub(crate) fn trigger_matches<S: OracleStateAdapter>(
                 occurrence_this_turn.is_none_or(|expected| expected == *actual_occurrence)
                     && resolve_players(state, player, context)?.contains(actual_player)
             }
+            _ => false,
+        },
+        Trigger::ObjectEvent {
+            subject,
+            event: ObjectEventKind::DealtDamage,
+        } => match event {
+            TriggerEvent::DamageToObject { object, .. }
+            | TriggerEvent::CombatDamageToObject { object, .. } => match subject {
+                TriggerSubject::Source => *object == context.source,
+                TriggerSubject::Matching(filter) => {
+                    object_matches_filter(state, *object, filter, context)?
+                }
+            },
             _ => false,
         },
         Trigger::ObjectEvent {
@@ -2384,10 +3448,55 @@ pub(crate) fn trigger_matches<S: OracleStateAdapter>(
             } => object_matches_filter(state, *actual_source, source, context)?,
             _ => false,
         },
+        Trigger::AttachmentTargetCombatDamageToPlayer { kind } => match event {
+            TriggerEvent::CombatDamageToPlayer { source, .. } => {
+                resolve_attachment_target(state, context.source, *kind)? == *source
+            }
+            _ => false,
+        },
+        Trigger::DamageToPlayer { source, player } => match event {
+            TriggerEvent::DamageToPlayer {
+                source: actual_source,
+                player: actual_player,
+                ..
+            }
+            | TriggerEvent::CombatDamageToPlayer {
+                source: actual_source,
+                player: actual_player,
+                ..
+            } => {
+                resolve_players(state, player, context)?.contains(actual_player)
+                    && object_matches_filter(state, *actual_source, source, context)?
+            }
+            _ => false,
+        },
         Trigger::SourceCombatDamageToPlayer => matches!(
             event,
             TriggerEvent::CombatDamageToPlayer { source, .. } if *source == context.source
         ),
+        Trigger::SourceDamageToPlayer => matches!(
+            event,
+            TriggerEvent::CombatDamageToPlayer { source, .. }
+                | TriggerEvent::DamageToPlayer { source, .. }
+                if *source == context.source
+        ),
+        Trigger::SourceCombatDamageToObject { object } => match event {
+            TriggerEvent::CombatDamageToObject {
+                source,
+                object: actual_object,
+                ..
+            }
+            | TriggerEvent::DamageToObject {
+                source,
+                object: actual_object,
+                combat: true,
+                ..
+            } => {
+                *source == context.source
+                    && object_matches_filter(state, *actual_object, object, context)?
+            }
+            _ => false,
+        },
         Trigger::BecomesTarget {
             object,
             controller,
@@ -2445,11 +3554,36 @@ fn activation_restriction_holds<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<bool, ExecutionError> {
     Ok(match restriction {
+        ActivationRestriction::All(restrictions) => {
+            for restriction in restrictions {
+                if !activation_restriction_holds(state, restriction, context)? {
+                    return Ok(false);
+                }
+            }
+            !restrictions.is_empty()
+        }
         ActivationRestriction::SorceryTiming => context.sorcery_timing,
         ActivationRestriction::InstantTiming => context.instant_timing,
         ActivationRestriction::YourTurn => {
             source_controller(state, context)? == context.active_player
         }
+        ActivationRestriction::DuringYourUpkeep => {
+            source_controller(state, context)? == context.active_player
+                && context.current_step == Some(Step::Upkeep)
+        }
+        ActivationRestriction::DuringYourTurnBeforeAttackersDeclared => {
+            source_controller(state, context)? == context.active_player
+                && !context.attackers_declared
+        }
+        ActivationRestriction::OnceEachTurn => context.ability_occurrence_this_turn == 1,
+        ActivationRestriction::TimesEachTurn(maximum) => {
+            context.ability_occurrence_this_turn >= 1
+                && context.ability_occurrence_this_turn <= u32::from(*maximum)
+        }
+        ActivationRestriction::Exhaust {
+            sorcery_timing_only,
+        } => !sorcery_timing_only || context.sorcery_timing,
+        ActivationRestriction::AnyPlayerMayActivate => true,
         ActivationRestriction::SourceZone(zone) => {
             state
                 .object(context.source)
@@ -2495,15 +3629,37 @@ fn stack_restriction_blocks<S: OracleStateAdapter>(
             {
                 return Ok(true);
             }
+            Restriction::ActivatedAbilitiesOfMatchingSourcesCannotBeActivated {
+                objects,
+                except_mana_abilities,
+                duration,
+            } if matches!(context.window, ActionWindow::Activated)
+                && (!except_mana_abilities || !context.is_mana_ability)
+                && restriction_duration_is_active(
+                    state,
+                    record.source_identity,
+                    duration,
+                    &local,
+                )?
+                && object_matches_filter(state, context.source, objects, &local)? =>
+            {
+                return Ok(true);
+            }
             Restriction::CannotCast {
                 affected,
                 filter,
+                duration,
                 during_turn_of,
-                ..
             } if matches!(
                 context.window,
                 ActionWindow::CastingAdditionalCost | ActionWindow::SpellResolution
             ) && resolve_players(state, affected, &local)?.contains(&context.actor)
+                && restriction_duration_is_active(
+                    state,
+                    record.source_identity,
+                    duration,
+                    &local,
+                )?
                 && during_turn_of.as_ref().is_none_or(|turn_player| {
                     resolve_players(state, turn_player, &local)
                         .unwrap_or_default()
@@ -2532,7 +3688,10 @@ fn restriction_duration_is_active<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<bool, ExecutionError> {
     Ok(match duration {
-        Duration::Permanent | Duration::ThisTurn | Duration::UntilEndOfTurn => true,
+        Duration::Permanent
+        | Duration::ThisTurn
+        | Duration::UntilEndOfTurn
+        | Duration::UntilEndOfNextTurn => true,
         Duration::WhileSourceOnBattlefield => state
             .object(source_identity)
             .is_some_and(|source| source.zone == Zone::Battlefield),
@@ -2552,7 +3711,8 @@ pub fn object_can_attack<S: OracleStateAdapter>(
     if candidate.zone != Zone::Battlefield {
         return Ok(false);
     }
-    for record in sorted_restrictions(state) {
+    let restrictions = sorted_restrictions(state);
+    for record in &restrictions {
         let Restriction::CannotAttack {
             object: restricted,
             duration,
@@ -2567,6 +3727,45 @@ pub fn object_can_attack<S: OracleStateAdapter>(
         if active && resolve_objects(state, restricted, &local)?.contains(&object) {
             return Ok(false);
         }
+    }
+    let mut required_generic = 0u32;
+    for record in &restrictions {
+        let Restriction::AttackCost {
+            attackers,
+            attacked_player,
+            mana_per_attacker,
+            duration,
+        } = &record.restriction
+        else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if !restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            || !object_matches_filter(state, object, attackers, &local)?
+        {
+            continue;
+        }
+        let defender = context
+            .defending_player
+            .ok_or(ExecutionError::InvalidAmount(
+                "defending player is required to evaluate attack costs",
+            ))?;
+        if !resolve_players(state, attacked_player, &local)?.contains(&defender) {
+            continue;
+        }
+        required_generic = required_generic
+            .checked_add(generic_only_mana_amount(mana_per_attacker)?)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+    }
+    if context
+        .attack_tax_generic_paid
+        .get(&object)
+        .copied()
+        .unwrap_or_default()
+        < required_generic
+    {
+        return Ok(false);
     }
     Ok(true)
 }
@@ -2631,6 +3830,76 @@ pub fn object_can_block<S: OracleStateAdapter>(
     Ok(true)
 }
 
+pub fn object_can_block_attacker<S: OracleStateAdapter>(
+    state: &S,
+    blocker: ObjectId,
+    attacker: ObjectId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    if !object_can_block(state, blocker, context)? {
+        return Ok(false);
+    }
+    if !object_can_be_blocked(state, attacker, context)? {
+        return Ok(false);
+    }
+    let blocker_object = state
+        .object(blocker)
+        .ok_or(ExecutionError::MissingObject(blocker))?;
+    let attacker_object = state
+        .object(attacker)
+        .ok_or(ExecutionError::MissingObject(attacker))?;
+    if blocker_object.zone != Zone::Battlefield || attacker_object.zone != Zone::Battlefield {
+        return Ok(false);
+    }
+    for record in sorted_restrictions(state) {
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        match &record.restriction {
+            Restriction::BlockerMustMatch {
+                attacker: restricted_attacker,
+                blocker_filter,
+                duration,
+            } => {
+                if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+                    && resolve_objects(state, restricted_attacker, &local)?.contains(&attacker)
+                    && !legal_target_candidates(state, blocker_filter, &local)?
+                        .contains(&SelectedTarget::Object(blocker))
+                {
+                    return Ok(false);
+                }
+            }
+            Restriction::CannotBlockMatching {
+                blocker: restricted_blocker,
+                attacker_filter,
+                duration,
+            } => {
+                if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+                    && resolve_objects(state, restricted_blocker, &local)?.contains(&blocker)
+                    && object_matches_filter(state, attacker, attacker_filter, &local)?
+                {
+                    return Ok(false);
+                }
+            }
+            Restriction::CannotBlockObject {
+                blocker: restricted_blocker,
+                attacker: restricted_attacker,
+                duration,
+            } if restriction_duration_is_active(
+                state,
+                record.source_identity,
+                duration,
+                &local,
+            )? && resolve_objects(state, restricted_blocker, &local)?.contains(&blocker)
+                && resolve_objects(state, restricted_attacker, &local)?.contains(&attacker) =>
+            {
+                return Ok(false);
+            }
+            _ => {}
+        }
+    }
+    Ok(true)
+}
+
 pub fn object_can_be_blocked<S: OracleStateAdapter>(
     state: &S,
     object: ObjectId,
@@ -2643,8 +3912,209 @@ pub fn object_can_be_blocked<S: OracleStateAdapter>(
         return Ok(false);
     }
     for record in sorted_restrictions(state) {
-        let Restriction::CannotBeBlocked {
-            object: restricted,
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        match &record.restriction {
+            Restriction::CannotBeBlocked {
+                object: restricted,
+                duration,
+            } => {
+                let active = restriction_duration_is_active(
+                    state,
+                    record.source_identity,
+                    duration,
+                    &local,
+                )?;
+                if active && resolve_objects(state, restricted, &local)?.contains(&object) {
+                    return Ok(false);
+                }
+            }
+            Restriction::CannotBeBlockedWhen {
+                object: restricted,
+                condition,
+                duration,
+            } => {
+                let active = restriction_duration_is_active(
+                    state,
+                    record.source_identity,
+                    duration,
+                    &local,
+                )?;
+                if active
+                    && condition_holds(state, condition, &local)?
+                    && resolve_objects(state, restricted, &local)?.contains(&object)
+                {
+                    return Ok(false);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(true)
+}
+
+pub fn player_hand_is_revealed<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    if state.player(player).is_none() {
+        return Err(ExecutionError::MissingPlayer(player));
+    }
+    for record in sorted_restrictions(state) {
+        let Restriction::HandsRevealed { players, duration } = &record.restriction else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_players(state, players, &local)?.contains(&player)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn player_has_game_rule_restriction<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    context: &ExecutionContext,
+    matches_rule: impl Fn(&Restriction) -> Option<(&PlayerRef, &Duration)>,
+) -> Result<bool, ExecutionError> {
+    if state.player(player).is_none() {
+        return Err(ExecutionError::MissingPlayer(player));
+    }
+    for record in sorted_restrictions(state) {
+        let Some((players, duration)) = matches_rule(&record.restriction) else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_players(state, players, &local)?.contains(&player)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub fn player_can_lose_game<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    Ok(!player_has_game_rule_restriction(
+        state,
+        player,
+        context,
+        |restriction| match restriction {
+            Restriction::PlayerCannotLoseGame { players, duration } => Some((players, duration)),
+            _ => None,
+        },
+    )?)
+}
+
+pub fn player_can_win_game<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    Ok(!player_has_game_rule_restriction(
+        state,
+        player,
+        context,
+        |restriction| match restriction {
+            Restriction::PlayerCannotWinGame { players, duration } => Some((players, duration)),
+            _ => None,
+        },
+    )?)
+}
+
+pub fn nonpositive_life_causes_player_to_lose<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    Ok(!player_has_game_rule_restriction(
+        state,
+        player,
+        context,
+        |restriction| match restriction {
+            Restriction::NonpositiveLifeDoesNotCauseLoss { players, duration } => {
+                Some((players, duration))
+            }
+            _ => None,
+        },
+    )?)
+}
+
+pub fn player_can_cast_at_current_timing<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    if state.player(player).is_none() {
+        return Err(ExecutionError::MissingPlayer(player));
+    }
+    for record in sorted_restrictions(state) {
+        let Restriction::SorcerySpeedCastingOnly { players, duration } = &record.restriction else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_players(state, players, &local)?.contains(&player)
+            && !context.sorcery_timing
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub fn object_ignores_summoning_sickness_for_activated_abilities<S: OracleStateAdapter>(
+    state: &S,
+    object: ObjectId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    let candidate = state
+        .object(object)
+        .ok_or(ExecutionError::MissingObject(object))?;
+    if candidate.zone != Zone::Battlefield {
+        return Ok(false);
+    }
+    for record in sorted_restrictions(state) {
+        let Restriction::IgnoreSummoningSicknessForActivatedAbilities { objects, duration } =
+            &record.restriction
+        else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_objects(state, objects, &local)?.contains(&object)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub fn maximum_creature_attackers<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    context: &ExecutionContext,
+) -> Result<Option<u16>, ExecutionError> {
+    if state.player(player).is_none() {
+        return Err(ExecutionError::MissingPlayer(player));
+    }
+    let mut limit = None;
+    for record in sorted_restrictions(state) {
+        let Restriction::AttackLimit {
+            player: affected,
+            amount,
             duration,
         } = &record.restriction
         else {
@@ -2652,13 +4122,224 @@ pub fn object_can_be_blocked<S: OracleStateAdapter>(
         };
         let mut local = context.clone();
         local.source = record.source_identity;
-        let active =
-            restriction_duration_is_active(state, record.source_identity, duration, &local)?;
-        if active && resolve_objects(state, restricted, &local)?.contains(&object) {
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_players(state, affected, &local)?.contains(&player)
+        {
+            limit = Some(limit.map_or(*amount, |current: u16| current.min(*amount)));
+        }
+    }
+    Ok(limit)
+}
+
+pub fn creature_block_capacity<S: OracleStateAdapter>(
+    state: &S,
+    object: ObjectId,
+    context: &ExecutionContext,
+) -> Result<u16, ExecutionError> {
+    let candidate = state
+        .object(object)
+        .ok_or(ExecutionError::MissingObject(object))?;
+    if candidate.zone != Zone::Battlefield || !object_has_type(&candidate, CardType::Creature) {
+        return Ok(0);
+    }
+    let mut capacity = 1u16;
+    for record in sorted_restrictions(state) {
+        let Restriction::AdditionalBlockCapacity {
+            objects,
+            amount,
+            duration,
+        } = &record.restriction
+        else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_objects(state, objects, &local)?.contains(&object)
+        {
+            capacity = capacity
+                .checked_add(*amount)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+        }
+    }
+    Ok(capacity)
+}
+
+pub fn spell_can_be_copied<S: OracleStateAdapter>(
+    state: &S,
+    spell: ObjectId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    for record in sorted_restrictions(state) {
+        let Restriction::SpellCannotBeCopied { object } = &record.restriction else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if resolve_objects(state, object, &local)?.contains(&spell) {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+pub fn spell_x_value_is_legal<S: OracleStateAdapter>(
+    state: &S,
+    spell: ObjectId,
+    x_value: u32,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    for record in sorted_restrictions(state) {
+        let Restriction::MinimumX { object, minimum } = &record.restriction else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if resolve_objects(state, object, &local)?.contains(&spell) && x_value < *minimum {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub fn land_play_limit<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    context: &ExecutionContext,
+) -> Result<u16, ExecutionError> {
+    if state.player(player).is_none() {
+        return Err(ExecutionError::MissingPlayer(player));
+    }
+    let mut limit = 1u16;
+    for record in sorted_restrictions(state) {
+        let Restriction::AdditionalLandPlays {
+            player: affected,
+            amount,
+            duration,
+        } = &record.restriction
+        else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_players(state, affected, &local)?.contains(&player)
+        {
+            limit = limit
+                .checked_add(*amount)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+        }
+    }
+    Ok(limit)
+}
+
+/// Reports whether a continuous requirement makes `blocker` block the given
+/// `attacker` if the normal combat legality rules allow that block.
+pub fn object_must_block_attacker_if_able<S: OracleStateAdapter>(
+    state: &S,
+    blocker: ObjectId,
+    attacker: ObjectId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    let blocker_object = state
+        .object(blocker)
+        .ok_or(ExecutionError::MissingObject(blocker))?;
+    let attacker_object = state
+        .object(attacker)
+        .ok_or(ExecutionError::MissingObject(attacker))?;
+    if blocker_object.zone != Zone::Battlefield || attacker_object.zone != Zone::Battlefield {
+        return Ok(false);
+    }
+    for record in sorted_restrictions(state) {
+        let Restriction::MustBlockIfAble {
+            blockers,
+            attacker: required_attacker,
+            duration,
+        } = &record.restriction
+        else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if !restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            || !resolve_objects(state, blockers, &local)?.contains(&blocker)
+        {
+            continue;
+        }
+        if required_attacker.as_ref().is_none_or(|required| {
+            resolve_objects(state, required, &local)
+                .unwrap_or_default()
+                .contains(&attacker)
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Returns the current characteristic used to assign this creature's combat
+/// damage after applying typed power-versus-toughness assignment rules.
+pub fn combat_damage_assignment_value<S: OracleStateAdapter>(
+    state: &S,
+    object: ObjectId,
+    context: &ExecutionContext,
+) -> Result<i64, ExecutionError> {
+    let candidate = state
+        .object(object)
+        .ok_or(ExecutionError::MissingObject(object))?;
+    if candidate.zone != Zone::Battlefield {
+        return Err(ExecutionError::InvalidAmount(
+            "combat-damage source is not on the battlefield",
+        ));
+    }
+    let characteristics = candidate.characteristics();
+    for record in sorted_restrictions(state) {
+        let Restriction::AssignCombatDamageUsingToughness {
+            objects,
+            only_if_toughness_greater,
+            duration,
+        } = &record.restriction
+        else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_objects(state, objects, &local)?.contains(&object)
+            && (!only_if_toughness_greater || characteristics.toughness > characteristics.power)
+        {
+            return Ok(characteristics.toughness);
+        }
+    }
+    Ok(characteristics.power)
+}
+
+pub fn object_may_assign_combat_damage_as_though_unblocked<S: OracleStateAdapter>(
+    state: &S,
+    object: ObjectId,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    let candidate = state
+        .object(object)
+        .ok_or(ExecutionError::MissingObject(object))?;
+    if candidate.zone != Zone::Battlefield {
+        return Ok(false);
+    }
+    for record in sorted_restrictions(state) {
+        let Restriction::AssignCombatDamageAsThoughUnblocked { objects, duration } =
+            &record.restriction
+        else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && resolve_objects(state, objects, &local)?.contains(&object)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn object_can_untap_during<S: OracleStateAdapter>(
@@ -2673,13 +4354,26 @@ pub fn object_can_untap_during<S: OracleStateAdapter>(
     if candidate.zone != Zone::Battlefield {
         return Ok(false);
     }
+    if candidate.counters.get("stun").copied().unwrap_or(0) > 0 {
+        return Ok(false);
+    }
+    if step == Step::UntapStep
+        && state
+            .next_untap_preventions()
+            .iter()
+            .any(|record| record.object_identities.contains(&object))
+    {
+        return Ok(false);
+    }
     for record in sorted_restrictions(state) {
-        let Restriction::DoesNotUntapDuring {
-            object: restricted,
-            step: restricted_step,
-        } = &record.restriction
-        else {
-            continue;
+        let (restricted, restricted_step, condition) = match &record.restriction {
+            Restriction::DoesNotUntapDuring { object, step } => (object, step, None),
+            Restriction::DoesNotUntapDuringIf {
+                object,
+                step,
+                condition,
+            } => (object, step, Some(condition)),
+            _ => continue,
         };
         if *restricted_step != step {
             continue;
@@ -2692,11 +4386,77 @@ pub fn object_can_untap_during<S: OracleStateAdapter>(
         }
         let mut local = context.clone();
         local.source = record.source_identity;
+        if let Some(condition) = condition
+            && !condition_holds(state, condition, &local)?
+        {
+            continue;
+        }
         if resolve_objects(state, restricted, &local)?.contains(&object) {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+pub fn untap_object_during<S: OracleStateAdapter>(
+    state: &mut S,
+    object: ObjectId,
+    step: Step,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    let candidate = state
+        .object(object)
+        .ok_or(ExecutionError::MissingObject(object))?;
+    if candidate.zone != Zone::Battlefield {
+        return Ok(false);
+    }
+
+    for record in sorted_restrictions(state) {
+        let (restricted, restricted_step, condition) = match &record.restriction {
+            Restriction::DoesNotUntapDuring { object, step } => (object, step, None),
+            Restriction::DoesNotUntapDuringIf {
+                object,
+                step,
+                condition,
+            } => (object, step, Some(condition)),
+            _ => continue,
+        };
+        if *restricted_step != step {
+            continue;
+        }
+        let Some(source) = state.object(record.source_identity) else {
+            continue;
+        };
+        if source.zone != Zone::Battlefield {
+            continue;
+        }
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if let Some(condition) = condition
+            && !condition_holds(state, condition, &local)?
+        {
+            continue;
+        }
+        if resolve_objects(state, restricted, &local)?.contains(&object) {
+            state.record_mutation(format!("prevent_untap_static:{object}:{step:?}"));
+            return Ok(false);
+        }
+    }
+
+    if step == Step::UntapStep {
+        let mut records = state.next_untap_preventions();
+        records.sort_by_key(|record| (record.order, record.source_identity));
+        if let Some(record) = records
+            .into_iter()
+            .find(|record| record.object_identities.contains(&object))
+        {
+            state.consume_next_untap_prevention(record.order);
+            state.record_mutation(format!("prevent_next_untap:{object}:{}", record.order));
+            return Ok(false);
+        }
+    }
+
+    attempt_direct_untap(state, object)
 }
 
 pub fn effective_object<S: OracleStateAdapter>(
@@ -2723,8 +4483,7 @@ pub fn effective_object<S: OracleStateAdapter>(
         }
         match &record.effect {
             Effect::SetCharacteristics(change)
-                if matches!(change.object, ObjectRef::AttachmentTarget { .. })
-                    && resolve_objects(state, &change.object, &local)?.contains(&object) =>
+                if resolve_objects(state, &change.object, &local)?.contains(&object) =>
             {
                 apply_attachment_non_power_characteristics(effective.characteristics_mut(), change);
             }
@@ -2742,17 +4501,13 @@ pub fn effective_object<S: OracleStateAdapter>(
         match &record.effect {
             Effect::LoseAllAbilities {
                 object: attached, ..
-            } if matches!(attached, ObjectRef::AttachmentTarget { .. })
-                && resolve_objects(state, attached, &local)?.contains(&object) =>
-            {
+            } if resolve_objects(state, attached, &local)?.contains(&object) => {
                 effective.characteristics_mut().abilities.clear();
                 effective.characteristics_mut().keywords.clear();
             }
             Effect::GrantKeyword {
                 objects, keywords, ..
-            } if matches!(objects, ObjectRef::AttachmentTarget { .. })
-                && resolve_objects(state, objects, &local)?.contains(&object) =>
-            {
+            } if resolve_objects(state, objects, &local)?.contains(&object) => {
                 for keyword in keywords {
                     if !effective.characteristics().keywords.contains(keyword) {
                         effective
@@ -2764,9 +4519,7 @@ pub fn effective_object<S: OracleStateAdapter>(
             }
             Effect::GrantAbility {
                 objects, ability, ..
-            } if matches!(objects, ObjectRef::AttachmentTarget { .. })
-                && resolve_objects(state, objects, &local)?.contains(&object) =>
-            {
+            } if resolve_objects(state, objects, &local)?.contains(&object) => {
                 effective
                     .characteristics_mut()
                     .abilities
@@ -2785,26 +4538,30 @@ pub fn effective_object<S: OracleStateAdapter>(
         }
         match &record.effect {
             Effect::SetCharacteristics(change)
-                if matches!(change.object, ObjectRef::AttachmentTarget { .. })
-                    && resolve_objects(state, &change.object, &local)?.contains(&object) =>
+                if resolve_objects(state, &change.object, &local)?.contains(&object) =>
             {
                 if let Some(power) = &change.base_power {
-                    effective.characteristics_mut().power = exact_attachment_amount(power)?;
+                    effective.characteristics_mut().power =
+                        i64::from(evaluate_amount(state, power, &local)?);
                 }
                 if let Some(toughness) = &change.base_toughness {
-                    effective.characteristics_mut().toughness = exact_attachment_amount(toughness)?;
+                    effective.characteristics_mut().toughness =
+                        i64::from(evaluate_amount(state, toughness, &local)?);
                 }
             }
             Effect::ModifyPowerToughness(change)
-                if matches!(change.objects, ObjectRef::AttachmentTarget { .. })
-                    && change.operation == PowerToughnessOperation::SetBase
-                    && resolve_objects(state, &change.objects, &local)?.contains(&object) =>
+                if matches!(
+                    change.operation,
+                    PowerToughnessOperation::SetBase
+                        | PowerToughnessOperation::SetPower
+                        | PowerToughnessOperation::SetToughness
+                ) && resolve_objects(state, &change.objects, &local)?.contains(&object) =>
             {
-                let power = exact_attachment_amount(&change.power)?;
-                let toughness = exact_attachment_amount(&change.toughness)?;
+                let power = i64::from(evaluate_amount(state, &change.power, &local)?);
+                let toughness = i64::from(evaluate_amount(state, &change.toughness, &local)?);
                 apply_power_toughness_operation(
                     effective.characteristics_mut(),
-                    PowerToughnessOperation::SetBase,
+                    change.operation.clone(),
                     power,
                     toughness,
                 )?;
@@ -2823,14 +4580,17 @@ pub fn effective_object<S: OracleStateAdapter>(
         let Effect::ModifyPowerToughness(change) = &record.effect else {
             continue;
         };
-        if !matches!(change.objects, ObjectRef::AttachmentTarget { .. })
-            || change.operation == PowerToughnessOperation::SetBase
-            || !resolve_objects(state, &change.objects, &local)?.contains(&object)
+        if matches!(
+            change.operation,
+            PowerToughnessOperation::SetBase
+                | PowerToughnessOperation::SetPower
+                | PowerToughnessOperation::SetToughness
+        ) || !resolve_objects(state, &change.objects, &local)?.contains(&object)
         {
             continue;
         }
-        let power = exact_attachment_amount(&change.power)?;
-        let toughness = exact_attachment_amount(&change.toughness)?;
+        let power = i64::from(evaluate_amount(state, &change.power, &local)?);
+        let toughness = i64::from(evaluate_amount(state, &change.toughness, &local)?);
         apply_power_toughness_operation(
             effective.characteristics_mut(),
             change.operation.clone(),
@@ -2854,23 +4614,25 @@ fn effective_attachment_controllers<S: OracleStateAdapter>(
 
     let mut controls = Vec::<(ObjectId, ObjectId)>::new();
     for record in continuous {
-        let Effect::ChangeControl {
-            object: attached,
-            controller: PlayerRef::You,
-        } = &record.effect
-        else {
-            continue;
+        let controlled = match &record.effect {
+            Effect::ChangeControl {
+                object,
+                controller: PlayerRef::You,
+            } if matches!(object, ObjectRef::AttachmentTarget { .. }) => object,
+            Effect::ChangeControlUntil {
+                object,
+                controller: PlayerRef::You,
+                ..
+            } => object,
+            _ => continue,
         };
-        if !matches!(attached, ObjectRef::AttachmentTarget { .. }) {
-            continue;
-        }
         let mut local = context.clone();
         local.source = record.source_identity;
         if !restriction_duration_is_active(state, record.source_identity, &record.duration, &local)?
         {
             continue;
         }
-        let target = resolve_objects(state, attached, &local)?
+        let target = resolve_objects(state, controlled, &local)?
             .into_iter()
             .next()
             .ok_or(ExecutionError::InvalidAmount(
@@ -2944,15 +4706,6 @@ fn apply_attachment_non_power_characteristics(
     }
 }
 
-fn exact_attachment_amount(amount: &Amount) -> Result<i64, ExecutionError> {
-    match amount {
-        Amount::Constant(value) => Ok(i64::from(*value)),
-        _ => Err(ExecutionError::InvalidAmount(
-            "attachment continuous effect requires an exact constant amount",
-        )),
-    }
-}
-
 pub fn reduced_spell_mana_cost<S: OracleStateAdapter>(
     state: &S,
     spell: ObjectId,
@@ -2982,12 +4735,51 @@ pub fn reduced_spell_mana_cost<S: OracleStateAdapter>(
         }
     }
 
+    let mut increases = state.spell_increases();
+    increases.sort_by_key(|record| (record.order, record.source_identity));
+    let mut requested_increase = 0u32;
+    for record in increases {
+        let Some(source) = state.object(record.source_identity) else {
+            continue;
+        };
+        if source.zone != Zone::Battlefield {
+            continue;
+        }
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if !resolve_objects(state, &record.object, &local)?.contains(&spell) {
+            continue;
+        }
+        let per_object = generic_only_mana_amount(&record.mana)?;
+        let increase = per_object
+            .checked_mul(evaluate_count(state, &record.per, &local)?)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+        requested_increase = requested_increase
+            .checked_add(increase)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+    }
+    generic_total = generic_total
+        .checked_add(requested_increase)
+        .ok_or(ExecutionError::ArithmeticOverflow)?;
+
     let mut records = state.spell_reductions();
     records.sort_by_key(|record| (record.order, record.source_identity));
     let mut requested_reduction = 0u32;
     for record in records {
         let mut local = context.clone();
         local.source = record.source_identity;
+        if !matches!(record.object, ObjectRef::Source)
+            && !state
+                .object(record.source_identity)
+                .is_some_and(|source| source.zone == Zone::Battlefield)
+        {
+            continue;
+        }
+        if let Some(condition) = &record.condition
+            && !condition_holds(state, condition, &local)?
+        {
+            continue;
+        }
         if !resolve_objects(state, &record.object, &local)?.contains(&spell) {
             continue;
         }
@@ -3103,7 +4895,7 @@ fn validate_targets<S: OracleStateAdapter>(
                     return Err(ExecutionError::IllegalTarget { id: target.id });
                 }
             }
-            TargetAmount::Exactly(_) | TargetAmount::UpTo(_) => {}
+            TargetAmount::Exactly(_) | TargetAmount::UpTo(_) | TargetAmount::AnyNumber => {}
         }
         match &target.relationship {
             TargetRelationship::Independent => {}
@@ -3120,6 +4912,32 @@ fn validate_targets<S: OracleStateAdapter>(
                     if !controllers.insert(controller) {
                         return Err(ExecutionError::IllegalTarget { id: target.id });
                     }
+                }
+            }
+            TargetRelationship::ShareCreatureType => {
+                let mut shared_types: Option<BTreeSet<String>> = None;
+                for value in selected {
+                    let SelectedTarget::Object(id) = value else {
+                        return Err(ExecutionError::IllegalTarget { id: target.id });
+                    };
+                    let creature_types = state
+                        .object(*id)
+                        .ok_or(ExecutionError::MissingObject(*id))?
+                        .characteristics()
+                        .subtypes
+                        .iter()
+                        .map(|subtype| subtype.to_ascii_lowercase())
+                        .collect::<BTreeSet<_>>();
+                    shared_types = Some(match shared_types {
+                        None => creature_types,
+                        Some(shared) => shared
+                            .intersection(&creature_types)
+                            .cloned()
+                            .collect::<BTreeSet<_>>(),
+                    });
+                }
+                if shared_types.is_none_or(|types| types.is_empty()) {
+                    return Err(ExecutionError::IllegalTarget { id: target.id });
                 }
             }
             TargetRelationship::OtherThan(other) => {
@@ -3149,6 +4967,15 @@ fn legal_target_candidates<S: OracleStateAdapter>(
             .into_iter()
             .map(SelectedTarget::Player)
             .collect::<Vec<_>>(),
+        TargetFilter::Opponent => {
+            let controller = source_controller(state, context)?;
+            state
+                .player_ids()
+                .into_iter()
+                .filter(|player| *player != controller)
+                .map(SelectedTarget::Player)
+                .collect::<Vec<_>>()
+        }
         TargetFilter::Object(filter) => {
             let mut object_filter = filter.clone();
             if object_filter.zones.is_empty() {
@@ -3200,23 +5027,59 @@ fn targeting_protection_blocks<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<bool, ExecutionError> {
     for record in sorted_restrictions(state) {
-        let Restriction::TargetingProtection {
-            object,
-            forbidden_controller,
-        } = &record.restriction
-        else {
-            continue;
-        };
         let mut local = context.clone();
         local.source = record.source_identity;
-        let protected = resolve_objects(state, object, &local)?;
-        let forbidden = resolve_players(state, forbidden_controller, &local)?;
-        if forbidden.contains(&context.actor)
-            && selected.iter().any(
-                |target| matches!(target, SelectedTarget::Object(id) if protected.contains(id)),
-            )
-        {
-            return Ok(true);
+        match &record.restriction {
+            Restriction::TargetingProtection {
+                object,
+                forbidden_controller,
+                duration,
+            } => {
+                if !restriction_duration_is_active(
+                    state,
+                    record.source_identity,
+                    duration,
+                    &local,
+                )? {
+                    continue;
+                }
+                let protected = resolve_objects(state, object, &local)?;
+                let forbidden = resolve_players(state, forbidden_controller, &local)?;
+                if forbidden.contains(&context.actor)
+                    && selected.iter().any(
+                        |target| matches!(target, SelectedTarget::Object(id) if protected.contains(id)),
+                    )
+                {
+                    return Ok(true);
+                }
+            }
+            Restriction::ObjectsCannotBeTargeted { objects, duration } => {
+                if restriction_duration_is_active(
+                    state,
+                    record.source_identity,
+                    duration,
+                    &local,
+                )? && selected.iter().any(|target| {
+                    matches!(target, SelectedTarget::Object(id) if object_matches_filter(state, *id, objects, &local).unwrap_or(false))
+                }) {
+                    return Ok(true);
+                }
+            }
+            Restriction::PlayersCannotBeTargeted { players, duration }
+                if restriction_duration_is_active(
+                    state,
+                    record.source_identity,
+                    duration,
+                    &local,
+                )? => {
+                    let protected = resolve_players(state, players, &local)?;
+                    if selected.iter().any(
+                        |target| matches!(target, SelectedTarget::Player(id) if protected.contains(id)),
+                    ) {
+                        return Ok(true);
+                    }
+                }
+            _ => {}
         }
     }
     Ok(false)
@@ -3305,6 +5168,19 @@ fn condition_holds<S: OracleStateAdapter>(
                         .is_some_and(|object| object_has_state(&object, required))
                 })
         }
+        Condition::SpellTargetsState {
+            card_type,
+            state: required,
+        } => context
+            .targets
+            .values()
+            .flatten()
+            .any(|target| match target {
+                SelectedTarget::Object(id) => state.object(*id).is_some_and(|object| {
+                    object_has_type(&object, *card_type) && object_has_state(&object, required)
+                }),
+                SelectedTarget::Player(_) => false,
+            }),
         Condition::PowerComparison {
             object,
             comparison,
@@ -3346,6 +5222,11 @@ fn condition_holds<S: OracleStateAdapter>(
             !context.payment_declined && cost_is_payable(state, cost, context)?
         }
         Condition::CardWasCastWithAlternativeCost => context.card_was_cast_with_alternative_cost,
+        Condition::CardWasCastUsingEscape => context.card_was_cast_using_escape,
+        Condition::CardWasKicked => context.card_was_kicked,
+        Condition::CardWasCastUsingTeamwork => context.card_was_cast_using_teamwork,
+        Condition::YouAttackedThisTurn => context.you_attacked_this_turn,
+        Condition::OpponentLostLifeThisTurn => context.opponent_lost_life_this_turn,
         Condition::NotYourTurn => source_controller(state, context)? != context.active_player,
         Condition::NotThatPlayersTurn => context
             .that_player
@@ -3361,6 +5242,20 @@ fn condition_holds<S: OracleStateAdapter>(
                 .into_iter()
                 .filter_map(|id| state.object(id))
                 .filter(|object| object.zone == Zone::Graveyard && players.contains(&object.owner))
+                .count() as u32;
+            compare_u32(count, *comparison, evaluate_amount(state, amount, context)?)
+        }
+        Condition::HandCardCount {
+            player,
+            comparison,
+            amount,
+        } => {
+            let players = resolve_players(state, player, context)?;
+            let count = state
+                .object_ids()
+                .into_iter()
+                .filter_map(|id| state.object(id))
+                .filter(|object| object.zone == Zone::Hand && players.contains(&object.owner))
                 .count() as u32;
             compare_u32(count, *comparison, evaluate_amount(state, amount, context)?)
         }
@@ -3399,6 +5294,40 @@ fn condition_holds<S: OracleStateAdapter>(
                 .unwrap_or_default()
                 > 0
         }
+        Condition::SourceCounterCount {
+            counter,
+            comparison,
+            amount,
+        } => {
+            let count = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?
+                .counters
+                .get(&counter_key(counter))
+                .copied()
+                .unwrap_or_default();
+            compare_u32(count, *comparison, *amount)
+        }
+        Condition::ObjectCounterCount {
+            object,
+            counter,
+            comparison,
+            amount,
+        } => resolve_objects(state, object, context)?
+            .into_iter()
+            .try_fold(false, |matched, object| {
+                if matched {
+                    return Ok(true);
+                }
+                let count = state
+                    .object(object)
+                    .ok_or(ExecutionError::MissingObject(object))?
+                    .counters
+                    .get(&counter_key(counter))
+                    .copied()
+                    .unwrap_or_default();
+                Ok(compare_u32(count, *comparison, *amount))
+            })?,
         Condition::CommanderControlled { .. } => context.commander_controlled,
         Condition::GiftPromised => context.gift_promised,
         Condition::SourceInOpeningHand => {
@@ -3408,6 +5337,37 @@ fn condition_holds<S: OracleStateAdapter>(
                     .is_some_and(|object| object.zone == Zone::Hand)
         }
         Condition::NotPlayingFirst => !context.playing_first,
+        Condition::ModeSelected(mode) => context.selected_modes.contains(mode),
+        Condition::AnotherSpellCastThisTurn => context.spells_cast_by_actor_this_turn > 0,
+        Condition::SpellsCastByActorThisTurn { comparison, amount } => {
+            compare_u32(context.spells_cast_by_actor_this_turn, *comparison, *amount)
+        }
+        Condition::SourceAttackingAlone => context.source_attacking_alone,
+        Condition::SpellCastFromNonHand => context
+            .cast_from_zone
+            .is_some_and(|zone| zone != Zone::Hand),
+        Condition::ManaSpentGreaterThanSourcePowerOrToughness => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let spent = i64::from(context.mana_spent_to_cast_triggering_spell);
+            spent > source.characteristics().power || spent > source.characteristics().toughness
+        }
+        Condition::CastOnlyDuringCombat => context.combat_step.is_some(),
+        Condition::CastOnlyDuringCombatBeforeBlockers => matches!(
+            context.combat_step,
+            Some(CombatStep::Beginning | CombatStep::DeclareAttackers)
+        ),
+        Condition::CastOnlyDuringDeclareBlockers => {
+            context.combat_step == Some(CombatStep::DeclareBlockers)
+        }
+        Condition::CastOnlyDuringCombatAfterBlockers => {
+            context.blockers_declared
+                && matches!(
+                    context.combat_step,
+                    Some(CombatStep::DeclareBlockers | CombatStep::CombatDamage | CombatStep::End)
+                )
+        }
         Condition::SourceWasCounteredByThisEffect => context.countered,
         Condition::ObjectIsCardType { object, card_type } => {
             let objects = resolve_objects(state, object, context)?;
@@ -3476,6 +5436,7 @@ fn object_has_state(object: &PhysicalObject, state: &ObjectState) -> bool {
         ObjectState::Tapped => object.tapped,
         ObjectState::Untapped => !object.tapped,
         ObjectState::Attacking => object.attacking,
+        ObjectState::Blocking => object.blocking,
         ObjectState::Prepared => object.prepared,
         ObjectState::FaceDown => object.face_down,
     }
@@ -3518,6 +5479,209 @@ fn evaluate_count<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<u32, ExecutionError> {
     match expression {
+        CountExpression::Constant(value) => Ok(*value),
+        CountExpression::OpponentCount { player } => {
+            let referenced = resolve_players(state, player, context)?;
+            let opponents = state
+                .player_ids()
+                .into_iter()
+                .filter(|candidate| !referenced.contains(candidate))
+                .count();
+            u32::try_from(opponents).map_err(|_| ExecutionError::ArithmeticOverflow)
+        }
+        CountExpression::PartySize { player } => {
+            let players = resolve_players(state, player, context)?;
+            let mut candidates = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            const PARTY_ROLES: [&str; 4] = ["Cleric", "Rogue", "Warrior", "Wizard"];
+            for id in state.object_ids() {
+                let Some(object) = state.object(id) else {
+                    continue;
+                };
+                if object.zone != Zone::Battlefield
+                    || !players.contains(&object.controller)
+                    || !object_has_type(&object, CardType::Creature)
+                {
+                    continue;
+                }
+                for (role_index, role) in PARTY_ROLES.iter().enumerate() {
+                    if object
+                        .characteristics()
+                        .subtypes
+                        .iter()
+                        .any(|subtype| subtype.eq_ignore_ascii_case(role))
+                    {
+                        candidates[role_index].push(id);
+                    }
+                }
+            }
+            fn maximum_distinct_roles(
+                candidates: &[Vec<ObjectId>; 4],
+                role: usize,
+                used: &mut BTreeSet<ObjectId>,
+            ) -> u32 {
+                if role == candidates.len() {
+                    return 0;
+                }
+                let mut best = maximum_distinct_roles(candidates, role + 1, used);
+                for candidate in &candidates[role] {
+                    if used.insert(*candidate) {
+                        best = best.max(1 + maximum_distinct_roles(candidates, role + 1, used));
+                        used.remove(candidate);
+                    }
+                }
+                best
+            }
+            Ok(maximum_distinct_roles(&candidates, 0, &mut BTreeSet::new()))
+        }
+        CountExpression::DistinctBasicLandTypes { player } => {
+            const BASIC_LAND_TYPES: [&str; 5] = ["Plains", "Island", "Swamp", "Mountain", "Forest"];
+            let players = resolve_players(state, player, context)?;
+            let mut present = BTreeSet::new();
+            for id in state.object_ids() {
+                let Some(object) = state.object(id) else {
+                    continue;
+                };
+                if object.zone != Zone::Battlefield
+                    || !players.contains(&object.controller)
+                    || !object_has_type(&object, CardType::Land)
+                {
+                    continue;
+                }
+                for (index, basic_type) in BASIC_LAND_TYPES.iter().enumerate() {
+                    if object
+                        .characteristics()
+                        .subtypes
+                        .iter()
+                        .any(|subtype| subtype.eq_ignore_ascii_case(basic_type))
+                    {
+                        present.insert(index);
+                    }
+                }
+            }
+            u32::try_from(present.len()).map_err(|_| ExecutionError::ArithmeticOverflow)
+        }
+        CountExpression::CreaturesAttackedThisTurn { .. } => {
+            Ok(context.creatures_attacked_this_turn)
+        }
+        CountExpression::PowerOf { object } => {
+            let objects = resolve_objects(state, object, context)?;
+            if objects.len() != 1 {
+                return Err(ExecutionError::InvalidAmount(
+                    "power count requires exactly one object",
+                ));
+            }
+            let id = objects[0];
+            let power = state
+                .object(id)
+                .or_else(|| {
+                    context
+                        .last_known_source
+                        .as_deref()
+                        .filter(|source| source.id == id)
+                        .cloned()
+                })
+                .ok_or(ExecutionError::MissingObject(id))?
+                .characteristics()
+                .power;
+            u32::try_from(power.max(0)).map_err(|_| ExecutionError::ArithmeticOverflow)
+        }
+        CountExpression::ToughnessOf { object } => {
+            let objects = resolve_objects(state, object, context)?;
+            if objects.len() != 1 {
+                return Err(ExecutionError::InvalidAmount(
+                    "toughness count requires exactly one object",
+                ));
+            }
+            let id = objects[0];
+            let toughness = state
+                .object(id)
+                .or_else(|| {
+                    context
+                        .last_known_source
+                        .as_deref()
+                        .filter(|source| source.id == id)
+                        .cloned()
+                })
+                .ok_or(ExecutionError::MissingObject(id))?
+                .characteristics()
+                .toughness;
+            u32::try_from(toughness.max(0)).map_err(|_| ExecutionError::ArithmeticOverflow)
+        }
+        CountExpression::HalfLifeTotal { player, round_up } => {
+            let players = resolve_players(state, player, context)?;
+            let [player] = players.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "half-life count requires exactly one player",
+                ));
+            };
+            let life = state
+                .player(*player)
+                .ok_or(ExecutionError::MissingPlayer(*player))?
+                .life
+                .max(0);
+            let half = if *round_up {
+                life.checked_add(1)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?
+                    / 2
+            } else {
+                life / 2
+            };
+            u32::try_from(half).map_err(|_| ExecutionError::ArithmeticOverflow)
+        }
+        CountExpression::SelectedObjectsTotalPower { selection_id } => {
+            let selected =
+                context
+                    .object_choices
+                    .get(selection_id)
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "selected-object power evidence is unavailable",
+                    ))?;
+            if selected.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "selected-object power requires at least one object",
+                ));
+            }
+            let mut total = 0u32;
+            for id in selected {
+                let power = effective_object(state, *id, context)?
+                    .characteristics()
+                    .power;
+                total = total
+                    .checked_add(
+                        u32::try_from(power.max(0))
+                            .map_err(|_| ExecutionError::ArithmeticOverflow)?,
+                    )
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+            Ok(total)
+        }
+        CountExpression::SelectedObjectsTotalToughness { selection_id } => {
+            let selected =
+                context
+                    .object_choices
+                    .get(selection_id)
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "selected-object toughness evidence is unavailable",
+                    ))?;
+            if selected.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "selected-object toughness requires at least one object",
+                ));
+            }
+            let mut total = 0u32;
+            for id in selected {
+                let toughness = effective_object(state, *id, context)?
+                    .characteristics()
+                    .toughness;
+                total = total
+                    .checked_add(
+                        u32::try_from(toughness.max(0))
+                            .map_err(|_| ExecutionError::ArithmeticOverflow)?,
+                    )
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+            Ok(total)
+        }
         CountExpression::MatchingObjects { player, filter } => {
             let players = resolve_players(state, player, context)?;
             Ok(matching_objects(state, filter, context)?
@@ -3555,6 +5719,20 @@ fn evaluate_count<S: OracleStateAdapter>(
                 .copied()
                 .unwrap_or_default())
         }
+        CountExpression::AttachmentsOn { object, kind } => {
+            let objects = resolve_objects(state, object, context)?;
+            if objects.len() != 1 {
+                return Err(ExecutionError::InvalidAmount(
+                    "attachment count requires exactly one object",
+                ));
+            }
+            Ok(state
+                .object_ids()
+                .into_iter()
+                .filter_map(|source| state.attachment(source))
+                .filter(|attachment| attachment.target == objects[0] && attachment.kind == *kind)
+                .count() as u32)
+        }
         CountExpression::CardsInZone {
             player,
             zone,
@@ -3589,8 +5767,21 @@ fn evaluate_count<S: OracleStateAdapter>(
                 .characteristics()
                 .mana_value)
         }
+        CountExpression::LifeLostThisWay {
+            players,
+            amount_each,
+        } => {
+            let player_count = u32::try_from(resolve_players(state, players, context)?.len())
+                .map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            evaluate_amount(state, amount_each, context)?
+                .checked_mul(player_count)
+                .ok_or(ExecutionError::ArithmeticOverflow)
+        }
         CountExpression::TriggerEventAmount => match &context.window {
             ActionWindow::Triggered(TriggerEvent::CombatDamageToPlayer { amount, .. })
+            | ActionWindow::Triggered(TriggerEvent::DamageToPlayer { amount, .. })
+            | ActionWindow::Triggered(TriggerEvent::CombatDamageToObject { amount, .. })
+            | ActionWindow::Triggered(TriggerEvent::DamageToObject { amount, .. })
             | ActionWindow::Triggered(TriggerEvent::LifeGained { amount, .. }) => Ok(*amount),
             _ => Err(ExecutionError::InvalidAmount(
                 "trigger event amount is unavailable",
@@ -3685,12 +5876,62 @@ fn pay_cost<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<(), ExecutionError> {
     match cost {
+        Cost::Optional(cost) => {
+            if context.payment_declined {
+                Ok(())
+            } else {
+                pay_cost(state, cost, context)
+            }
+        }
         Cost::Mana(mana) => state
             .pay_mana(context.actor, mana, context.x_value)
             .map_err(ExecutionError::Adapter),
-        Cost::AtomicResource(_) => Err(ExecutionError::InvalidAmount(
-            "special resource costs require a production payment adapter",
-        )),
+        Cost::AtomicResource(cost) => {
+            let amount = atomic_energy_cost_amount(cost).ok_or(ExecutionError::InvalidAmount(
+                "special resource cost has no executable production payment adapter",
+            ))?;
+            let mut player = state
+                .player(context.actor)
+                .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+            let current = player.counters.get("energy").copied().unwrap_or_default();
+            let remaining = current
+                .checked_sub(amount)
+                .ok_or(ExecutionError::InvalidAmount(
+                    "player lacks the required energy counters",
+                ))?;
+            if remaining == 0 {
+                player.counters.remove("energy");
+            } else {
+                player.counters.insert("energy".to_owned(), remaining);
+            }
+            state.put_player(player).map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("pay_energy:{}:{amount}", context.actor));
+            Ok(())
+        }
+        Cost::SacrificeSelection(selection) => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            let controller = source_controller(state, context)?;
+            for id in &objects {
+                let candidate = state
+                    .object(*id)
+                    .ok_or(ExecutionError::MissingObject(*id))?;
+                if candidate.zone != Zone::Battlefield
+                    || candidate.controller != controller
+                    || !object_matches_filter(state, *id, &selection.filter, context)?
+                {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot be sacrificed for the selected cost"
+                    )));
+                }
+            }
+            for id in objects {
+                state
+                    .move_object(id, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("sacrifice_selected_cost:{id}"));
+            }
+            Ok(())
+        }
         Cost::Loyalty(cost) => pay_loyalty_cost(state, cost, context),
         Cost::Tap(object) => {
             let objects = resolve_objects(state, object, context)?;
@@ -3707,6 +5948,26 @@ fn pay_cost<S: OracleStateAdapter>(
                 object.tapped = true;
                 state.put_object(object).map_err(ExecutionError::Adapter)?;
                 state.record_mutation(format!("tap_cost:{id}"));
+            }
+            Ok(())
+        }
+        Cost::TapSelection(selection) => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            for id in objects {
+                let mut candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                if candidate.zone != Zone::Battlefield
+                    || candidate.controller != context.actor
+                    || candidate.tapped
+                {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot be tapped for this cost"
+                    )));
+                }
+                candidate.tapped = true;
+                state
+                    .put_object(candidate)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("tap_selection_cost:{id}"));
             }
             Ok(())
         }
@@ -3764,6 +6025,40 @@ fn pay_cost<S: OracleStateAdapter>(
                 object.tapped = true;
                 state.put_object(object).map_err(ExecutionError::Adapter)?;
                 state.record_mutation(format!("tap_power_cost:{id}"));
+            }
+            Ok(())
+        }
+        Cost::TapCreatureSelectionWithTotalPower { selection, minimum } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            let minimum = i64::from(evaluate_amount(state, minimum, context)?);
+            let mut total = 0_i64;
+            for id in &objects {
+                let object = state
+                    .object(*id)
+                    .ok_or(ExecutionError::MissingObject(*id))?;
+                if object.zone != Zone::Battlefield
+                    || object.controller != context.actor
+                    || object.tapped
+                    || !object_has_type(&object, CardType::Creature)
+                {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot be tapped for this total-power cost"
+                    )));
+                }
+                total = total
+                    .checked_add(object.characteristics().power.max(0))
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+            if total < minimum {
+                return Err(ExecutionError::Adapter(
+                    "selected creatures do not have enough total power".to_owned(),
+                ));
+            }
+            for id in objects {
+                let mut object = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                object.tapped = true;
+                state.put_object(object).map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("tap_selected_power_cost:{id}"));
             }
             Ok(())
         }
@@ -3880,6 +6175,249 @@ fn pay_cost<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Cost::DiscardRandom { player } => {
+            let players = resolve_players(state, player, context)?;
+            if players.len() != 1 || players[0] != context.actor {
+                return Err(ExecutionError::InvalidAmount(
+                    "random discard cost requires the casting player",
+                ));
+            }
+            let player = players[0];
+            let mut cards = state
+                .object_ids()
+                .into_iter()
+                .filter(|id| {
+                    state
+                        .object(*id)
+                        .is_some_and(|card| card.zone == Zone::Hand && card.owner == player)
+                })
+                .collect::<Vec<_>>();
+            cards.sort_unstable();
+            if cards.is_empty() {
+                return Err(ExecutionError::Adapter(
+                    "random discard cost requires a card in hand".to_owned(),
+                ));
+            }
+            let index = (context.replay_seed % cards.len() as u64) as usize;
+            let card = cards[index];
+            state
+                .move_object(card, Zone::Graveyard)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("discard_random:{player}:{card}:{index}"));
+            Ok(())
+        }
+        Cost::ReturnSelectionToHand(selection) => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            if objects.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "return cost requires a permanent",
+                ));
+            }
+            for id in objects {
+                let candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                if candidate.zone != Zone::Battlefield || candidate.controller != context.actor {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot be returned as a cost"
+                    )));
+                }
+                state
+                    .move_object(id, Zone::Hand)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("return_cost:{id}"));
+            }
+            Ok(())
+        }
+        Cost::RevealSelection {
+            selection,
+            optional,
+        } => {
+            if *optional && context.payment_declined {
+                return Ok(());
+            }
+            let objects = resolve_object_selection(state, selection, context)?;
+            let [card] = objects.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "reveal cost requires exactly one card",
+                ));
+            };
+            let candidate = state
+                .object(*card)
+                .ok_or(ExecutionError::MissingObject(*card))?;
+            if candidate.zone != Zone::Hand || candidate.owner != context.actor {
+                return Err(ExecutionError::Adapter(format!(
+                    "object {card} cannot be revealed as an additional cost"
+                )));
+            }
+            let order = state.next_order();
+            state.register_revealed_card(RevealedCardRecord {
+                order,
+                source_identity: context.source,
+                player: context.actor,
+                card: *card,
+                as_additional_cost: true,
+            });
+            state.record_mutation(format!(
+                "reveal_additional_cost:{}:{card}:{order}",
+                context.actor
+            ));
+            Ok(())
+        }
+        Cost::BeholdSelection {
+            choice_id,
+            battlefield,
+            hand,
+        } => {
+            let selected = context
+                .object_choices
+                .get(choice_id)
+                .cloned()
+                .unwrap_or_default();
+            let [object] = selected.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "behold cost requires exactly one object",
+                ));
+            };
+            let on_battlefield = object_matches_filter(state, *object, battlefield, context)?;
+            let in_hand = object_matches_filter(state, *object, hand, context)?;
+            if on_battlefield == in_hand {
+                return Err(ExecutionError::InvalidAmount(
+                    "behold choice must satisfy exactly one legal branch",
+                ));
+            }
+            if in_hand {
+                let order = state.next_order();
+                state.register_revealed_card(RevealedCardRecord {
+                    order,
+                    source_identity: context.source,
+                    player: context.actor,
+                    card: *object,
+                    as_additional_cost: true,
+                });
+                state.record_mutation(format!("behold_reveal:{}:{object}:{order}", context.actor));
+            } else {
+                state.record_mutation(format!("behold_controlled:{}:{object}", context.actor));
+            }
+            Ok(())
+        }
+        Cost::Waterbend { selection, amount } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            let required = evaluate_amount(state, amount, context)?;
+            let contributed = u32::try_from(objects.len())
+                .map_err(|_| ExecutionError::InvalidAmount("waterbend selection is too large"))?;
+            if contributed > required {
+                return Err(ExecutionError::InvalidAmount(
+                    "waterbend selection contributes more than the chosen X",
+                ));
+            }
+            for id in &objects {
+                let mut object = state
+                    .object(*id)
+                    .ok_or(ExecutionError::MissingObject(*id))?;
+                if object.zone != Zone::Battlefield
+                    || object.controller != context.actor
+                    || object.tapped
+                    || !(object_has_type(&object, CardType::Artifact)
+                        || object_has_type(&object, CardType::Creature))
+                {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot contribute to waterbend"
+                    )));
+                }
+                object.tapped = true;
+                state.put_object(object).map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("waterbend_tap:{id}"));
+            }
+            let remaining = required - contributed;
+            if remaining > 0 {
+                state
+                    .pay_mana(context.actor, &ManaCost(format!("{{{remaining}}}")), 0)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("waterbend_mana:{}:{remaining}", context.actor));
+            }
+            Ok(())
+        }
+        Cost::PutCounter {
+            object,
+            counter,
+            amount,
+        } => {
+            let requested = evaluate_amount(state, amount, context)?;
+            let objects = resolve_objects(state, object, context)?;
+            if objects.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "put-counter cost has no object",
+                ));
+            }
+            for id in objects {
+                let mut candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                if candidate.zone != Zone::Battlefield || candidate.controller != context.actor {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot receive a counter as this activation cost"
+                    )));
+                }
+                let resolved = replace_counter_event(state, id, counter, requested, context)?;
+                if resolved != requested {
+                    return Err(ExecutionError::Adapter(
+                        "a counter replacement prevented the exact activation cost".to_owned(),
+                    ));
+                }
+                let key = counter_key(counter);
+                let current = candidate.counters.get(&key).copied().unwrap_or_default();
+                candidate.counters.insert(
+                    key.clone(),
+                    current
+                        .checked_add(resolved)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                );
+                apply_counter_stat_delta(&mut candidate, counter, i64::from(resolved))?;
+                state
+                    .put_object(candidate)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("put_counter_cost:{id}:{key}:{resolved}"));
+            }
+            Ok(())
+        }
+        Cost::PutCounterSelection {
+            selection,
+            counter,
+            amount,
+        } => {
+            let requested = evaluate_amount(state, amount, context)?;
+            let objects = resolve_object_selection(state, selection, context)?;
+            if objects.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "put-counter selection cost has no object",
+                ));
+            }
+            for id in objects {
+                let mut candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                if candidate.zone != Zone::Battlefield || candidate.controller != context.actor {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot receive a counter as this additional cost"
+                    )));
+                }
+                let resolved = replace_counter_event(state, id, counter, requested, context)?;
+                if resolved != requested {
+                    return Err(ExecutionError::Adapter(
+                        "a counter replacement prevented the exact additional cost".to_owned(),
+                    ));
+                }
+                let key = counter_key(counter);
+                let current = candidate.counters.get(&key).copied().unwrap_or_default();
+                candidate.counters.insert(
+                    key.clone(),
+                    current
+                        .checked_add(resolved)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                );
+                apply_counter_stat_delta(&mut candidate, counter, i64::from(resolved))?;
+                state
+                    .put_object(candidate)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("put_counter_selection_cost:{id}:{key}:{resolved}"));
+            }
+            Ok(())
+        }
         Cost::ExileObject(object) => {
             let objects = resolve_objects(state, object, context)?;
             if objects.is_empty() {
@@ -3890,6 +6428,22 @@ fn pay_cost<S: OracleStateAdapter>(
                     .move_object(id, Zone::Exile)
                     .map_err(ExecutionError::Adapter)?;
             }
+            Ok(())
+        }
+        Cost::ExileSourceFromBattlefield => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if source.zone != Zone::Battlefield || source.controller != context.actor {
+                return Err(ExecutionError::Adapter(format!(
+                    "source {} is not a battlefield permanent controlled by the activating player",
+                    context.source
+                )));
+            }
+            state
+                .move_object(context.source, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("exile_source_cost:{}", context.source));
             Ok(())
         }
         Cost::ExileSourceFromOwnGraveyard => {
@@ -3912,6 +6466,35 @@ fn pay_cost<S: OracleStateAdapter>(
                 state
                     .move_object(id, Zone::Exile)
                     .map_err(ExecutionError::Adapter)?;
+            }
+            Ok(())
+        }
+        Cost::ExileSelectionWithTotalManaValue { selection, minimum } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            if objects.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "mana-value exile cost requires at least one card",
+                ));
+            }
+            let required = evaluate_amount(state, minimum, context)?;
+            let total = objects.iter().try_fold(0u32, |total, id| {
+                let card = state
+                    .object(*id)
+                    .ok_or(ExecutionError::MissingObject(*id))?;
+                total
+                    .checked_add(card.characteristics().mana_value)
+                    .ok_or(ExecutionError::ArithmeticOverflow)
+            })?;
+            if total < required {
+                return Err(ExecutionError::InvalidAmount(
+                    "exiled cards do not have enough total mana value",
+                ));
+            }
+            for id in objects {
+                state
+                    .move_object(id, Zone::Exile)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("exile_mana_value_cost:{id}"));
             }
             Ok(())
         }
@@ -3994,8 +6577,17 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<bool, ExecutionError> {
     Ok(match cost {
+        Cost::Optional(cost) => {
+            context.payment_declined || cost_is_payable_by(state, cost, player, context)?
+        }
         Cost::Mana(mana) => state.can_pay_mana(player, mana, context.x_value),
-        Cost::AtomicResource(_) => false,
+        Cost::AtomicResource(cost) => atomic_energy_cost_amount(cost).is_some_and(|amount| {
+            state
+                .player(player)
+                .and_then(|player| player.counters.get("energy").copied())
+                .unwrap_or_default()
+                >= amount
+        }),
         Cost::Loyalty(cost) => loyalty_cost_is_payable(state, cost, player, context)?,
         Cost::Tap(object) => {
             let objects = resolve_objects(state, object, context)?;
@@ -4003,6 +6595,32 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
                 && objects.iter().all(|id| {
                     state.object(*id).is_some_and(|candidate| {
                         candidate.zone == Zone::Battlefield && !candidate.tapped
+                    })
+                })
+        }
+        Cost::PutCounterSelection {
+            selection,
+            counter,
+            amount,
+        } => {
+            let requested = evaluate_amount(state, amount, context)?;
+            let objects = resolve_object_selection(state, selection, context)?;
+            !objects.is_empty()
+                && objects.iter().all(|id| {
+                    state.object(*id).is_some_and(|candidate| {
+                        candidate.zone == Zone::Battlefield && candidate.controller == player
+                    }) && replace_counter_event(state, *id, counter, requested, context)
+                        .is_ok_and(|resolved| resolved == requested)
+                })
+        }
+        Cost::TapSelection(selection) => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            !objects.is_empty()
+                && objects.iter().all(|id| {
+                    state.object(*id).is_some_and(|candidate| {
+                        candidate.zone == Zone::Battlefield
+                            && candidate.controller == player
+                            && !candidate.tapped
                     })
                 })
         }
@@ -4035,6 +6653,25 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
                 .sum::<i64>()
                 >= minimum
         }
+        Cost::TapCreatureSelectionWithTotalPower { selection, minimum } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            let minimum = i64::from(evaluate_amount(state, minimum, context)?);
+            !objects.is_empty()
+                && objects.iter().all(|id| {
+                    state.object(*id).is_some_and(|object| {
+                        object.zone == Zone::Battlefield
+                            && object.controller == player
+                            && !object.tapped
+                            && object_has_type(&object, CardType::Creature)
+                    })
+                })
+                && objects
+                    .into_iter()
+                    .filter_map(|id| state.object(id))
+                    .map(|object| object.characteristics().power.max(0))
+                    .sum::<i64>()
+                    >= minimum
+        }
         Cost::PayLife(amount) => {
             let amount = i64::from(evaluate_amount(state, amount, context)?);
             state
@@ -4052,6 +6689,15 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
                 })
                 .count()
                 >= amount
+        }
+        Cost::SacrificeSelection(selection) => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            !objects.is_empty()
+                && objects.iter().all(|id| {
+                    state.object(*id).is_some_and(|candidate| {
+                        candidate.zone == Zone::Battlefield && candidate.controller == player
+                    })
+                })
         }
         Cost::SacrificeObject(object) => {
             let objects = resolve_objects(state, object, context)?;
@@ -4083,6 +6729,87 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
         Cost::DiscardHand { player: affected } => {
             resolve_players(state, affected, context)?.contains(&player)
         }
+        Cost::DiscardRandom { player: affected } => {
+            resolve_players(state, affected, context)?.contains(&player)
+                && state.object_ids().into_iter().any(|id| {
+                    state
+                        .object(id)
+                        .is_some_and(|card| card.zone == Zone::Hand && card.owner == player)
+                })
+        }
+        Cost::ReturnSelectionToHand(selection) => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            !objects.is_empty()
+                && objects.iter().all(|id| {
+                    state.object(*id).is_some_and(|candidate| {
+                        candidate.zone == Zone::Battlefield && candidate.controller == player
+                    })
+                })
+        }
+        Cost::RevealSelection {
+            selection,
+            optional,
+        } => {
+            if *optional {
+                true
+            } else {
+                let objects = resolve_object_selection(state, selection, context)?;
+                objects.len() == 1
+                    && state.object(objects[0]).is_some_and(|candidate| {
+                        candidate.zone == Zone::Hand && candidate.owner == player
+                    })
+            }
+        }
+        Cost::BeholdSelection {
+            choice_id,
+            battlefield,
+            hand,
+        } => {
+            let selected = context
+                .object_choices
+                .get(choice_id)
+                .cloned()
+                .unwrap_or_default();
+            matches!(selected.as_slice(), [object]
+                if object_matches_filter(state, *object, battlefield, context)?
+                    ^ object_matches_filter(state, *object, hand, context)?)
+        }
+        Cost::Waterbend { selection, amount } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            let required = evaluate_amount(state, amount, context)?;
+            let contributed = u32::try_from(objects.len()).unwrap_or(u32::MAX);
+            contributed <= required
+                && objects.iter().all(|id| {
+                    state.object(*id).is_some_and(|object| {
+                        object.zone == Zone::Battlefield
+                            && object.controller == player
+                            && !object.tapped
+                            && (object_has_type(&object, CardType::Artifact)
+                                || object_has_type(&object, CardType::Creature))
+                    })
+                })
+                && (contributed == required
+                    || state.can_pay_mana(
+                        player,
+                        &ManaCost(format!("{{{}}}", required - contributed)),
+                        0,
+                    ))
+        }
+        Cost::PutCounter {
+            object,
+            counter,
+            amount,
+        } => {
+            let requested = evaluate_amount(state, amount, context)?;
+            let objects = resolve_objects(state, object, context)?;
+            !objects.is_empty()
+                && objects.iter().all(|id| {
+                    state.object(*id).is_some_and(|candidate| {
+                        candidate.zone == Zone::Battlefield && candidate.controller == player
+                    }) && replace_counter_event(state, *id, counter, requested, context)
+                        .is_ok_and(|resolved| resolved == requested)
+                })
+        }
         Cost::ExileObject(object) => {
             let objects = resolve_objects(state, object, context)?;
             !objects.is_empty()
@@ -4092,6 +6819,9 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
                         .is_some_and(|candidate| candidate.owner == player)
                 })
         }
+        Cost::ExileSourceFromBattlefield => state
+            .object(context.source)
+            .is_some_and(|source| source.zone == Zone::Battlefield && source.controller == player),
         Cost::ExileSourceFromOwnGraveyard => state
             .object(context.source)
             .is_some_and(|source| source.zone == Zone::Graveyard && source.owner == player),
@@ -4103,6 +6833,23 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
                         .object(*id)
                         .is_some_and(|candidate| candidate.owner == player)
                 })
+        }
+        Cost::ExileSelectionWithTotalManaValue { selection, minimum } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            let required = evaluate_amount(state, minimum, context)?;
+            !objects.is_empty()
+                && objects.iter().all(|id| {
+                    state
+                        .object(*id)
+                        .is_some_and(|candidate| candidate.owner == player)
+                })
+                && objects
+                    .iter()
+                    .filter_map(|id| state.object(*id))
+                    .try_fold(0u32, |total, card| {
+                        total.checked_add(card.characteristics().mana_value)
+                    })
+                    .is_some_and(|total| total >= required)
         }
         Cost::RemoveCounter {
             object,
@@ -4173,6 +6920,14 @@ fn resolve_players<S: OracleStateAdapter>(
                 .filter(|player| *player != controller)
                 .collect()
         }
+        PlayerRef::OtherPlayer => {
+            let controller = source_controller(state, context)?;
+            state
+                .player_ids()
+                .into_iter()
+                .filter(|player| *player != controller)
+                .collect()
+        }
         PlayerRef::Any => state.player_ids(),
         PlayerRef::TargetPlayer(target_id) => context
             .targets
@@ -4205,8 +6960,35 @@ fn resolve_players<S: OracleStateAdapter>(
         PlayerRef::ThatPlayer => vec![
             context
                 .that_player
+                .or(match &context.window {
+                    ActionWindow::Triggered(
+                        TriggerEvent::SpellCast { player, .. }
+                        | TriggerEvent::CardDrawn { player, .. }
+                        | TriggerEvent::LifeGained { player, .. }
+                        | TriggerEvent::TokenCreated { player, .. }
+                        | TriggerEvent::PlayerAction { player, .. }
+                        | TriggerEvent::CombatDamageToPlayer { player, .. }
+                        | TriggerEvent::DamageToPlayer { player, .. },
+                    ) => Some(*player),
+                    ActionWindow::Triggered(TriggerEvent::BecameTarget { controller, .. }) => {
+                        Some(*controller)
+                    }
+                    ActionWindow::Triggered(TriggerEvent::BeginningOf {
+                        active_player, ..
+                    }) => Some(*active_player),
+                    _ => None,
+                })
                 .ok_or(ExecutionError::InvalidAmount("that player is unavailable"))?,
         ],
+        PlayerRef::DefendingPlayer => {
+            vec![
+                context
+                    .defending_player
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "defending player is unavailable",
+                    ))?,
+            ]
+        }
     };
     players.sort_unstable();
     players.dedup();
@@ -4345,14 +7127,27 @@ fn resolve_attachment_target<S: OracleStateAdapter>(
                     .any(|subtype| subtype.eq_ignore_ascii_case("Equipment"))
         }
     };
+    let target_types = &target.characteristics().card_types;
+    let target_kind_is_legal = match expected {
+        AttachmentKind::Aura => target_types.iter().any(|card_type| {
+            matches!(
+                card_type,
+                CardType::Artifact
+                    | CardType::Battle
+                    | CardType::Creature
+                    | CardType::Enchantment
+                    | CardType::Land
+                    | CardType::Planeswalker
+                    | CardType::Permanent
+            )
+        }),
+        AttachmentKind::Equipment => target_types.contains(&CardType::Creature),
+    };
     if attachment.source != source_id
         || attachment.kind != expected
         || source.zone != Zone::Battlefield
         || target.zone != Zone::Battlefield
-        || !target
-            .characteristics()
-            .card_types
-            .contains(&CardType::Creature)
+        || !target_kind_is_legal
         || !source_kind_is_legal
     {
         return Err(ExecutionError::IllegalAttachment {
@@ -4412,6 +7207,22 @@ fn object_matches_filter<S: OracleStateAdapter>(
     {
         return Ok(false);
     }
+    if filter.chosen_name_of_source {
+        let chosen = state
+            .chosen_card_name(context.source)
+            .filter(|name| !name.trim().is_empty())
+            .ok_or(ExecutionError::InvalidAmount(
+                "chosen card name is unavailable",
+            ))?;
+        if !object
+            .characteristics()
+            .names
+            .iter()
+            .any(|actual| actual.eq_ignore_ascii_case(chosen.trim()))
+        {
+            return Ok(false);
+        }
+    }
     let type_matches = if filter.card_type_match_any {
         filter.card_types.is_empty()
             || filter
@@ -4435,6 +7246,16 @@ fn object_matches_filter<S: OracleStateAdapter>(
         return Ok(false);
     }
     let characteristics = object.characteristics();
+    if filter.historic
+        && !object_has_type(&object, CardType::Artifact)
+        && !characteristics.supertypes.contains(&Supertype::Legendary)
+        && !characteristics
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Saga"))
+    {
+        return Ok(false);
+    }
     if !filter
         .supertypes
         .iter()
@@ -4457,6 +7278,25 @@ fn object_matches_filter<S: OracleStateAdapter>(
                     .iter()
                     .any(|actual| actual.eq_ignore_ascii_case(subtype))
             }))
+    {
+        return Ok(false);
+    }
+    if filter.excluded_subtypes.iter().any(|subtype| {
+        characteristics
+            .subtypes
+            .iter()
+            .any(|actual| actual.eq_ignore_ascii_case(subtype))
+    }) {
+        return Ok(false);
+    }
+    if !filter
+        .keywords
+        .iter()
+        .all(|keyword| characteristics.keywords.contains(keyword))
+        || filter
+            .excluded_keywords
+            .iter()
+            .any(|keyword| characteristics.keywords.contains(keyword))
     {
         return Ok(false);
     }
@@ -4494,7 +7334,41 @@ fn object_matches_filter<S: OracleStateAdapter>(
     {
         return Ok(false);
     }
+    if filter
+        .blocking
+        .is_some_and(|blocking| blocking != object.blocking)
+    {
+        return Ok(false);
+    }
+    if let Some(kind) = filter.attached_by
+        && !state
+            .object_ids()
+            .into_iter()
+            .filter_map(|source| state.attachment(source))
+            .any(|attachment| attachment.target == id && attachment.kind == kind)
+    {
+        return Ok(false);
+    }
     if filter.other_than_source && object.id == context.source {
+        return Ok(false);
+    }
+    if filter.targets_source
+        && !context
+            .targets
+            .values()
+            .flatten()
+            .any(|target| matches!(target, SelectedTarget::Object(id) if *id == context.source))
+    {
+        return Ok(false);
+    }
+    if let Some((counter, minimum)) = &filter.minimum_counter
+        && object
+            .counters
+            .get(&counter_key(counter))
+            .copied()
+            .unwrap_or_default()
+            < *minimum
+    {
         return Ok(false);
     }
     if filter.chosen_creature_type {
@@ -4536,6 +7410,37 @@ fn object_matches_filter<S: OracleStateAdapter>(
                     .max()
                     .unwrap_or(characteristics.power);
                 if characteristics.power != greatest || characteristics.power < expected {
+                    return Ok(false);
+                }
+            }
+            Comparison::AtLeast | Comparison::AtMost | Comparison::Exactly => {}
+        }
+    }
+    if let Some((comparison, amount)) = &filter.toughness {
+        let expected = i64::from(evaluate_amount(state, amount, context)?);
+        match comparison {
+            Comparison::AtLeast if characteristics.toughness < expected => return Ok(false),
+            Comparison::AtMost if characteristics.toughness > expected => return Ok(false),
+            Comparison::Exactly if characteristics.toughness != expected => return Ok(false),
+            Comparison::Greatest => {
+                let mut comparison_filter = filter.clone();
+                comparison_filter.toughness = None;
+                let greatest = state
+                    .object_ids()
+                    .into_iter()
+                    .filter_map(|candidate_id| {
+                        if candidate_id == id {
+                            return Some(characteristics.toughness);
+                        }
+                        object_matches_filter(state, candidate_id, &comparison_filter, context)
+                            .ok()
+                            .filter(|matched| *matched)
+                            .and_then(|_| state.object(candidate_id))
+                            .map(|candidate| candidate.characteristics().toughness)
+                    })
+                    .max()
+                    .unwrap_or(characteristics.toughness);
+                if characteristics.toughness != greatest || characteristics.toughness < expected {
                     return Ok(false);
                 }
             }
@@ -4741,6 +7646,30 @@ fn apply_effect<S: OracleStateAdapter>(
         }
         Effect::PayCost(cost) => pay_cost(state, cost, context),
         Effect::AddMana(production) => apply_add_mana(state, production, context),
+        Effect::SetClassLevel { level } => {
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let is_class = source
+                .characteristics()
+                .subtypes
+                .iter()
+                .any(|subtype| subtype.eq_ignore_ascii_case("Class"));
+            if !is_class
+                || source.zone != Zone::Battlefield
+                || source.controller != context.actor
+                || source.class_level.saturating_add(1) != *level
+            {
+                return Err(ExecutionError::Adapter(format!(
+                    "class level {} cannot advance to {level}",
+                    source.class_level
+                )));
+            }
+            source.class_level = *level;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("class_level:{}:{level}", context.source));
+            Ok(())
+        }
         Effect::Counter { object } => {
             for id in resolve_objects(state, object, context)? {
                 let candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
@@ -4757,7 +7686,7 @@ fn apply_effect<S: OracleStateAdapter>(
         Effect::CounterToZone { object, zone } => {
             for id in resolve_objects(state, object, context)? {
                 let candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
-                if candidate.zone != Zone::Stack {
+                if candidate.zone != Zone::Stack || spell_cannot_be_countered(state, id, context)? {
                     continue;
                 }
                 state
@@ -4782,7 +7711,185 @@ fn apply_effect<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Effect::DestroyWithoutRegeneration { object } => {
+            for id in resolve_objects(state, object, context)? {
+                let candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                if candidate.zone != Zone::Battlefield
+                    || object_is_indestructible(state, &candidate, context)?
+                {
+                    continue;
+                }
+                state
+                    .move_object(id, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("destroy_no_regeneration:{id}"));
+            }
+            Ok(())
+        }
         Effect::MoveZone(zone_move) => apply_zone_move(state, zone_move, context),
+        Effect::MoveZoneUnderControl {
+            object,
+            from,
+            to,
+            controller,
+            tapped,
+            face_down,
+            delayed_until,
+        } => {
+            let objects = resolve_objects(state, object, context)?
+                .into_iter()
+                .filter(|id| {
+                    state
+                        .object(*id)
+                        .is_some_and(|candidate| candidate.zone == *from)
+                })
+                .collect::<Vec<_>>();
+            if let Some(trigger) = delayed_until {
+                let order = state.next_order();
+                let effects = objects
+                    .iter()
+                    .map(|object_id| {
+                        let identity = ObjectRef::ObjectIdentity(*object_id);
+                        let controller = match controller {
+                            PlayerRef::OwnerOf(_) => PlayerRef::OwnerOf(Box::new(identity.clone())),
+                            PlayerRef::ControllerOf(_) => {
+                                PlayerRef::ControllerOf(Box::new(identity.clone()))
+                            }
+                            controller => controller.clone(),
+                        };
+                        Effect::MoveZoneUnderControl {
+                            object: identity,
+                            from: *from,
+                            to: *to,
+                            controller,
+                            tapped: *tapped,
+                            face_down: *face_down,
+                            delayed_until: None,
+                        }
+                    })
+                    .collect();
+                state.register_delayed_trigger(DelayedTriggerRecord {
+                    order,
+                    source_identity: context.source,
+                    object_identities: objects,
+                    trigger: trigger.clone(),
+                    effects,
+                });
+                state.record_mutation(format!("delay_controlled_move:{}:{order}", context.source));
+                return Ok(());
+            }
+            let controllers = resolve_players(state, controller, context)?;
+            let [controller] = controllers.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "controlled zone move requires exactly one controller",
+                ));
+            };
+            if objects.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "controlled zone move has no physical object",
+                ));
+            }
+            for id in objects {
+                let candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                if candidate.zone != *from {
+                    continue;
+                }
+                state
+                    .move_object(id, *to)
+                    .map_err(ExecutionError::Adapter)?;
+                let mut candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                candidate.controller = *controller;
+                candidate.tapped = *tapped;
+                candidate.face_down = *face_down;
+                state
+                    .put_object(candidate)
+                    .map_err(ExecutionError::Adapter)?;
+                if *to == Zone::Battlefield {
+                    apply_enters_replacements(state, id, context)?;
+                }
+                state.record_mutation(format!("move_under_control:{id}:{to:?}:{controller}"));
+            }
+            Ok(())
+        }
+        Effect::MoveToLibraryBottom { object } => {
+            apply_move_to_library_bottom(state, object, context)
+        }
+        Effect::MoveToChosenLibraryEnd { object, choice_id } => {
+            let objects = resolve_objects(state, object, context)?;
+            let [id] = objects.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "top-or-bottom library move requires exactly one object",
+                ));
+            };
+            let selection = context.library_end_choices.get(choice_id).copied().ok_or(
+                ExecutionError::InvalidAmount("top-or-bottom library choice is missing"),
+            )?;
+            let owner = state
+                .object(*id)
+                .ok_or(ExecutionError::MissingObject(*id))?
+                .owner;
+            if selection.chooser != owner {
+                return Err(ExecutionError::Adapter(format!(
+                    "player {} cannot choose the library end for object {id} owned by {owner}",
+                    selection.chooser
+                )));
+            }
+            state
+                .move_object(*id, Zone::Library)
+                .map_err(ExecutionError::Adapter)?;
+            if selection.choice == LibraryEndChoice::Bottom {
+                let mut player = state
+                    .player(owner)
+                    .ok_or(ExecutionError::MissingPlayer(owner))?;
+                player.library.retain(|candidate| candidate != id);
+                player.library.push(*id);
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+            state.record_mutation(format!(
+                "library_end_choice:{owner}:{id}:{choice:?}:{choice_id}",
+                choice = selection.choice
+            ));
+            Ok(())
+        }
+        Effect::PutOnLibraryTopInOrder { objects } => {
+            let objects = resolve_objects(state, objects, context)?;
+            for object in objects.iter().rev() {
+                state
+                    .move_object(*object, Zone::Library)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+            state.record_mutation(format!("put_on_library_top:{objects:?}"));
+            Ok(())
+        }
+        Effect::PutInLibraryAtPosition {
+            object,
+            position_from_top,
+        } => {
+            let objects = resolve_objects(state, object, context)?;
+            let [id] = objects.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "fixed-position library move requires exactly one object",
+                ));
+            };
+            let owner = state
+                .object(*id)
+                .ok_or(ExecutionError::MissingObject(*id))?
+                .owner;
+            state
+                .move_object(*id, Zone::Library)
+                .map_err(ExecutionError::Adapter)?;
+            let mut player = state
+                .player(owner)
+                .ok_or(ExecutionError::MissingPlayer(owner))?;
+            player.library.retain(|candidate| candidate != id);
+            let index = usize::from(position_from_top.saturating_sub(1)).min(player.library.len());
+            player.library.insert(index, *id);
+            state.put_player(player).map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "put_in_library_position:{owner}:{id}:{position_from_top}"
+            ));
+            Ok(())
+        }
         Effect::MoveSelected(zone_move) => apply_selected_zone_move(state, zone_move, context),
         Effect::SetSelectedTapped { selection, tapped } => {
             apply_selected_tapped_state(state, selection, *tapped, context)
@@ -4818,6 +7925,108 @@ fn apply_effect<S: OracleStateAdapter>(
             Ok(())
         }
         Effect::CreateToken(creation) => apply_create_token(state, creation, context).map(|_| ()),
+        Effect::CreateTokenAttached {
+            creation,
+            target,
+            kind,
+        } => {
+            let created = apply_create_token(state, creation, context)?;
+            let targets = resolve_objects(state, target, context)?;
+            let ([source], [target]) = (created.as_slice(), targets.as_slice()) else {
+                return Err(ExecutionError::InvalidAmount(
+                    "attached token creation requires one token and one target",
+                ));
+            };
+            state
+                .set_attachment(AttachmentRecord {
+                    source: *source,
+                    target: *target,
+                    kind: *kind,
+                })
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("attach_created:{source}:{target}:{kind:?}"));
+            Ok(())
+        }
+        Effect::CreateTokenAndAttachSource {
+            creation,
+            attachment,
+            kind,
+        } => {
+            let created = apply_create_token(state, creation, context)?;
+            let attachments = resolve_objects(state, attachment, context)?;
+            let ([target], [source]) = (created.as_slice(), attachments.as_slice()) else {
+                return Err(ExecutionError::InvalidAmount(
+                    "token-and-source attachment requires one token and one attachment",
+                ));
+            };
+            state
+                .set_attachment(AttachmentRecord {
+                    source: *source,
+                    target: *target,
+                    kind: *kind,
+                })
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "attach_source_to_created:{source}:{target}:{kind:?}"
+            ));
+            Ok(())
+        }
+        Effect::Attach {
+            attachment,
+            target,
+            kind,
+        } => {
+            let attachments = resolve_objects(state, attachment, context)?;
+            let targets = resolve_objects(state, target, context)?;
+            let ([source], [target]) = (attachments.as_slice(), targets.as_slice()) else {
+                return Err(ExecutionError::InvalidAmount(
+                    "attach requires one attachment and one target",
+                ));
+            };
+            state
+                .set_attachment(AttachmentRecord {
+                    source: *source,
+                    target: *target,
+                    kind: *kind,
+                })
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("attach:{source}:{target}:{kind:?}"));
+            Ok(())
+        }
+        Effect::ResolveTargetChoice { object } => {
+            let chosen = resolve_objects(state, object, context)?;
+            let [object] = chosen.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "target-choice instruction requires exactly one object",
+                ));
+            };
+            state.record_mutation(format!("resolve_target_choice:{object}"));
+            Ok(())
+        }
+        Effect::ResolvePlayerTargetChoice { player } => {
+            let chosen = resolve_players(state, player, context)?;
+            let [player] = chosen.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "player-target-choice instruction requires exactly one player",
+                ));
+            };
+            state.record_mutation(format!("resolve_player_target_choice:{player}"));
+            Ok(())
+        }
+        Effect::ChoosePlayer { chooser, eligible } => {
+            let selected = context
+                .that_player
+                .ok_or(ExecutionError::InvalidAmount("chosen player is missing"))?;
+            if !resolve_players(state, chooser, context)?.contains(&context.actor)
+                || !resolve_players(state, eligible, context)?.contains(&selected)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "chosen player or chooser is illegal",
+                ));
+            }
+            state.record_mutation(format!("choose_player:{}:{selected}", context.actor));
+            Ok(())
+        }
         Effect::CreateTokenWithDelayedMove {
             creation,
             destination,
@@ -4883,6 +8092,400 @@ fn apply_effect<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Effect::DrawRevealDiscardIfNonland { player } => {
+            let players = resolve_players(state, player, context)?;
+            if players.len() != 1 {
+                return Err(ExecutionError::InvalidAmount(
+                    "draw-reveal-discard requires exactly one player",
+                ));
+            }
+            let player = players[0];
+            let card = state
+                .player(player)
+                .ok_or(ExecutionError::MissingPlayer(player))?
+                .library
+                .first()
+                .copied()
+                .ok_or(ExecutionError::Adapter(format!(
+                    "player {player} cannot draw from an empty library"
+                )))?;
+            state
+                .move_object(card, Zone::Hand)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("draw:{player}:{card}"));
+            let order = state.next_order();
+            state.register_revealed_card(RevealedCardRecord {
+                order,
+                source_identity: context.source,
+                player,
+                card,
+                as_additional_cost: false,
+            });
+            state.record_mutation(format!("reveal_card:{player}:{card}:{order}"));
+            let drawn = state
+                .object(card)
+                .ok_or(ExecutionError::MissingObject(card))?;
+            if !drawn.characteristics().card_types.contains(&CardType::Land) {
+                state
+                    .move_object(card, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("discard:{player}:{card}"));
+            }
+            Ok(())
+        }
+        Effect::DrawThenDiscardUnless {
+            player,
+            draw,
+            discard,
+            alternative,
+            choice_id,
+        } => {
+            let players = resolve_players(state, player, context)?;
+            if players.len() != 1 {
+                return Err(ExecutionError::InvalidAmount(
+                    "draw-then-discard requires exactly one player",
+                ));
+            }
+            let player = players[0];
+            draw_cards(state, player, u32::from(*draw))?;
+            let selected = context
+                .object_choices
+                .get(choice_id)
+                .cloned()
+                .unwrap_or_default();
+            if selected.iter().copied().collect::<BTreeSet<_>>().len() != selected.len() {
+                return Err(ExecutionError::InvalidAmount(
+                    "discard choice contains duplicate cards",
+                ));
+            }
+            let all_in_hand = selected.iter().all(|object| {
+                state
+                    .object(*object)
+                    .is_some_and(|card| card.owner == player && card.zone == Zone::Hand)
+            });
+            let alternative_selected = selected.len() == 1
+                && object_matches_filter(state, selected[0], alternative, context)?;
+            if !all_in_hand || (!alternative_selected && selected.len() != usize::from(*discard)) {
+                return Err(ExecutionError::InvalidAmount(
+                    "draw-then-discard choice does not satisfy either legal payment",
+                ));
+            }
+            for object in selected {
+                state
+                    .move_object(object, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("discard:{player}:{object}"));
+            }
+            Ok(())
+        }
+        Effect::ChooseCardName { nonland } => {
+            let chosen = context
+                .selected_card_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .ok_or(ExecutionError::InvalidAmount(
+                    "selected card name is unavailable",
+                ))?;
+            if *nonland && context.selected_card_name_is_nonland != Some(true) {
+                return Err(ExecutionError::InvalidAmount(
+                    "selected card name is not proven to be nonland",
+                ));
+            }
+            state
+                .set_chosen_card_name(context.source, chosen.to_owned())
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("choose_card_name:{}:{chosen}", context.source));
+            Ok(())
+        }
+        Effect::ChooseColor => {
+            let chosen = context
+                .chosen_color
+                .ok_or(ExecutionError::InvalidAmount("chosen color is unavailable"))?;
+            state
+                .set_chosen_color(context.source, chosen)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("choose_color:{}:{chosen:?}", context.source));
+            Ok(())
+        }
+        Effect::RollDie { sides } => {
+            if *sides < 2 {
+                return Err(ExecutionError::InvalidAmount(
+                    "a die must have at least two sides",
+                ));
+            }
+            let result =
+                u16::try_from(mix64(context.replay_seed ^ context.source) % u64::from(*sides) + 1)
+                    .map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            state
+                .set_die_roll(context.source, *sides, result)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("roll_die:{}:d{sides}:{result}", context.source));
+            Ok(())
+        }
+        Effect::FlipCoin => {
+            let result = if mix64(context.replay_seed ^ context.source) & 1 == 0 {
+                CoinFlipResult::Won
+            } else {
+                CoinFlipResult::Lost
+            };
+            state
+                .set_coin_flip(context.source, result)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("flip_coin:{}:{result:?}", context.source));
+            Ok(())
+        }
+        Effect::Proliferate { choice_id } => {
+            let objects = context
+                .object_choices
+                .get(choice_id)
+                .cloned()
+                .unwrap_or_default();
+            let players = context
+                .player_choices
+                .get(choice_id)
+                .cloned()
+                .unwrap_or_default();
+            if objects.iter().collect::<BTreeSet<_>>().len() != objects.len()
+                || players.iter().collect::<BTreeSet<_>>().len() != players.len()
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "proliferate choices contain duplicates",
+                ));
+            }
+
+            let mut updated_objects = Vec::with_capacity(objects.len());
+            for object_id in objects {
+                let mut object = state
+                    .object(object_id)
+                    .ok_or(ExecutionError::MissingObject(object_id))?;
+                let is_permanent = object.characteristics().card_types.iter().any(|card_type| {
+                    matches!(
+                        card_type,
+                        CardType::Artifact
+                            | CardType::Battle
+                            | CardType::Creature
+                            | CardType::Enchantment
+                            | CardType::Land
+                            | CardType::Planeswalker
+                            | CardType::Permanent
+                    )
+                });
+                if object.zone != Zone::Battlefield || !is_permanent || object.counters.is_empty() {
+                    return Err(ExecutionError::InvalidAmount(
+                        "proliferate object must be a permanent with a counter",
+                    ));
+                }
+                for amount in object.counters.values_mut() {
+                    *amount = amount
+                        .checked_add(1)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                }
+                updated_objects.push(object);
+            }
+
+            let mut updated_players = Vec::with_capacity(players.len());
+            for player_id in players {
+                let mut player = state
+                    .player(player_id)
+                    .ok_or(ExecutionError::MissingPlayer(player_id))?;
+                if player.counters.is_empty() {
+                    return Err(ExecutionError::InvalidAmount(
+                        "proliferate player must have a counter",
+                    ));
+                }
+                for amount in player.counters.values_mut() {
+                    *amount = amount
+                        .checked_add(1)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                }
+                updated_players.push(player);
+            }
+
+            for object in updated_objects {
+                let object_id = object.id;
+                state.put_object(object).map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("proliferate_object:{object_id}"));
+            }
+            for player in updated_players {
+                let player_id = player.id;
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("proliferate_player:{player_id}"));
+            }
+            Ok(())
+        }
+        Effect::InitializeIntensity { amount } => {
+            if state
+                .initialize_intensity(context.source, *amount)
+                .map_err(ExecutionError::Adapter)?
+            {
+                state.record_mutation(format!("initialize_intensity:{}:{amount}", context.source));
+            }
+            Ok(())
+        }
+        Effect::ChooseNamedOption { options } => {
+            let [selected] = context.selected_modes.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "named entry choice requires exactly one selected option",
+                ));
+            };
+            let option = options
+                .get(usize::from(*selected))
+                .ok_or(ExecutionError::InvalidAmount(
+                    "named entry choice is outside the printed options",
+                ))?
+                .clone();
+            state
+                .set_chosen_option(context.source, option.clone())
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("choose_named_option:{}:{option}", context.source));
+            Ok(())
+        }
+        Effect::ChooseRulesText { kind } => {
+            let value = context
+                .selected_rules_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or(ExecutionError::InvalidAmount(
+                    "selected rules-text value is unavailable",
+                ))?;
+            state
+                .set_chosen_rules_text(context.source, *kind, value.to_owned())
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "choose_rules_text:{}:{kind:?}:{value}",
+                context.source
+            ));
+            Ok(())
+        }
+        Effect::EstablishDayIfUnset => {
+            if state.establish_day_if_unset() {
+                state.record_mutation("establish_day".to_owned());
+            }
+            Ok(())
+        }
+        Effect::EachPlayerSacrifices { filter, amount } => {
+            let mut sacrifices = Vec::new();
+            for player in state.player_ids() {
+                let mut local_filter = filter.clone();
+                local_filter.controller = Some(PlayerRef::PlayerIdentity(player));
+                let legal = matching_objects(state, &local_filter, context)?;
+                let required = usize::from(*amount).min(legal.len());
+                let selected = context
+                    .per_player_object_choices
+                    .get(&player)
+                    .cloned()
+                    .unwrap_or_default();
+                if selected.len() != required
+                    || selected.iter().copied().collect::<BTreeSet<_>>().len() != selected.len()
+                    || selected.iter().any(|object| !legal.contains(object))
+                {
+                    return Err(ExecutionError::InvalidAmount(
+                        "each-player sacrifice choice is illegal",
+                    ));
+                }
+                sacrifices.extend(selected);
+            }
+            for object in sacrifices {
+                state
+                    .move_object(object, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("each_player_sacrifice:{object}"));
+            }
+            Ok(())
+        }
+        Effect::PlayersSacrifice {
+            players,
+            filter,
+            amount,
+        } => {
+            let mut sacrifices = Vec::new();
+            for player in resolve_players(state, players, context)? {
+                let mut local_filter = filter.clone();
+                local_filter.controller = Some(PlayerRef::PlayerIdentity(player));
+                let legal = matching_objects(state, &local_filter, context)?;
+                let required = usize::from(*amount).min(legal.len());
+                let selected = context
+                    .per_player_object_choices
+                    .get(&player)
+                    .cloned()
+                    .unwrap_or_default();
+                if selected.len() != required
+                    || selected.iter().copied().collect::<BTreeSet<_>>().len() != selected.len()
+                    || selected.iter().any(|object| !legal.contains(object))
+                {
+                    return Err(ExecutionError::InvalidAmount(
+                        "scoped-player sacrifice choice is illegal",
+                    ));
+                }
+                sacrifices.extend(selected);
+            }
+            for object in sacrifices {
+                state
+                    .move_object(object, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("scoped_player_sacrifice:{object}"));
+            }
+            Ok(())
+        }
+        Effect::RevealHand { player } => {
+            for player in resolve_players(state, player, context)? {
+                let mut cards = state
+                    .object_ids()
+                    .into_iter()
+                    .filter(|id| {
+                        state.object(*id).is_some_and(|object| {
+                            object.owner == player && object.zone == Zone::Hand
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                cards.sort_unstable();
+                let order = state.next_order();
+                state.register_revealed_hand(RevealHandRecord {
+                    order,
+                    source_identity: context.source,
+                    player,
+                    cards,
+                });
+                state.record_mutation(format!("reveal_hand:{player}:{order}"));
+            }
+            Ok(())
+        }
+        Effect::LookAtHand { viewer, player } => {
+            let viewers = resolve_players(state, viewer, context)?;
+            let players = resolve_players(state, player, context)?;
+            if viewers.len() != 1 || players.len() != 1 {
+                return Err(ExecutionError::InvalidAmount(
+                    "private hand inspection requires exactly one viewer and one player",
+                ));
+            }
+            let viewer = viewers[0];
+            let player = players[0];
+            let mut cards = state
+                .object_ids()
+                .into_iter()
+                .filter(|id| {
+                    state
+                        .object(*id)
+                        .is_some_and(|object| object.owner == player && object.zone == Zone::Hand)
+                })
+                .collect::<Vec<_>>();
+            cards.sort_unstable();
+            let order = state.next_order();
+            state.register_hand_inspection(HandInspectionRecord {
+                order,
+                source_identity: context.source,
+                viewer,
+                player,
+                cards,
+            });
+            state.record_mutation(format!(
+                "look_at_hand:{viewer}:{player}:{}:{order}",
+                context.source
+            ));
+            Ok(())
+        }
         Effect::Discard(selection) => {
             let objects = resolve_object_selection(state, selection, context)?;
             for object in objects {
@@ -4893,6 +8496,7 @@ fn apply_effect<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Effect::Connive { object, discard } => apply_connive(state, object, discard, context),
         Effect::GainLife { player, amount } => {
             let amount = i64::from(evaluate_amount(state, amount, context)?);
             for player in resolve_players(state, player, context)? {
@@ -4961,6 +8565,56 @@ fn apply_effect<S: OracleStateAdapter>(
         }
         Effect::Tap { object } => set_tapped(state, object, context, true),
         Effect::Untap { object } => set_tapped(state, object, context, false),
+        Effect::RemoveFromCombat { object } => {
+            let objects = resolve_objects(state, object, context)?;
+            if objects.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "remove-from-combat has no physical object",
+                ));
+            }
+            for id in objects {
+                let mut candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                candidate.attacking = false;
+                candidate.blocking = false;
+                state
+                    .put_object(candidate)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("remove_from_combat:{id}"));
+            }
+            Ok(())
+        }
+        Effect::Exert { object } => {
+            let object_identities = resolve_objects(state, object, context)?;
+            let [exerted] = object_identities.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "exert requires exactly one physical object",
+                ));
+            };
+            let order = state.next_order();
+            state.register_next_untap_prevention(NextUntapPreventionRecord {
+                order,
+                source_identity: context.source,
+                object_identities: object_identities.clone(),
+            });
+            state.record_mutation(format!("exert:{}:{exerted}:{order}", context.actor));
+            Ok(())
+        }
+        Effect::PreventNextUntap { object } => {
+            let object_identities = resolve_objects(state, object, context)?;
+            if object_identities.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "next-untap prevention has no physical object",
+                ));
+            }
+            let order = state.next_order();
+            state.register_next_untap_prevention(NextUntapPreventionRecord {
+                order,
+                source_identity: context.source,
+                object_identities,
+            });
+            state.record_mutation(format!("register_next_untap:{}:{order}", context.source));
+            Ok(())
+        }
         Effect::Scry { player, amount } => {
             let amount = evaluate_amount(state, amount, context)?;
             for player in resolve_players(state, player, context)? {
@@ -5006,11 +8660,78 @@ fn apply_effect<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Effect::PutPlayerCounter {
+            player,
+            counter,
+            amount,
+        } => {
+            let amount = evaluate_amount(state, amount, context)?;
+            for player_id in resolve_players(state, player, context)? {
+                let mut player_state = state
+                    .player(player_id)
+                    .ok_or(ExecutionError::MissingPlayer(player_id))?;
+                let key = counter.to_ascii_lowercase();
+                let current = player_state.counters.get(&key).copied().unwrap_or(0);
+                player_state.counters.insert(
+                    key.clone(),
+                    current
+                        .checked_add(amount)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                );
+                state
+                    .put_player(player_state)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("player_counter:{player_id}:{key}:{amount}"));
+            }
+            Ok(())
+        }
         Effect::PutCounter {
             object,
             counter,
             amount,
         } => apply_put_counter(state, object, counter, amount, context),
+        Effect::RemoveCounter {
+            object,
+            counter,
+            amount,
+        } => apply_remove_counter(state, object, counter, amount, context),
+        Effect::MoveAllCounters { from, to } => {
+            let sources = resolve_objects(state, from, context)?;
+            let destinations = resolve_objects(state, to, context)?;
+            let ([source], [destination]) = (sources.as_slice(), destinations.as_slice()) else {
+                return Err(ExecutionError::InvalidAmount(
+                    "counter transfer requires one source and one destination",
+                ));
+            };
+            let mut source_object = state
+                .object(*source)
+                .ok_or(ExecutionError::MissingObject(*source))?;
+            let mut destination_object = state
+                .object(*destination)
+                .ok_or(ExecutionError::MissingObject(*destination))?;
+            for (counter, amount) in &source_object.counters {
+                let current = destination_object
+                    .counters
+                    .get(counter)
+                    .copied()
+                    .unwrap_or(0);
+                destination_object.counters.insert(
+                    counter.clone(),
+                    current
+                        .checked_add(*amount)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                );
+            }
+            source_object.counters.clear();
+            state
+                .put_object(source_object)
+                .map_err(ExecutionError::Adapter)?;
+            state
+                .put_object(destination_object)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("move_all_counters:{source}:{destination}"));
+            Ok(())
+        }
         Effect::ModifyPowerToughness(change) => {
             apply_power_toughness_change(state, change, context)
         }
@@ -5020,7 +8741,7 @@ fn apply_effect<S: OracleStateAdapter>(
             duration,
         } => {
             let ids = resolve_objects(state, objects, context)?;
-            if matches!(objects, ObjectRef::AttachmentTarget { .. }) {
+            if *duration != Duration::Permanent {
                 register_continuous_if_needed(
                     state,
                     context,
@@ -5050,7 +8771,7 @@ fn apply_effect<S: OracleStateAdapter>(
             duration,
         } => {
             let ids = resolve_objects(state, objects, context)?;
-            if matches!(objects, ObjectRef::AttachmentTarget { .. }) {
+            if *duration != Duration::Permanent {
                 register_continuous_if_needed(
                     state,
                     context,
@@ -5072,7 +8793,7 @@ fn apply_effect<S: OracleStateAdapter>(
         }
         Effect::LoseAllAbilities { object, duration } => {
             let ids = resolve_objects(state, object, context)?;
-            if matches!(object, ObjectRef::AttachmentTarget { .. }) {
+            if *duration != Duration::Permanent {
                 register_continuous_if_needed(
                     state,
                     context,
@@ -5096,9 +8817,132 @@ fn apply_effect<S: OracleStateAdapter>(
         Effect::SetCharacteristics(characteristics) => {
             apply_set_characteristics(state, characteristics, context)
         }
+        Effect::SetCreatureTypeToChoice { object, duration } => {
+            let chosen = context
+                .chosen_creature_type
+                .as_ref()
+                .filter(|chosen| !chosen.trim().is_empty())
+                .ok_or(ExecutionError::InvalidAmount(
+                    "chosen creature type is unavailable",
+                ))?
+                .trim()
+                .to_owned();
+            apply_set_characteristics(
+                state,
+                &SetCharacteristics {
+                    object: object.clone(),
+                    colors: None,
+                    card_types: None,
+                    subtypes: Some(vec![chosen]),
+                    name: None,
+                    base_power: None,
+                    base_toughness: None,
+                    retain_other_card_types: true,
+                    retain_other_subtypes: false,
+                    retain_other_colors: true,
+                    retain_other_names: true,
+                    duration: duration.clone(),
+                },
+                context,
+            )
+        }
+        Effect::SetColorToChoice { object, duration } => {
+            let chosen = context
+                .chosen_color
+                .ok_or(ExecutionError::InvalidAmount("chosen color is unavailable"))?;
+            apply_set_characteristics(
+                state,
+                &SetCharacteristics {
+                    object: object.clone(),
+                    colors: Some(vec![chosen]),
+                    card_types: None,
+                    subtypes: None,
+                    name: None,
+                    base_power: None,
+                    base_toughness: None,
+                    retain_other_card_types: true,
+                    retain_other_subtypes: true,
+                    retain_other_colors: false,
+                    retain_other_names: true,
+                    duration: duration.clone(),
+                },
+                context,
+            )
+        }
+        Effect::SetBasicLandTypeToChoice { object, duration } => {
+            let (subtype, color) = match context
+                .chosen_basic_land_type
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("plains") => ("Plains", Color::White),
+                Some("island") => ("Island", Color::Blue),
+                Some("swamp") => ("Swamp", Color::Black),
+                Some("mountain") => ("Mountain", Color::Red),
+                Some("forest") => ("Forest", Color::Green),
+                _ => {
+                    return Err(ExecutionError::InvalidAmount(
+                        "chosen basic land type is unavailable or illegal",
+                    ));
+                }
+            };
+            let objects = resolve_objects(state, object, context)?;
+            if objects.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "basic land type effect has no physical object",
+                ));
+            }
+            for object_id in objects {
+                let object_ref = ObjectRef::ObjectIdentity(object_id);
+                let mana_ability = GrantedAbility {
+                    costs: vec![Cost::Tap(ObjectRef::Source)],
+                    effects: vec![Effect::AddMana(ManaProduction {
+                        player: PlayerRef::ControllerOf(Box::new(ObjectRef::Source)),
+                        choices: vec![ManaChoice {
+                            symbols: vec![color],
+                        }],
+                        amount: Amount::Constant(1),
+                        commander_identity_only: false,
+                        scales_with: None,
+                        typed: None,
+                    })],
+                };
+                for derived in [
+                    Effect::LoseAllAbilities {
+                        object: object_ref.clone(),
+                        duration: duration.clone(),
+                    },
+                    Effect::SetCharacteristics(SetCharacteristics {
+                        object: object_ref.clone(),
+                        colors: None,
+                        card_types: None,
+                        subtypes: Some(vec![subtype.to_owned()]),
+                        name: None,
+                        base_power: None,
+                        base_toughness: None,
+                        retain_other_card_types: true,
+                        retain_other_subtypes: false,
+                        retain_other_colors: true,
+                        retain_other_names: true,
+                        duration: duration.clone(),
+                    }),
+                    Effect::GrantAbility {
+                        objects: object_ref,
+                        ability: mana_ability,
+                        duration: duration.clone(),
+                    },
+                ] {
+                    apply_effect(state, &derived, context)?;
+                }
+            }
+            Ok(())
+        }
         Effect::Restriction(restriction) => {
             let attachment_object = match restriction {
                 Restriction::DoesNotUntapDuring { object, .. }
+                | Restriction::DoesNotUntapDuringIf { object, .. }
                 | Restriction::ActivatedAbilitiesCannotBeActivated { object, .. }
                 | Restriction::MustAttackEachCombatIfAble { object, .. }
                 | Restriction::CannotAttack { object, .. }
@@ -5107,6 +8951,11 @@ fn apply_effect<S: OracleStateAdapter>(
                     if matches!(object, ObjectRef::AttachmentTarget { .. }) =>
                 {
                     Some(object)
+                }
+                Restriction::BlockerMustMatch { attacker, .. }
+                    if matches!(attacker, ObjectRef::AttachmentTarget { .. }) =>
+                {
+                    Some(attacker)
                 }
                 _ => None,
             };
@@ -5154,6 +9003,22 @@ fn apply_effect<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Effect::Prepare { object } => {
+            for id in resolve_objects(state, object, context)? {
+                let mut candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                if candidate.zone != Zone::Battlefield {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot become prepared outside the battlefield"
+                    )));
+                }
+                candidate.prepared = true;
+                state
+                    .put_object(candidate)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("prepare:{id}"));
+            }
+            Ok(())
+        }
         Effect::ResolveWard {
             payer,
             source,
@@ -5197,11 +9062,38 @@ fn apply_effect<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Effect::RevealTop { player, amount } => {
+            let amount = evaluate_amount(state, amount, context)? as usize;
+            for player in resolve_players(state, player, context)? {
+                let cards = state
+                    .player(player)
+                    .ok_or(ExecutionError::MissingPlayer(player))?
+                    .library
+                    .into_iter()
+                    .take(amount)
+                    .collect::<Vec<_>>();
+                for card in &cards {
+                    let order = state.next_order();
+                    state.register_revealed_card(RevealedCardRecord {
+                        order,
+                        source_identity: context.source,
+                        player,
+                        card: *card,
+                        as_additional_cost: false,
+                    });
+                    state.record_mutation(format!("reveal_card:{player}:{card}:{order}"));
+                }
+                set_looked_at(state, player, cards)?;
+            }
+            Ok(())
+        }
         Effect::SelectFromLookedAt {
             player,
             amount,
             predicate,
             reveal,
+            face_down,
+            tapped,
             destination,
         } => {
             let amount = evaluate_amount(state, amount, context)? as usize;
@@ -5212,6 +9104,8 @@ fn apply_effect<S: OracleStateAdapter>(
                     amount,
                     predicate,
                     *reveal,
+                    *face_down,
+                    *tapped,
                     *destination,
                     context,
                 )?;
@@ -5220,7 +9114,32 @@ fn apply_effect<S: OracleStateAdapter>(
         }
         Effect::PutRestOnLibraryBottom { player, order } => {
             for player in resolve_players(state, player, context)? {
-                put_rest_on_bottom(state, player, *order)?;
+                put_rest_on_bottom(state, player, *order, context)?;
+            }
+            Ok(())
+        }
+        Effect::PutRestOfLookedAt {
+            player,
+            destination,
+        } => {
+            for player in resolve_players(state, player, context)? {
+                let cards = state.looked_at(player);
+                for card in &cards {
+                    state
+                        .move_object(*card, *destination)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                state.put_looked_at(player, Vec::new());
+                state.record_mutation(format!(
+                    "put_rest_looked_at:{player}:{destination:?}:{}",
+                    cards.len()
+                ));
+            }
+            Ok(())
+        }
+        Effect::ReorderLookedAtOnLibraryTop { player } => {
+            for player in resolve_players(state, player, context)? {
+                reorder_looked_at_on_top(state, player, context)?;
             }
             Ok(())
         }
@@ -5309,6 +9228,32 @@ fn apply_effect<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Effect::ChangeControlUntil {
+            object,
+            controller,
+            duration,
+        } => {
+            let objects = resolve_objects(state, object, context)?;
+            if objects.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "temporary control effect has no physical object",
+                ));
+            }
+            for object in objects {
+                register_continuous_effect(
+                    state,
+                    context,
+                    vec![object],
+                    Effect::ChangeControlUntil {
+                        object: ObjectRef::ObjectIdentity(object),
+                        controller: controller.clone(),
+                        duration: duration.clone(),
+                    },
+                    duration.clone(),
+                );
+            }
+            Ok(())
+        }
         Effect::SkipStep { player, step } => {
             for player in resolve_players(state, player, context)? {
                 let order = state.next_order();
@@ -5359,16 +9304,101 @@ fn apply_effect<S: OracleStateAdapter>(
                 mana: mana.clone(),
                 per: per.clone(),
                 maximum_reduction: maximum_reduction.clone(),
+                condition: None,
             });
             state.record_mutation(format!("spell_reduction:{}:{order}", context.source));
             Ok(())
         }
+        Effect::ReduceSpellCostWhen {
+            object,
+            mana,
+            condition,
+        } => {
+            let order = state.next_order();
+            state.register_spell_reduction(SpellReductionRecord {
+                order,
+                source_identity: context.source,
+                object: object.clone(),
+                mana: mana.clone(),
+                per: CountExpression::Constant(1),
+                maximum_reduction: None,
+                condition: Some(condition.clone()),
+            });
+            state.record_mutation(format!(
+                "conditional_spell_reduction:{}:{order}",
+                context.source
+            ));
+            Ok(())
+        }
+        Effect::IncreaseSpellCost { object, mana, per } => {
+            let order = state.next_order();
+            state.register_spell_increase(SpellIncreaseRecord {
+                order,
+                source_identity: context.source,
+                object: object.clone(),
+                mana: mana.clone(),
+                per: per.clone(),
+            });
+            state.record_mutation(format!("spell_increase:{}:{order}", context.source));
+            Ok(())
+        }
         Effect::ChooseMode { count } => {
-            if !choice_count_matches(count, &context.selected_modes) {
+            if !choice_count_matches(count, &context.selected_modes, context) {
                 return Err(ExecutionError::InvalidAmount("mode choice is illegal"));
             }
             state.record_mutation(format!(
                 "choose_mode:{}:{:?}",
+                context.source, context.selected_modes
+            ));
+            Ok(())
+        }
+        Effect::ChooseModeBy { chooser, count } => {
+            if !choice_count_matches(count, &context.selected_modes, context) {
+                return Err(ExecutionError::InvalidAmount("mode choice is illegal"));
+            }
+            let selected_chooser = context
+                .selected_mode_chooser
+                .ok_or(ExecutionError::InvalidAmount("mode chooser is missing"))?;
+            if !resolve_players(state, chooser, context)?.contains(&selected_chooser) {
+                return Err(ExecutionError::InvalidAmount("mode chooser is illegal"));
+            }
+            state.record_mutation(format!(
+                "choose_mode_by:{}:{selected_chooser}:{:?}",
+                context.source, context.selected_modes
+            ));
+            Ok(())
+        }
+        Effect::ChooseModeNotPreviouslyChosen { count } => {
+            if !choice_count_matches(count, &context.selected_modes, context)
+                || context
+                    .selected_modes
+                    .iter()
+                    .any(|mode| context.previously_selected_modes.contains(mode))
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "mode was already chosen or the choice count is illegal",
+                ));
+            }
+            state.record_mutation(format!(
+                "choose_new_mode:{}:{:?}",
+                context.source, context.selected_modes
+            ));
+            Ok(())
+        }
+        Effect::ChooseModeFrom {
+            count,
+            option_count,
+        } => {
+            if !choice_count_matches(count, &context.selected_modes, context)
+                || context
+                    .selected_modes
+                    .iter()
+                    .any(|mode| *mode >= *option_count)
+            {
+                return Err(ExecutionError::InvalidAmount("mode choice is illegal"));
+            }
+            state.record_mutation(format!(
+                "choose_mode_from:{}:{option_count}:{:?}",
                 context.source, context.selected_modes
             ));
             Ok(())
@@ -5591,6 +9621,70 @@ fn apply_library_procedure<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<(), ExecutionError> {
     match procedure {
+        LibraryProcedure::ShuffleGraveyardIntoLibrary { player } => {
+            for player in resolve_players(state, player, context)? {
+                let cards = state
+                    .object_ids()
+                    .into_iter()
+                    .filter(|id| {
+                        state.object(*id).is_some_and(|object| {
+                            object.zone == Zone::Graveyard && object.owner == player
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                for card in cards {
+                    state
+                        .move_object(card, Zone::Library)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                deterministic_shuffle(state, player, context.replay_seed)?;
+            }
+            Ok(())
+        }
+        LibraryProcedure::ShuffleHandIntoLibraryAndDrawSame { player } => {
+            for player in resolve_players(state, player, context)? {
+                let hand = state
+                    .object_ids()
+                    .into_iter()
+                    .filter_map(|id| state.object(id))
+                    .filter(|object| object.zone == Zone::Hand && object.owner == player)
+                    .map(|object| object.id)
+                    .collect::<Vec<_>>();
+                let draw = u32::try_from(hand.len())
+                    .map_err(|_| ExecutionError::InvalidAmount("hand size overflow"))?;
+                for card in hand {
+                    state
+                        .move_object(card, Zone::Library)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                deterministic_shuffle(state, player, context.replay_seed)?;
+                draw_cards(state, player, draw)?;
+            }
+            Ok(())
+        }
+        LibraryProcedure::ShuffleHandAndGraveyardIntoLibraryAndDraw { player, amount } => {
+            let draw = evaluate_amount(state, amount, context)?;
+            for player in resolve_players(state, player, context)? {
+                let cards = state
+                    .object_ids()
+                    .into_iter()
+                    .filter_map(|id| state.object(id))
+                    .filter(|object| {
+                        object.owner == player
+                            && matches!(object.zone, Zone::Hand | Zone::Graveyard)
+                    })
+                    .map(|object| object.id)
+                    .collect::<Vec<_>>();
+                for card in cards {
+                    state
+                        .move_object(card, Zone::Library)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                deterministic_shuffle(state, player, context.replay_seed)?;
+                draw_cards(state, player, draw)?;
+            }
+            Ok(())
+        }
         LibraryProcedure::DiscardHandsAndDraw { player, amount } => {
             let amount = evaluate_amount(state, amount, context)?;
             for player in resolve_players(state, player, context)? {
@@ -5607,6 +9701,30 @@ fn apply_library_procedure<S: OracleStateAdapter>(
                         .map_err(ExecutionError::Adapter)?;
                 }
                 draw_cards(state, player, amount)?;
+            }
+            Ok(())
+        }
+        LibraryProcedure::DiscardHandsAndDrawDiscarded { player, adjustment } => {
+            for player in resolve_players(state, player, context)? {
+                let hand = state
+                    .object_ids()
+                    .into_iter()
+                    .filter_map(|id| state.object(id))
+                    .filter(|object| object.zone == Zone::Hand && object.owner == player)
+                    .map(|object| object.id)
+                    .collect::<Vec<_>>();
+                let draw = i64::try_from(hand.len())
+                    .map_err(|_| ExecutionError::InvalidAmount("hand size overflow"))?
+                    .saturating_add(i64::from(*adjustment))
+                    .max(0);
+                let draw = u32::try_from(draw)
+                    .map_err(|_| ExecutionError::InvalidAmount("draw count overflow"))?;
+                for card in hand {
+                    state
+                        .move_object(card, Zone::Graveyard)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                draw_cards(state, player, draw)?;
             }
             Ok(())
         }
@@ -5661,13 +9779,16 @@ fn apply_library_procedure<S: OracleStateAdapter>(
                         .move_object(card, Zone::Exile)
                         .map_err(ExecutionError::Adapter)?;
                 }
-                while let Some(card) = state
-                    .player(player)
-                    .ok_or(ExecutionError::MissingPlayer(player))?
-                    .library
-                    .first()
-                    .copied()
-                {
+                loop {
+                    let Some(card) = state
+                        .player(player)
+                        .ok_or(ExecutionError::MissingPlayer(player))?
+                        .library
+                        .first()
+                        .copied()
+                    else {
+                        break;
+                    };
                     let named = state
                         .object(card)
                         .ok_or(ExecutionError::MissingObject(card))?
@@ -5688,13 +9809,16 @@ fn apply_library_procedure<S: OracleStateAdapter>(
         LibraryProcedure::ExileUntilAcceptedOrDuplicate { player } => {
             for player in resolve_players(state, player, context)? {
                 let mut seen = BTreeSet::new();
-                while let Some(card) = state
-                    .player(player)
-                    .ok_or(ExecutionError::MissingPlayer(player))?
-                    .library
-                    .first()
-                    .copied()
-                {
+                loop {
+                    let Some(card) = state
+                        .player(player)
+                        .ok_or(ExecutionError::MissingPlayer(player))?
+                        .library
+                        .first()
+                        .copied()
+                    else {
+                        break;
+                    };
                     let name = state
                         .object(card)
                         .ok_or(ExecutionError::MissingObject(card))?
@@ -5874,18 +9998,37 @@ fn apply_add_mana<S: OracleStateAdapter>(
                 &typed.composition,
                 amount,
                 &player_state.commander_identity,
+                state.chosen_color(context.source),
                 context.mana_production_choice.as_deref(),
             )?
         } else {
-            choose_mana_choice(
-                &production.choices,
-                production.commander_identity_only,
-                &player_state.commander_identity,
-            )
-            .map(|choice| choice.symbols.clone())
-            .ok_or(ExecutionError::InvalidAmount(
-                "mana production has no legal choice",
-            ))?
+            if let Some(requested) = context.mana_production_choice.as_deref() {
+                production
+                    .choices
+                    .iter()
+                    .find(|choice| {
+                        choice.symbols == requested
+                            && (!production.commander_identity_only
+                                || choice
+                                    .symbols
+                                    .iter()
+                                    .all(|color| player_state.commander_identity.contains(color)))
+                    })
+                    .map(|choice| choice.symbols.clone())
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "requested mana production choice is not legal",
+                    ))?
+            } else {
+                choose_mana_choice(
+                    &production.choices,
+                    production.commander_identity_only,
+                    &player_state.commander_identity,
+                )
+                .map(|choice| choice.symbols.clone())
+                .ok_or(ExecutionError::InvalidAmount(
+                    "mana production has no legal choice",
+                ))?
+            }
         };
         state
             .add_mana(player, &selected, amount)
@@ -5991,6 +10134,7 @@ fn choose_typed_mana_composition(
     composition: &TypedManaComposition,
     amount: u32,
     commander_identity: &[Color],
+    chosen_color: Option<Color>,
     requested: Option<&[Color]>,
 ) -> Result<Vec<Color>, ExecutionError> {
     let amount = usize::try_from(amount).map_err(|_| ExecutionError::ArithmeticOverflow)?;
@@ -6024,6 +10168,45 @@ fn choose_typed_mana_composition(
                     "typed mana production has no printed choice",
                 ))
         }
+        TypedManaComposition::Alternatives(alternatives) => {
+            if alternatives.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "typed mana production has no printed alternative",
+                ));
+            }
+            if let Some(requested) = requested {
+                return alternatives
+                    .iter()
+                    .find_map(|alternative| {
+                        choose_typed_mana_composition(
+                            alternative,
+                            amount as u32,
+                            commander_identity,
+                            chosen_color,
+                            Some(requested),
+                        )
+                        .ok()
+                    })
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "the requested mana choice is not one of the printed alternatives",
+                    ));
+            }
+            alternatives
+                .iter()
+                .find_map(|alternative| {
+                    choose_typed_mana_composition(
+                        alternative,
+                        amount as u32,
+                        commander_identity,
+                        chosen_color,
+                        None,
+                    )
+                    .ok()
+                })
+                .ok_or(ExecutionError::InvalidAmount(
+                    "no printed mana alternative is currently available",
+                ))
+        }
         TypedManaComposition::AnyOneColor => choose_repeated_mana_color(
             &[
                 Color::White,
@@ -6051,6 +10234,12 @@ fn choose_typed_mana_composition(
                 }
             }
             choose_repeated_mana_color(&allowed, amount, requested)
+        }
+        TypedManaComposition::Derived(TypedDerivedManaTypes::ChosenColor) => {
+            let chosen = chosen_color.ok_or(ExecutionError::InvalidAmount(
+                "chosen color is unavailable for mana production",
+            ))?;
+            choose_repeated_mana_color(&[chosen], amount, requested)
         }
         TypedManaComposition::Derived(_) => Err(ExecutionError::InvalidAmount(
             "typed mana composition requires unavailable derived mana types",
@@ -6313,6 +10502,36 @@ fn apply_zone_move<S: OracleStateAdapter>(
     Ok(())
 }
 
+fn apply_move_to_library_bottom<S: OracleStateAdapter>(
+    state: &mut S,
+    object: &ObjectRef,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let objects = resolve_objects(state, object, context)?;
+    if objects.is_empty() {
+        return Err(ExecutionError::InvalidAmount(
+            "library-bottom move has no physical object",
+        ));
+    }
+    for id in objects {
+        let owner = state
+            .object(id)
+            .ok_or(ExecutionError::MissingObject(id))?
+            .owner;
+        state
+            .move_object(id, Zone::Library)
+            .map_err(ExecutionError::Adapter)?;
+        let mut player = state
+            .player(owner)
+            .ok_or(ExecutionError::MissingPlayer(owner))?;
+        player.library.retain(|candidate| *candidate != id);
+        player.library.push(id);
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+        state.record_mutation(format!("library_bottom:{owner}:{id}"));
+    }
+    Ok(())
+}
+
 fn resolve_object_selection<S: OracleStateAdapter>(
     state: &S,
     selection: &ObjectSelection,
@@ -6338,6 +10557,7 @@ fn resolve_object_selection<S: OracleStateAdapter>(
     let valid_count = match selection.amount {
         TargetAmount::Exactly(amount) => selected.len() == usize::from(amount),
         TargetAmount::UpTo(amount) => selected.len() <= usize::from(amount),
+        TargetAmount::AnyNumber => true,
         TargetAmount::All => {
             let matching = matching_objects(state, &selection.filter, context)?
                 .into_iter()
@@ -6390,6 +10610,10 @@ fn apply_selected_tapped_state<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<(), ExecutionError> {
     for object in resolve_object_selection(state, selection, context)? {
+        if !tapped {
+            attempt_direct_untap(state, object)?;
+            continue;
+        }
         let mut selected = state
             .object(object)
             .ok_or(ExecutionError::MissingObject(object))?;
@@ -6410,6 +10634,12 @@ fn apply_enters_replacements<S: OracleStateAdapter>(
     let mut replacements = state.replacements();
     replacements.sort_by_key(|record| (record.order, record.source_identity));
     for record in replacements {
+        if !state
+            .object(record.source_identity)
+            .is_some_and(|source| source.zone == Zone::Battlefield)
+        {
+            continue;
+        }
         let mut local = context.clone();
         local.source = record.source_identity;
         match &record.effect {
@@ -6417,11 +10647,15 @@ fn apply_enters_replacements<S: OracleStateAdapter>(
                 if resolve_objects(state, &replacement.object, &local)?
                     .contains(&entering_object) =>
             {
+                let applies = match &replacement.when {
+                    Some(condition) => condition_holds(state, condition, &local)?,
+                    None => true,
+                };
                 let exempt = match &replacement.unless {
                     Some(condition) => condition_holds(state, condition, &local)?,
                     None => false,
                 };
-                if !exempt {
+                if applies && !exempt {
                     let mut candidate = state
                         .object(entering_object)
                         .ok_or(ExecutionError::MissingObject(entering_object))?;
@@ -6446,9 +10680,32 @@ fn apply_enters_replacements<S: OracleStateAdapter>(
                 ));
             }
             ReplacementEffect::MultiplyEvent { .. }
+            | ReplacementEffect::IncreaseEvent { .. }
             | ReplacementEffect::ConditionalTokenSubstitution { .. }
             | ReplacementEffect::EntersTapped(_)
             | ReplacementEffect::EnterAsCopy(_) => {}
+        }
+    }
+    for record in sorted_restrictions(state) {
+        let Restriction::EntersUntapped { objects, duration } = &record.restriction else {
+            continue;
+        };
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+            && object_matches_filter(state, entering_object, objects, &local)?
+        {
+            let mut candidate = state
+                .object(entering_object)
+                .ok_or(ExecutionError::MissingObject(entering_object))?;
+            candidate.tapped = false;
+            state
+                .put_object(candidate)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "restriction:{}:enters_untapped:{entering_object}",
+                record.order
+            ));
         }
     }
     Ok(())
@@ -6598,56 +10855,71 @@ fn apply_create_token<S: OracleStateAdapter>(
     let base_amount = evaluate_amount(state, &creation.amount, context)?;
     let mut created = Vec::new();
     for player in players {
-        let (amount, specification) =
-            replace_token_event(state, player, base_amount, &creation.specification, context)?;
-        for _ in 0..amount {
-            let id = match &specification {
-                TokenSpecification::Defined(definition) => {
-                    insert_defined_token(state, player, definition, context)?
+        let events = match &creation.specification {
+            TokenSpecification::CopyOf(original) => {
+                let originals = resolve_objects(state, original, context)?;
+                if originals.is_empty() {
+                    return Err(ExecutionError::InvalidAmount("copy token has no original"));
                 }
-                TokenSpecification::CopyOf(original) => {
-                    let originals = resolve_objects(state, original, context)?;
-                    let original = *originals
-                        .first()
-                        .ok_or(ExecutionError::InvalidAmount("copy token has no original"))?;
-                    insert_copy_token(state, player, original)?
-                }
-                TokenSpecification::ManifestedCard(card) => {
-                    let cards = resolve_objects(state, card, context)?;
-                    let original = *cards
-                        .first()
-                        .ok_or(ExecutionError::InvalidAmount("manifest token has no card"))?;
-                    let mut token = state
-                        .object(original)
-                        .ok_or(ExecutionError::MissingObject(original))?;
-                    let id = state.allocate_object_id();
-                    token.id = id;
-                    token.origin_id = id;
-                    token.copy_of = Some(original);
-                    token.owner = player;
-                    token.controller = player;
-                    token.zone = Zone::Battlefield;
-                    token.token = true;
-                    token.face_down = true;
-                    token.front.card_types = vec![CardType::Creature];
-                    token.front.power = 2;
-                    token.front.toughness = 2;
-                    token.back = None;
-                    state
-                        .insert_physical_object(token)
-                        .map_err(ExecutionError::Adapter)?;
-                    id
-                }
-            };
-            if creation.tapped || creation.attacking {
-                let mut token = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
-                token.tapped = creation.tapped;
-                token.attacking = creation.attacking;
-                state.put_object(token).map_err(ExecutionError::Adapter)?;
+                originals
+                    .into_iter()
+                    .map(|original| TokenSpecification::CopyOf(ObjectRef::ObjectIdentity(original)))
+                    .collect::<Vec<_>>()
             }
-            apply_enters_replacements(state, id, context)?;
-            created.push(id);
-            state.record_mutation(format!("token:{player}:{id}"));
+            specification => vec![specification.clone()],
+        };
+        for event in events {
+            let (amount, specification) =
+                replace_token_event(state, player, base_amount, &event, context)?;
+            for _ in 0..amount {
+                let id = match &specification {
+                    TokenSpecification::Defined(definition) => {
+                        insert_defined_token(state, player, definition, context)?
+                    }
+                    TokenSpecification::CopyOf(original) => {
+                        let originals = resolve_objects(state, original, context)?;
+                        let original = *originals
+                            .first()
+                            .ok_or(ExecutionError::InvalidAmount("copy token has no original"))?;
+                        insert_copy_token(state, player, original)?
+                    }
+                    TokenSpecification::ManifestedCard(card) => {
+                        let cards = resolve_objects(state, card, context)?;
+                        let original = *cards
+                            .first()
+                            .ok_or(ExecutionError::InvalidAmount("manifest token has no card"))?;
+                        let mut token = state
+                            .object(original)
+                            .ok_or(ExecutionError::MissingObject(original))?;
+                        let id = state.allocate_object_id();
+                        token.id = id;
+                        token.origin_id = id;
+                        token.copy_of = Some(original);
+                        token.owner = player;
+                        token.controller = player;
+                        token.zone = Zone::Battlefield;
+                        token.token = true;
+                        token.face_down = true;
+                        token.front.card_types = vec![CardType::Creature];
+                        token.front.power = 2;
+                        token.front.toughness = 2;
+                        token.back = None;
+                        state
+                            .insert_physical_object(token)
+                            .map_err(ExecutionError::Adapter)?;
+                        id
+                    }
+                };
+                if creation.tapped || creation.attacking {
+                    let mut token = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                    token.tapped = creation.tapped;
+                    token.attacking = creation.attacking;
+                    state.put_object(token).map_err(ExecutionError::Adapter)?;
+                }
+                apply_enters_replacements(state, id, context)?;
+                created.push(id);
+                state.record_mutation(format!("token:{player}:{id}"));
+            }
         }
     }
     Ok(created)
@@ -6682,6 +10954,7 @@ fn replace_token_event<S: OracleStateAdapter>(
                         .ok_or(ExecutionError::ArithmeticOverflow)?;
                 }
             }
+            ReplacementEffect::IncreaseEvent { .. } => {}
             ReplacementEffect::ConditionalTokenSubstitution {
                 condition,
                 ordinary,
@@ -6730,9 +11003,19 @@ fn insert_defined_token<S: OracleStateAdapter>(
         token: true,
         tapped: false,
         attacking: false,
+        blocking: false,
         prepared: false,
         face_down: false,
         active_face: 0,
+        class_level: if definition
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Class"))
+        {
+            1
+        } else {
+            0
+        },
         front: ObjectCharacteristics {
             names: definition.name.iter().cloned().collect(),
             card_types: definition.card_types.clone(),
@@ -6772,6 +11055,7 @@ fn insert_copy_token<S: OracleStateAdapter>(
     object.token = true;
     object.tapped = false;
     object.attacking = false;
+    object.blocking = false;
     object.counters.clear();
     state
         .insert_physical_object(object)
@@ -6798,6 +11082,50 @@ fn draw_cards<S: OracleStateAdapter>(
             .move_object(card, Zone::Hand)
             .map_err(ExecutionError::Adapter)?;
         state.record_mutation(format!("draw:{player}:{card}"));
+    }
+    Ok(())
+}
+
+fn apply_connive<S: OracleStateAdapter>(
+    state: &mut S,
+    object: &ObjectRef,
+    discard: &ObjectSelection,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let players = resolve_players(state, &discard.chooser, context)?;
+    let [player] = players.as_slice() else {
+        return Err(ExecutionError::Adapter(
+            "connive requires exactly one object's controller".to_owned(),
+        ));
+    };
+    draw_cards(state, *player, 1)?;
+
+    let selected = resolve_object_selection(state, discard, context)?;
+    let [discarded] = selected.as_slice() else {
+        return Err(ExecutionError::InvalidAmount(
+            "connive must discard exactly one card",
+        ));
+    };
+    let discarded_card = state
+        .object(*discarded)
+        .ok_or(ExecutionError::MissingObject(*discarded))?;
+    let discarded_nonland = !discarded_card
+        .characteristics()
+        .card_types
+        .contains(&CardType::Land);
+    state
+        .move_object(*discarded, Zone::Graveyard)
+        .map_err(ExecutionError::Adapter)?;
+    state.record_mutation(format!("connive_discard:{player}:{discarded}"));
+
+    if discarded_nonland {
+        apply_put_counter(
+            state,
+            object,
+            &CounterKind::PlusOnePlusOne,
+            &Amount::Constant(1),
+            context,
+        )?;
     }
     Ok(())
 }
@@ -6863,6 +11191,10 @@ fn set_tapped<S: OracleStateAdapter>(
         ));
     }
     for id in objects {
+        if !tapped {
+            attempt_direct_untap(state, id)?;
+            continue;
+        }
         let mut object = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
         if object.zone != Zone::Battlefield {
             return Err(ExecutionError::Adapter(format!(
@@ -6874,6 +11206,33 @@ fn set_tapped<S: OracleStateAdapter>(
         state.record_mutation(format!("set_tapped:{id}:{tapped}"));
     }
     Ok(())
+}
+
+fn attempt_direct_untap<S: OracleStateAdapter>(
+    state: &mut S,
+    id: ObjectId,
+) -> Result<bool, ExecutionError> {
+    let mut object = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+    if object.zone != Zone::Battlefield {
+        return Err(ExecutionError::Adapter(format!(
+            "object {id} is not on the battlefield"
+        )));
+    }
+    let stun_counters = object.counters.get("stun").copied().unwrap_or(0);
+    if stun_counters > 0 {
+        if stun_counters == 1 {
+            object.counters.remove("stun");
+        } else {
+            object.counters.insert("stun".to_owned(), stun_counters - 1);
+        }
+        state.put_object(object).map_err(ExecutionError::Adapter)?;
+        state.record_mutation(format!("consume_stun_counter:{id}"));
+        return Ok(false);
+    }
+    object.tapped = false;
+    state.put_object(object).map_err(ExecutionError::Adapter)?;
+    state.record_mutation(format!("set_tapped:{id}:false"));
+    Ok(true)
 }
 
 fn scry<S: OracleStateAdapter>(
@@ -7036,20 +11395,41 @@ fn apply_put_counter<S: OracleStateAdapter>(
                 .checked_add(resolved)
                 .ok_or(ExecutionError::ArithmeticOverflow)?,
         );
-        if *counter == CounterKind::PlusOnePlusOne {
-            object.characteristics_mut().power = object
-                .characteristics()
-                .power
-                .checked_add(i64::from(resolved))
-                .ok_or(ExecutionError::ArithmeticOverflow)?;
-            object.characteristics_mut().toughness = object
-                .characteristics()
-                .toughness
-                .checked_add(i64::from(resolved))
-                .ok_or(ExecutionError::ArithmeticOverflow)?;
-        }
+        apply_counter_stat_delta(&mut object, counter, i64::from(resolved))?;
         state.put_object(object).map_err(ExecutionError::Adapter)?;
         state.record_mutation(format!("counter:{id}:{key}:{resolved}"));
+    }
+    Ok(())
+}
+
+fn apply_remove_counter<S: OracleStateAdapter>(
+    state: &mut S,
+    reference: &ObjectRef,
+    counter: &CounterKind,
+    amount: &Amount,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let requested = evaluate_amount(state, amount, context)?;
+    let objects = resolve_objects(state, reference, context)?;
+    if objects.is_empty() {
+        return Err(ExecutionError::InvalidAmount(
+            "counter removal has no object",
+        ));
+    }
+    for id in objects {
+        let mut object = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+        let key = counter_key(counter);
+        let current = object.counters.get(&key).copied().unwrap_or(0);
+        let removed = current.min(requested);
+        let remaining = current - removed;
+        if remaining == 0 {
+            object.counters.remove(&key);
+        } else {
+            object.counters.insert(key.clone(), remaining);
+        }
+        apply_counter_stat_delta(&mut object, counter, -i64::from(removed))?;
+        state.put_object(object).map_err(ExecutionError::Adapter)?;
+        state.record_mutation(format!("remove_counter:{id}:{key}:{removed}"));
     }
     Ok(())
 }
@@ -7064,9 +11444,6 @@ fn replace_counter_event<S: OracleStateAdapter>(
     let mut replacements = state.replacements();
     replacements.sort_by_key(|record| (record.order, record.source_identity));
     for record in replacements {
-        let ReplacementEffect::MultiplyEvent { event, multiplier } = &record.effect else {
-            continue;
-        };
         let mut local = context.clone();
         local.source = record.source_identity;
         let occurrence = ReplacementOccurrence {
@@ -7078,18 +11455,54 @@ fn replace_counter_event<S: OracleStateAdapter>(
             affected_player: state.object(object).map(|candidate| candidate.controller),
             object: Some(object),
         };
-        if replacement_event_matches(state, event, &occurrence, &local) {
-            amount = amount
-                .checked_mul(u32::from(*multiplier))
-                .ok_or(ExecutionError::ArithmeticOverflow)?;
+        match &record.effect {
+            ReplacementEffect::MultiplyEvent { event, multiplier }
+                if replacement_event_matches(state, event, &occurrence, &local) =>
+            {
+                amount = amount
+                    .checked_mul(u32::from(*multiplier))
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+            ReplacementEffect::IncreaseEvent { event, addend }
+                if replacement_event_matches(state, event, &occurrence, &local) =>
+            {
+                amount = amount
+                    .checked_add(u32::from(*addend))
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+            _ => {}
         }
     }
     Ok(amount)
 }
 
+fn apply_counter_stat_delta(
+    object: &mut PhysicalObject,
+    counter: &CounterKind,
+    counter_delta: i64,
+) -> Result<(), ExecutionError> {
+    let stat_delta = match counter {
+        CounterKind::PlusOnePlusOne => counter_delta,
+        CounterKind::MinusOneMinusOne => -counter_delta,
+        CounterKind::Loyalty | CounterKind::Indestructible | CounterKind::Named(_) => return Ok(()),
+    };
+    object.characteristics_mut().power = object
+        .characteristics()
+        .power
+        .checked_add(stat_delta)
+        .ok_or(ExecutionError::ArithmeticOverflow)?;
+    object.characteristics_mut().toughness = object
+        .characteristics()
+        .toughness
+        .checked_add(stat_delta)
+        .ok_or(ExecutionError::ArithmeticOverflow)?;
+    Ok(())
+}
+
 fn counter_key(counter: &CounterKind) -> String {
     match counter {
         CounterKind::PlusOnePlusOne => "+1/+1".to_owned(),
+        CounterKind::MinusOneMinusOne => "-1/-1".to_owned(),
         CounterKind::Loyalty => "loyalty".to_owned(),
         CounterKind::Indestructible => "indestructible".to_owned(),
         CounterKind::Named(name) => name.to_ascii_lowercase(),
@@ -7101,19 +11514,34 @@ fn apply_power_toughness_change<S: OracleStateAdapter>(
     change: &PowerToughnessChange,
     context: &ExecutionContext,
 ) -> Result<(), ExecutionError> {
-    let power = i64::from(evaluate_amount(state, &change.power, context)?);
-    let toughness = i64::from(evaluate_amount(state, &change.toughness, context)?);
     let objects = resolve_objects(state, &change.objects, context)?;
-    if matches!(change.objects, ObjectRef::AttachmentTarget { .. }) {
-        register_continuous_if_needed(
+    if change.duration != Duration::Permanent {
+        let registered = if matches!(
+            change.duration,
+            Duration::ThisTurn
+                | Duration::UntilEndOfTurn
+                | Duration::BeginningOfNextEndStep
+                | Duration::BeginningOfNextTurnUpkeep
+        ) {
+            let mut frozen = change.clone();
+            frozen.power = Amount::Constant(evaluate_amount(state, &change.power, context)?);
+            frozen.toughness =
+                Amount::Constant(evaluate_amount(state, &change.toughness, context)?);
+            frozen
+        } else {
+            change.clone()
+        };
+        register_continuous_effect(
             state,
             context,
             objects,
-            Effect::ModifyPowerToughness(change.clone()),
+            Effect::ModifyPowerToughness(registered),
             change.duration.clone(),
         );
         return Ok(());
     }
+    let power = i64::from(evaluate_amount(state, &change.power, context)?);
+    let toughness = i64::from(evaluate_amount(state, &change.toughness, context)?);
     for id in &objects {
         let mut object = state
             .object(*id)
@@ -7126,13 +11554,6 @@ fn apply_power_toughness_change<S: OracleStateAdapter>(
         )?;
         state.put_object(object).map_err(ExecutionError::Adapter)?;
     }
-    register_continuous_if_needed(
-        state,
-        context,
-        objects,
-        Effect::ModifyPowerToughness(change.clone()),
-        change.duration.clone(),
-    );
     Ok(())
 }
 
@@ -7187,6 +11608,8 @@ fn apply_power_toughness_operation(
             characteristics.power = power;
             characteristics.toughness = toughness;
         }
+        PowerToughnessOperation::SetPower => characteristics.power = power,
+        PowerToughnessOperation::SetToughness => characteristics.toughness = toughness,
         PowerToughnessOperation::Double => {
             characteristics.power = characteristics
                 .power
@@ -7196,6 +11619,9 @@ fn apply_power_toughness_operation(
                 .toughness
                 .checked_mul(2)
                 .ok_or(ExecutionError::ArithmeticOverflow)?;
+        }
+        PowerToughnessOperation::Switch => {
+            std::mem::swap(&mut characteristics.power, &mut characteristics.toughness);
         }
     }
     Ok(())
@@ -7207,7 +11633,7 @@ fn apply_set_characteristics<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<(), ExecutionError> {
     let objects = resolve_objects(state, &change.object, context)?;
-    if matches!(change.object, ObjectRef::AttachmentTarget { .. }) {
+    if change.duration != Duration::Permanent {
         register_continuous_if_needed(
             state,
             context,
@@ -7505,16 +11931,31 @@ fn select_from_looked_at<S: OracleStateAdapter>(
     amount: usize,
     predicate: &ObjectFilter,
     reveal: bool,
+    face_down: bool,
+    tapped: bool,
     destination: Zone,
     context: &ExecutionContext,
 ) -> Result<(), ExecutionError> {
     let looked = state.looked_at(player);
-    let selected = looked
-        .iter()
-        .copied()
-        .filter(|id| object_matches_filter(state, *id, predicate, context).unwrap_or(false))
-        .take(amount)
-        .collect::<Vec<_>>();
+    let selected = if amount == 1
+        && let Some(chosen) = context.accepted_library_card
+    {
+        if !looked.contains(&chosen)
+            || !object_matches_filter(state, chosen, predicate, context).unwrap_or(false)
+        {
+            return Err(ExecutionError::Adapter(
+                "chosen looked-at card must be present and match the predicate".to_owned(),
+            ));
+        }
+        vec![chosen]
+    } else {
+        looked
+            .iter()
+            .copied()
+            .filter(|id| object_matches_filter(state, *id, predicate, context).unwrap_or(false))
+            .take(amount)
+            .collect::<Vec<_>>()
+    };
     if selected.len() < amount {
         return Err(ExecutionError::Adapter(format!(
             "looked at selection found {} of {amount} cards",
@@ -7525,8 +11966,22 @@ fn select_from_looked_at<S: OracleStateAdapter>(
         state
             .move_object(*id, destination)
             .map_err(ExecutionError::Adapter)?;
+        if face_down {
+            let mut object = state
+                .object(*id)
+                .ok_or(ExecutionError::MissingObject(*id))?;
+            object.face_down = true;
+            state.put_object(object).map_err(ExecutionError::Adapter)?;
+        }
+        if tapped {
+            let mut object = state
+                .object(*id)
+                .ok_or(ExecutionError::MissingObject(*id))?;
+            object.tapped = true;
+            state.put_object(object).map_err(ExecutionError::Adapter)?;
+        }
         state.record_mutation(format!(
-            "select_looked:{player}:{id}:{destination:?}:{reveal}"
+            "select_looked:{player}:{id}:{destination:?}:{reveal}:{face_down}:{tapped}"
         ));
     }
     state.put_looked_at(
@@ -7543,10 +11998,14 @@ fn put_rest_on_bottom<S: OracleStateAdapter>(
     state: &mut S,
     player: PlayerId,
     order: BottomOrder,
+    context: &ExecutionContext,
 ) -> Result<(), ExecutionError> {
     let mut rest = state.looked_at(player);
     match order {
         BottomOrder::AnyOrder => rest.sort_unstable(),
+        BottomOrder::ReplaySeededRandom => {
+            rest.sort_by_key(|id| mix64(context.replay_seed ^ *id ^ u64::from(player)));
+        }
     }
     let mut player_state = state
         .player(player)
@@ -7558,6 +12017,59 @@ fn put_rest_on_bottom<S: OracleStateAdapter>(
         .map_err(ExecutionError::Adapter)?;
     state.put_looked_at(player, Vec::new());
     state.record_mutation(format!("bottom:{player}:{}", rest.len()));
+    Ok(())
+}
+
+fn reorder_looked_at_on_top<S: OracleStateAdapter>(
+    state: &mut S,
+    player: PlayerId,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let looked = state.looked_at(player);
+    let ordered = if let Some(choice) = context.library_choices.get(&player) {
+        if !choice.move_away.is_empty() {
+            return Err(ExecutionError::Adapter(
+                "top-card reordering cannot move an examined card away".to_owned(),
+            ));
+        }
+        let chosen = choice.keep_on_top.clone();
+        let chosen_set = chosen.iter().copied().collect::<BTreeSet<_>>();
+        let looked_set = looked.iter().copied().collect::<BTreeSet<_>>();
+        if chosen.len() != looked.len()
+            || chosen_set.len() != chosen.len()
+            || chosen_set != looked_set
+        {
+            return Err(ExecutionError::Adapter(
+                "top-card order must contain every examined card exactly once".to_owned(),
+            ));
+        }
+        chosen
+    } else {
+        looked.clone()
+    };
+
+    let mut player_state = state
+        .player(player)
+        .ok_or(ExecutionError::MissingPlayer(player))?;
+    let prefix = player_state
+        .library
+        .iter()
+        .take(looked.len())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if prefix != looked.iter().copied().collect::<BTreeSet<_>>() {
+        return Err(ExecutionError::Adapter(
+            "examined cards are no longer the top cards of the library".to_owned(),
+        ));
+    }
+    let mut library = ordered;
+    library.extend(player_state.library.iter().skip(looked.len()).copied());
+    player_state.library = library;
+    state
+        .put_player(player_state)
+        .map_err(ExecutionError::Adapter)?;
+    state.put_looked_at(player, Vec::new());
+    state.record_mutation(format!("reorder_top:{player}:{}", looked.len()));
     Ok(())
 }
 

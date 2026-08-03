@@ -739,7 +739,9 @@ fn compile_reviewed_wrapper(
     instruction: &str,
     source_type_line: &str,
 ) -> Option<BoundedOracleClause> {
-    let offset = normalized_clause.rfind(body)?;
+    let Some(offset) = normalized_clause.rfind(body) else {
+        return None;
+    };
     if !body.starts_with(instruction) {
         return None;
     }

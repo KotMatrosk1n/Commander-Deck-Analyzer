@@ -1066,7 +1066,7 @@ pub enum LegalityStatus {
     Unproven,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ObjectCharacteristics {
     pub card_types: BTreeSet<CardType>,
     pub supertypes: BTreeSet<String>,

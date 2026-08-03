@@ -2259,6 +2259,8 @@ pub fn move_merged_permanent_from_battlefield(
         let expected_destination =
             if commander_hand_or_library && decision.commander_hand_or_library_replacement_chosen {
                 Some(Zone::Command)
+            } else if token {
+                Some(input.base_destination)
             } else {
                 Some(input.base_destination)
             };

@@ -17,7 +17,7 @@ use crate::bounded_oracle_runtime::{
     Trigger, TurnPlayer, WardCost, Zone, ZoneMove, compile_bounded_oracle_clause,
 };
 
-pub const MECHANIC_RUNTIME_VERSION: &str = "mechanic-runtime-0.4";
+pub const MECHANIC_RUNTIME_VERSION: &str = "mechanic-runtime-0.6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PrintedMechanic {
@@ -154,8 +154,6 @@ impl MechanicProgram {
     }
 }
 
-// Kept inline because this public mechanic contract is matched throughout production.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MechanicProcedure {
     AbilityWord(AbilityWordProcedure),
@@ -357,7 +355,13 @@ pub struct DashProcedure {
 pub struct GiftProcedure {
     pub promise_condition: Condition,
     pub recipient: PlayerRef,
-    pub token_creation: TokenCreation,
+    pub benefit: GiftBenefit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GiftBenefit {
+    Token(TokenCreation),
+    DrawCard { player: PlayerRef, amount: Amount },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1920,10 +1924,6 @@ fn compile_gift(
         |timing| matches!(timing, Timing::Triggered(trigger) if trigger.as_ref() == &Trigger::SourceCast),
         "source-cast gift procedure",
     )?;
-    let (reminder_token, reminder_tapped) = match clause.reminder() {
-        Some(ReminderSemantics::GiftProcedure { token, tapped }) => (token.as_ref(), *tapped),
-        _ => return Err(shape_error(&input, "exact Gift reminder procedure")),
-    };
     let [
         Effect::Conditional {
             condition: Condition::GiftPromised,
@@ -1937,31 +1937,53 @@ fn compile_gift(
             "gift-promised conditional token procedure",
         ));
     };
-    let [Effect::CreateToken(token_creation)] = if_true.as_slice() else {
-        return Err(shape_error(
-            &input,
-            "one exact token creation for the promised gift",
-        ));
-    };
-    let TokenSpecification::Defined(definition) = &token_creation.specification else {
-        return Err(shape_error(&input, "complete Gift token definition"));
-    };
-    if !if_false.is_empty()
-        || token_creation.player != PlayerRef::ThatPlayer
-        || token_creation.amount != Amount::Constant(1)
-        || definition.as_ref() != reminder_token
-        || token_creation.tapped != reminder_tapped
-        || token_creation.attacking
-    {
-        return Err(shape_error(
-            &input,
-            "matching gift recipient, amount, token, and tapped state",
-        ));
+    if !if_false.is_empty() {
+        return Err(shape_error(&input, "gift-declined no-op branch"));
     }
+    let benefit = match (clause.reminder(), if_true.as_slice()) {
+        (
+            Some(ReminderSemantics::GiftProcedure {
+                token: reminder_token,
+                tapped: reminder_tapped,
+            }),
+            [Effect::CreateToken(token_creation)],
+        ) => {
+            let TokenSpecification::Defined(definition) = &token_creation.specification else {
+                return Err(shape_error(&input, "complete Gift token definition"));
+            };
+            if token_creation.player != PlayerRef::ThatPlayer
+                || token_creation.amount != Amount::Constant(1)
+                || definition.as_ref() != reminder_token.as_ref()
+                || token_creation.tapped != *reminder_tapped
+                || token_creation.attacking
+            {
+                return Err(shape_error(
+                    &input,
+                    "matching gift recipient, amount, token, and tapped state",
+                ));
+            }
+            GiftBenefit::Token(token_creation.clone())
+        }
+        (
+            Some(ReminderSemantics::GiftCardProcedure),
+            [
+                Effect::Draw {
+                    player: PlayerRef::ThatPlayer,
+                    amount: Amount::Constant(1),
+                    optional: false,
+                    delayed_until: None,
+                },
+            ],
+        ) => GiftBenefit::DrawCard {
+            player: PlayerRef::ThatPlayer,
+            amount: Amount::Constant(1),
+        },
+        _ => return Err(shape_error(&input, "exact Gift reminder procedure")),
+    };
     let procedure = GiftProcedure {
         promise_condition: Condition::GiftPromised,
         recipient: PlayerRef::ThatPlayer,
-        token_creation: token_creation.clone(),
+        benefit,
     };
     Ok(program(
         &input,

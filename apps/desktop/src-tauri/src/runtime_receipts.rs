@@ -494,7 +494,21 @@ pub(crate) struct KeywordRulesOccurrenceEvidence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KeywordRulesAuthority {
+    RetainedKeywordMetadata,
     SelfDescribingOracleClause,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeywordRulesReceiptInput<'a> {
+    pub face_index: u16,
+    pub keyword_occurrence_index: u16,
+    pub oracle_clause_index: u16,
+    pub face_keywords: &'a [String],
+    pub type_line: &'a str,
+    /// The exact keyword-bearing Oracle fragment when the keyword has a
+    /// parameter or more than one rules shape. Fixed keyword metadata may omit
+    /// this field.
+    pub oracle_fragment: Option<&'a str>,
 }
 
 /// A kernel execution receipt for one exact retained keyword occurrence.
@@ -528,12 +542,25 @@ impl KeywordRulesRuntimeReceipt {
             .iter()
             .map(|rule| rule.id().to_owned())
             .collect::<Vec<_>>();
-        let authority_has_exact_contract = self.authority
-            == KeywordRulesAuthority::SelfDescribingOracleClause
-            && self.occurrence.keyword_occurrence_index == 0
-            && self.occurrence.normalized_face_keywords.is_empty()
-            && self.occurrence.complete_keyword_profile_sha256 == keyword_profile_sha256(&[])
-            && self.occurrence.oracle_fragment_sha256.is_some();
+        let authority_has_exact_contract = match self.authority {
+            KeywordRulesAuthority::RetainedKeywordMetadata => {
+                let occurrence_index = usize::from(self.occurrence.keyword_occurrence_index);
+                self.occurrence
+                    .normalized_face_keywords
+                    .get(occurrence_index)
+                    == Some(&self.occurrence.normalized_keyword)
+                    && keyword_profile_is_exact(&self.occurrence.normalized_face_keywords)
+                    && self.occurrence.complete_keyword_profile_sha256
+                        == keyword_profile_sha256(&self.occurrence.normalized_face_keywords)
+            }
+            KeywordRulesAuthority::SelfDescribingOracleClause => {
+                self.occurrence.keyword_occurrence_index == 0
+                    && self.occurrence.normalized_face_keywords.is_empty()
+                    && self.occurrence.complete_keyword_profile_sha256
+                        == keyword_profile_sha256(&[])
+                    && self.occurrence.oracle_fragment_sha256.is_some()
+            }
+        };
         self.binding.receipt_schema_version == RUNTIME_RECEIPT_SCHEMA_VERSION
             && self.binding.executor_id == KEYWORD_RULES_RUNTIME_EXECUTOR_ID
             && self.binding.executor_version == KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION
@@ -582,6 +609,19 @@ impl KeywordRulesRuntimeReceipt {
                 .all(|rule_id| !rule_id.trim().is_empty())
             && is_sha256_hex(&self.contract_sha256)
             && self.contract_sha256 == keyword_rules_contract_sha256(self)
+    }
+
+    pub(crate) fn matches_keyword_occurrence(
+        &self,
+        face_index: u16,
+        keyword_occurrence_index: u16,
+        normalized_keyword: &str,
+    ) -> bool {
+        self.authority == KeywordRulesAuthority::RetainedKeywordMetadata
+            && self.has_exact_contract()
+            && self.occurrence.face_index == face_index
+            && self.occurrence.keyword_occurrence_index == keyword_occurrence_index
+            && self.occurrence.normalized_keyword == normalize_keyword_label(normalized_keyword)
     }
 
     pub(crate) fn matches_face_keyword(&self, face_index: u16, normalized_keyword: &str) -> bool {
@@ -664,6 +704,83 @@ impl ExactKeywordRulesRuntimeReceipt {
             && is_sha256_hex(&self.contract_sha256)
             && self.contract_sha256 == exact_keyword_rules_contract_sha256(self)
     }
+}
+
+pub(crate) fn compile_keyword_rules_runtime_receipt(
+    input: KeywordRulesReceiptInput<'_>,
+) -> Option<KeywordRulesRuntimeReceipt> {
+    let type_line = input.type_line.trim();
+    if type_line.is_empty() {
+        return None;
+    }
+    let normalized_face_keywords = input
+        .face_keywords
+        .iter()
+        .map(|keyword| normalize_keyword_label(keyword))
+        .collect::<Vec<_>>();
+    if !keyword_profile_is_exact(&normalized_face_keywords) {
+        return None;
+    }
+    let occurrence_index = usize::from(input.keyword_occurrence_index);
+    let normalized_keyword = normalized_face_keywords.get(occurrence_index)?.clone();
+    let printed_keyword = input.face_keywords.get(occurrence_index)?.trim();
+    let oracle_fragment = match input.oracle_fragment {
+        Some(fragment) if fragment.trim().is_empty() => return None,
+        Some(fragment) => Some(fragment.trim()),
+        None => None,
+    };
+    let program = compile_keyword_program(KeywordProgramInput {
+        face_index: input.face_index,
+        clause_index: input.oracle_clause_index,
+        printed_keyword,
+        oracle_fragment,
+    })
+    .ok()?;
+    if keyword_rules_receipt_requires_fragment(program.keyword()) && oracle_fragment.is_none() {
+        return None;
+    }
+    if normalize_keyword_label(program.keyword().printed_label()) != normalized_keyword {
+        return None;
+    }
+    let official_rule_ids = program
+        .official_rules()
+        .iter()
+        .map(|rule| rule.id().to_owned())
+        .collect::<Vec<_>>();
+    let occurrence = KeywordRulesOccurrenceEvidence {
+        face_index: input.face_index,
+        keyword_occurrence_index: input.keyword_occurrence_index,
+        oracle_clause_index: input.oracle_clause_index,
+        normalized_keyword,
+        complete_keyword_profile_sha256: keyword_profile_sha256(&normalized_face_keywords),
+        normalized_face_keywords,
+        printed_keyword_sha256: sha256_hex(printed_keyword.as_bytes()),
+        oracle_fragment_sha256: oracle_fragment.map(|fragment| sha256_hex(fragment.as_bytes())),
+        type_line_sha256: sha256_hex(type_line.as_bytes()),
+    };
+    let mut receipt = KeywordRulesRuntimeReceipt {
+        binding: RuntimeExecutorBinding {
+            receipt_schema_version: RUNTIME_RECEIPT_SCHEMA_VERSION,
+            executor_id: KEYWORD_RULES_RUNTIME_EXECUTOR_ID,
+            executor_version: KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION,
+        },
+        capabilities: vec![
+            RuntimeCapability::ExactKeywordRulesProgram,
+            RuntimeCapability::TransactionalKeywordRulesExecution,
+        ],
+        authority: KeywordRulesAuthority::RetainedKeywordMetadata,
+        occurrence,
+        keyword: program.keyword(),
+        program,
+        official_rule_ids,
+        kernel_runtime_version: KEYWORD_RULES_RUNTIME_VERSION,
+        kernel_evidence_version: KEYWORD_RULES_EVIDENCE_VERSION,
+        execution_bridge_version: KEYWORD_RULES_EXECUTION_BRIDGE_VERSION,
+        rollback_contract: KEYWORD_TRANSACTION_CONTRACT,
+        contract_sha256: String::new(),
+    };
+    receipt.contract_sha256 = keyword_rules_contract_sha256(&receipt);
+    receipt.has_exact_contract().then_some(receipt)
 }
 
 fn compile_oracle_keyword_rules_runtime_receipt(
@@ -874,12 +991,39 @@ fn exact_keyword_rules_contract_sha256(receipt: &ExactKeywordRulesRuntimeReceipt
     format!("{:x}", hasher.finalize())
 }
 
+fn keyword_rules_receipt_requires_fragment(keyword: OfficialKeyword) -> bool {
+    matches!(
+        keyword,
+        OfficialKeyword::Regenerate
+            | OfficialKeyword::Protection
+            | OfficialKeyword::Kicker
+            | OfficialKeyword::Flashback
+            | OfficialKeyword::Morph
+            | OfficialKeyword::Equip
+            | OfficialKeyword::Enchant
+            | OfficialKeyword::Saga
+            | OfficialKeyword::CumulativeUpkeep
+            | OfficialKeyword::Hexproof
+            | OfficialKeyword::Ward
+            | OfficialKeyword::Cycling
+    )
+}
+
 fn normalize_keyword_label(keyword: &str) -> String {
     keyword
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
+}
+
+fn keyword_profile_is_exact(profile: &[String]) -> bool {
+    !profile.is_empty()
+        && profile.iter().all(|keyword| !keyword.is_empty())
+        && profile
+            .iter()
+            .enumerate()
+            .all(|(index, keyword)| !profile[..index].contains(keyword))
 }
 
 fn keyword_profile_sha256(profile: &[String]) -> String {
@@ -5537,10 +5681,8 @@ fn bounded_oracle_capabilities(
 fn bounded_clause_has_exact_live_attachment_static(clause: &BoundedOracleClause) -> bool {
     !clause.effects().is_empty()
         && matches!(clause.timing(), BoundedTiming::Static)
-        && clause.effects().iter().all(|effect| {
-            matches!(
-                effect,
-                BoundedEffect::ModifyPowerToughness(
+        && clause.effects().iter().all(|effect| match effect {
+            BoundedEffect::ModifyPowerToughness(
                 crate::bounded_oracle_runtime::PowerToughnessChange {
                     objects: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
                     operation:
@@ -5552,44 +5694,39 @@ fn bounded_clause_has_exact_live_attachment_static(clause: &BoundedOracleClause)
                     toughness: crate::bounded_oracle_runtime::Amount::Constant(_),
                     duration: crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
                 },
-            )
-                | BoundedEffect::Restriction(BoundedRestriction::DoesNotUntapDuring {
+            ) => true,
+            BoundedEffect::Restriction(BoundedRestriction::DoesNotUntapDuring {
+                object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                step: crate::bounded_oracle_runtime::Step::UntapStep,
+            }) => true,
+            BoundedEffect::Restriction(
+                BoundedRestriction::ActivatedAbilitiesCannotBeActivated {
                     object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
-                    step: crate::bounded_oracle_runtime::Step::UntapStep,
-                })
-                | BoundedEffect::Restriction(
-                    BoundedRestriction::ActivatedAbilitiesCannotBeActivated {
-                        object:
-                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
-                        duration:
-                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
-                    }
-                    | BoundedRestriction::MustAttackEachCombatIfAble {
-                        object:
-                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
-                        duration:
-                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
-                    }
-                    | BoundedRestriction::CannotAttack {
-                        object:
-                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
-                        duration:
-                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
-                    }
-                    | BoundedRestriction::CannotBlock {
-                        object:
-                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
-                        duration:
-                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
-                    }
-                    | BoundedRestriction::CannotBeBlocked {
-                        object:
-                            crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
-                        duration:
-                            crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
-                    },
-                )
-            )
+                    duration:
+                        crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                }
+                | BoundedRestriction::MustAttackEachCombatIfAble {
+                    object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                    duration:
+                        crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                }
+                | BoundedRestriction::CannotAttack {
+                    object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                    duration:
+                        crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                }
+                | BoundedRestriction::CannotBlock {
+                    object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                    duration:
+                        crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                }
+                | BoundedRestriction::CannotBeBlocked {
+                    object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                    duration:
+                        crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                },
+            ) => true,
+            _ => false,
         })
 }
 
@@ -5665,7 +5802,6 @@ fn bounded_clause_retains_physical_identity(clause: &BoundedOracleClause) -> boo
         )
     })
 }
-
 pub(crate) fn compile_interaction_runtime_receipt(
     card: &CompiledCard,
 ) -> Option<InteractionRuntimeReceipt> {

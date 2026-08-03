@@ -543,12 +543,12 @@ fn parse_emerge(source: &str) -> Option<CastChoiceKeywordKind> {
         SacrificeQuality::Artifact => {
             "You may cast this spell by sacrificing an artifact and paying the emerge cost \
              reduced by that artifact's mana value."
-                .to_owned()
+                .to_string()
         }
         SacrificeQuality::Creature => {
             "You may cast this spell by sacrificing a creature and paying the emerge cost reduced \
              by that creature's mana value."
-                .to_owned()
+                .to_string()
         }
         SacrificeQuality::Subtype(_) => return None,
     };
@@ -1720,8 +1720,6 @@ pub struct CastReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-// This public result intentionally keeps its existing value layout.
-#[allow(clippy::large_enum_variant)]
 pub enum CastExecution {
     Spell(CastReceipt),
     LandPlayed {

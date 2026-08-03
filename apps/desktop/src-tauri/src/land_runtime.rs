@@ -16,7 +16,6 @@ pub(crate) const ALWAYS_TAPPED_ENTRY_EXECUTOR_ID: &str = "abstract-play.land.ent
 pub(crate) const SHOCK_ENTRY_EXECUTOR_ID: &str = "abstract-play.land.entry.pay-two-life-or-tapped";
 pub(crate) const MULTIPLAYER_ENTRY_EXECUTOR_ID: &str = "abstract-play.land.entry.two-opponents";
 pub(crate) const FETCHLAND_EXECUTOR_ID: &str = "abstract-play.land.fetch-two-basic-land-types";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum LandManaColor {
     White,
@@ -277,7 +276,6 @@ impl ExactLandRuntimeProgram {
         bindings
     }
 }
-
 pub(crate) fn classify_exact_land_program(
     type_line: &str,
     program: &ExecutableAbilityProgramV1,

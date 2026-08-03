@@ -25,6 +25,8 @@ pub type DelayedEffectId = u64;
 pub type DueEffectId = u64;
 
 const COMMANDER_PERMISSION_NORMALIZED: &str = "this object can be your commander.";
+const REMOVE_WITHOUT_ANTE_NORMALIZED: &str =
+    "remove this object from your deck before playing if you're not playing for ante.";
 const STANDARD_OPENING_BATTLEFIELD_PREFIX: &str =
     "if this object is in your opening hand, you may begin the game with ";
 const STANDARD_OPENING_BATTLEFIELD_SUFFIX: &str = " on the battlefield.";
@@ -49,6 +51,7 @@ pub const fn pregame_production_adapter_connected() -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PregameClauseKind {
     ExplicitSelfCommanderPermission,
+    RemoveFromDeckWithoutAnte,
     DeckCopyLimit(DeckCopyLimit),
     OpeningHand(OpeningHandProgram),
 }
@@ -87,6 +90,10 @@ impl PregameClauseProgram {
             self.kind,
             PregameClauseKind::ExplicitSelfCommanderPermission
         )
+    }
+
+    pub fn requires_source_removed_without_ante(&self) -> bool {
+        matches!(self.kind, PregameClauseKind::RemoveFromDeckWithoutAnte)
     }
 
     pub fn permits_named_card_count(&self, exact_card_name: &str, copies: u32) -> Option<bool> {
@@ -242,6 +249,8 @@ pub fn compile_pregame_clause_program(
     let normalized_lower = normalized_source.to_ascii_lowercase();
     let kind = if normalized_lower == COMMANDER_PERMISSION_NORMALIZED {
         PregameClauseKind::ExplicitSelfCommanderPermission
+    } else if normalized_lower == REMOVE_WITHOUT_ANTE_NORMALIZED {
+        PregameClauseKind::RemoveFromDeckWithoutAnte
     } else if let Some(copy_limit) = parse_deck_copy_limit(exact_source) {
         PregameClauseKind::DeckCopyLimit(copy_limit)
     } else {
@@ -433,6 +442,10 @@ fn canonical_program(kind: &PregameClauseKind) -> String {
     match kind {
         PregameClauseKind::ExplicitSelfCommanderPermission => {
             "commander-permission/v1;subject=self;permission=commander".to_owned()
+        }
+        PregameClauseKind::RemoveFromDeckWithoutAnte => {
+            "ante-deck-removal/v1;subject=self;condition=not-playing-for-ante;action=remove-before-play"
+                .to_owned()
         }
         PregameClauseKind::DeckCopyLimit(limit) => format!(
             "deck-copy-limit/v1;name={};maximum={}",

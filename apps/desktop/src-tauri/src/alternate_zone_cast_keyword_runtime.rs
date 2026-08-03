@@ -1600,8 +1600,6 @@ pub enum SuspendUpkeepResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-// This public receipt intentionally keeps its existing value layout.
-#[allow(clippy::large_enum_variant)]
 pub enum SuspendLastCounterResolution {
     Cast(CastEvidence),
     LandPlayed {
@@ -1622,8 +1620,6 @@ pub struct MadnessDiscardEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-// This public choice intentionally keeps its existing value layout.
-#[allow(clippy::large_enum_variant)]
 pub enum MadnessTriggerChoice {
     Play {
         payment: CostPayment,
@@ -2430,8 +2426,6 @@ impl AlternateZoneCastRuntime {
         )
     }
 
-    // The explicit parameters keep each cast receipt input distinct.
-    #[allow(clippy::too_many_arguments)]
     fn cast_from_graveyard(
         &mut self,
         program: &AlternateZoneKeywordProgram,

@@ -47,7 +47,7 @@ use crate::strict_engine::STRICT_ENGINE_VERSION;
 use crate::turn_planner::TURN_PLANNER_VERSION;
 
 const CACHE_SCHEMA_VERSION: &str = "1";
-pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-49";
+pub(crate) const CACHE_KEY_VERSION: &str = "analysis-cache-63";
 const ANALYSIS_IMPLEMENTATION_SHA256: &str = env!("CDA_ANALYSIS_IMPLEMENTATION_SHA256");
 const MAX_CACHE_ENTRIES: usize = 64;
 const ALLOWED_PRODUCTION_SIMULATION_COUNTS: [u32; 3] = [1_000, 5_000, 10_000];
@@ -247,7 +247,6 @@ impl AnalysisCache {
             ExecutionContractFingerprint::current(),
         )
     }
-
     fn key_with_analysis_contract(
         &self,
         canonical_deck: &str,
