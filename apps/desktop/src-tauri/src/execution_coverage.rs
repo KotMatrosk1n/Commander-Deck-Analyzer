@@ -72,7 +72,7 @@ use crate::runtime_receipts::{
 use crate::semantics::{CompiledCard, role};
 
 pub const EXECUTION_COVERAGE_SCHEMA_VERSION: &str = "commander-execution-coverage-manifest/v8";
-pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-1.7";
+pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-1.21";
 pub const COMPACT_BLOCKER_SAMPLE_LIMIT: usize = 20;
 
 const METRICS: [ExecutionMetric; 7] = [
@@ -82,6 +82,14 @@ const METRICS: [ExecutionMetric; 7] = [
     ExecutionMetric::GoldfishTiming,
     ExecutionMetric::InterferenceTiming,
     ExecutionMetric::SynergyDescription,
+    ExecutionMetric::BracketRating,
+];
+
+const FUNCTIONAL_METRICS: [ExecutionMetric; 5] = [
+    ExecutionMetric::FunctionalMulligan,
+    ExecutionMetric::ManaConsistency,
+    ExecutionMetric::GoldfishTiming,
+    ExecutionMetric::InterferenceTiming,
     ExecutionMetric::BracketRating,
 ];
 
@@ -2249,7 +2257,6 @@ fn sort_retained_runtime_receipts(receipts: &mut [RetainedRuntimeReceipt]) {
             })
     });
 }
-
 fn compile_retained_card(record: &CombinedCardRecord) -> CompiledCard {
     let retained_definition = retained_card_definition(record);
     let root = OracleCardInput {
@@ -3326,12 +3333,15 @@ enum RuntimeCoverageRequirement<'a> {
         root: &'a OracleRootBindingContext,
         required: &'static [RuntimeCapability],
     },
+    CompleteRoot(&'a OracleRootBindingContext),
 }
 
 impl<'a> RuntimeCoverageRequirement<'a> {
     fn root(self) -> &'a OracleRootBindingContext {
         match self {
-            Self::Clause { root, .. } | Self::ClauseCapabilities { root, .. } => root,
+            Self::Clause { root, .. }
+            | Self::ClauseCapabilities { root, .. }
+            | Self::CompleteRoot(root) => root,
         }
     }
 }
@@ -3349,13 +3359,16 @@ fn runtime_receipt_claims_requirement(
                 .source_evidence
                 .covered_oracle_clauses
                 .contains(clause),
-            RuntimeCoverageRequirement::ClauseCapabilities { .. } => false,
+            RuntimeCoverageRequirement::ClauseCapabilities { .. }
+            | RuntimeCoverageRequirement::CompleteRoot(_) => false,
         };
     }
     let (_, capabilities, source_evidence) = runtime_receipt_parts(receipt);
     let required_capabilities = match requirement {
         RuntimeCoverageRequirement::ClauseCapabilities { required, .. } => required,
-        RuntimeCoverageRequirement::Clause { .. } => &[],
+        RuntimeCoverageRequirement::Clause { .. } | RuntimeCoverageRequirement::CompleteRoot(_) => {
+            &[]
+        }
     };
     if !required_capabilities
         .iter()
@@ -3375,6 +3388,7 @@ fn runtime_receipt_claims_requirement(
         | RuntimeCoverageRequirement::ClauseCapabilities { clause, .. } => {
             source_evidence.covered_oracle_clauses.contains(clause)
         }
+        RuntimeCoverageRequirement::CompleteRoot(_) => false,
     }
 }
 
@@ -4144,6 +4158,13 @@ pub(crate) struct KeywordLiveBridgeRegistry {
 }
 
 impl KeywordLiveBridgeRegistry {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            registry_version: KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION,
+            registrations: &[],
+        }
+    }
+
     fn has_exact_contract(self) -> bool {
         self.registry_version == KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION
             && self
@@ -4199,7 +4220,6 @@ fn production_keyword_live_bridge_registry() -> KeywordLiveBridgeRegistry {
         registrations: &PRODUCTION_KEYWORD_LIVE_BRIDGE_REGISTRATIONS,
     }
 }
-
 fn keyword_live_bridge_registry_has_registration(
     registry: KeywordLiveBridgeRegistry,
     keyword: OfficialKeyword,

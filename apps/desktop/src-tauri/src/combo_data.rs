@@ -277,7 +277,7 @@ fn hash_field(hasher: &mut Sha256, value: &[u8]) {
 }
 
 /// Spellbook's classification tag is intentionally retained verbatim. It is a
-/// service-specific tag (for example `R` or `S`), not this app's 1-5 bracket.
+/// service-specific tag (for example `R` or `S`), not this app's 1\u{2013}5 bracket.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct SpellbookBracketTag(pub String);

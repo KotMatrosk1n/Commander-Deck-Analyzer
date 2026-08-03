@@ -3205,8 +3205,6 @@ impl GameState {
         Ok(reference)
     }
 
-    // The explicit arguments describe the complete token characteristics.
-    #[allow(clippy::too_many_arguments)]
     fn create_simple_token(
         &mut self,
         controller: PlayerId,

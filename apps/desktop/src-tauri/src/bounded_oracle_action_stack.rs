@@ -532,7 +532,8 @@ fn run_state_based_actions<S: OracleStateAdapter>(
         .collect::<BTreeSet<_>>();
     let mut losses = Vec::new();
     for player in state.player_ids() {
-        if already_lost.contains(&player) || state.player(player).is_none_or(|state| state.life > 0)
+        if already_lost.contains(&player)
+            || !state.player(player).is_some_and(|state| state.life <= 0)
         {
             continue;
         }
@@ -556,18 +557,19 @@ fn player_has_lost<S: OracleStateAdapter>(state: &S, player: PlayerId) -> bool {
         .any(|record| record.player == player && record.result == GameResult::Lost)
 }
 
-type RevalidatedTargets = (
-    BTreeMap<u8, Vec<SelectedTarget>>,
-    BTreeMap<u8, Vec<SelectedTarget>>,
-    usize,
-    usize,
-);
-
 fn revalidate_targets<S: OracleStateAdapter>(
     state: &S,
     specifications: &[Target],
     context: &ExecutionContext,
-) -> Result<RevalidatedTargets, PendingActionError> {
+) -> Result<
+    (
+        BTreeMap<u8, Vec<SelectedTarget>>,
+        BTreeMap<u8, Vec<SelectedTarget>>,
+        usize,
+        usize,
+    ),
+    PendingActionError,
+> {
     let mut legal_targets = BTreeMap::new();
     let mut illegal_targets = BTreeMap::new();
     let mut initial_count = 0usize;
@@ -612,7 +614,7 @@ fn pending_target_is_supported(target: &Target) -> bool {
     ) && matches!(target.relationship, TargetRelationship::Independent)
         && pending_player_ref_is_supported(&target.chooser)
         && match &target.filter {
-            TargetFilter::Player => true,
+            TargetFilter::Player | TargetFilter::Opponent => true,
             TargetFilter::Object(filter) | TargetFilter::Spell(filter) => {
                 pending_filter_is_supported(filter)
             }
@@ -645,6 +647,10 @@ fn pending_filter_is_supported(filter: &ObjectFilter) -> bool {
 
 fn pending_effect_is_supported(effect: &Effect) -> bool {
     match effect {
+        Effect::Optional(effects) => {
+            !effects.is_empty() && effects.iter().all(pending_effect_is_supported)
+        }
+        Effect::PayCost(cost) => pending_cost_is_supported(cost),
         Effect::Counter { object }
         | Effect::Destroy { object }
         | Effect::Tap { object }
@@ -683,6 +689,10 @@ fn pending_effect_is_supported(effect: &Effect) -> bool {
 
 fn pending_effect_target_contract_is_supported(effect: &Effect, targets: &[Target]) -> bool {
     match effect {
+        Effect::Optional(effects) => effects
+            .iter()
+            .all(|effect| pending_effect_target_contract_is_supported(effect, targets)),
+        Effect::PayCost(_) => true,
         Effect::Counter { object }
         | Effect::CounterToZone { object, .. }
         | Effect::Destroy { object }
@@ -748,7 +758,7 @@ fn pending_player_target_contract_is_supported(
 fn pending_target_maximum(target: &Target) -> u16 {
     match target.amount {
         TargetAmount::Exactly(amount) | TargetAmount::UpTo(amount) => amount,
-        TargetAmount::All => u16::MAX,
+        TargetAmount::AnyNumber | TargetAmount::All => u16::MAX,
     }
 }
 
@@ -785,6 +795,11 @@ fn effect_has_only_illegal_targets(
 fn effect_target_ids(effect: &Effect) -> BTreeSet<u8> {
     let mut targets = BTreeSet::new();
     match effect {
+        Effect::Optional(effects) => {
+            for effect in effects {
+                targets.extend(effect_target_ids(effect));
+            }
+        }
         Effect::Counter { object }
         | Effect::CounterToZone { object, .. }
         | Effect::Destroy { object }

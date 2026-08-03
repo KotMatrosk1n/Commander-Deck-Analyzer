@@ -48,7 +48,6 @@ impl ManaColorMask {
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
-
     pub fn intersects(self, other: Self) -> bool {
         self.0 & other.0 != 0
     }
@@ -482,7 +481,6 @@ pub fn classify_mana_source(
         notes,
     })
 }
-
 /// Builds the same deterministic model while honoring the commanders selected
 /// in the UI even when the imported list did not include a Commander section.
 pub fn build_mana_model_with_commanders(

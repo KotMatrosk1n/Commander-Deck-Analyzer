@@ -302,8 +302,6 @@ impl TransformSemanticContext {
     }
 }
 
-// Kept inline because this public semantic context is matched throughout production.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceSemanticContext {
     Transform(TransformSemanticContext),

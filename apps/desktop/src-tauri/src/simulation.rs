@@ -96,8 +96,8 @@ use crate::interaction_runtime::{
 use crate::interaction_scenarios::{
     CensoredTurn, CompactScenarioReport, EpisodeOutcomeInput, InapplicabilityReason,
     InteractionScenario, RecoveryObservation, ScenarioApplicability, ScenarioEpisodeInput,
-    ScenarioEventCounters, ScenarioExecutionSource, ScenarioReportError, ScenarioReportInput,
-    build_scenario_report, compact_scenario_report,
+    ScenarioEventCounters, ScenarioExecutionSource, ScenarioReport, ScenarioReportError,
+    ScenarioReportInput, build_scenario_report, compact_scenario_report,
 };
 use crate::interference::{
     OpponentDrawActivity, OpponentEventTimeline, OpponentSpellActivity, OpponentTurnActivity,
@@ -160,6 +160,7 @@ use crate::utility_modal_runtime::{
     EntryScryProgram as ReviewedEntryScryProgram, SpellScryDrawStep as ReviewedSpellScryDrawStep,
     UtilityModalRuntimeProgram as ReviewedUtilityModalProgram,
 };
+
 use rules_bridge::{
     TrajectoryRulesBridge, TrajectoryRulesCatalog, TrajectorySpellResolution, TrajectorySpellStatus,
 };
@@ -232,7 +233,6 @@ fn starting_life_total(deck: &CompiledDeck) -> f32 {
         .map(|initialization| initialization.1)
         .unwrap_or(COMMANDER_STARTING_LIFE)
 }
-
 #[derive(Debug, thiserror::Error)]
 pub enum SimulationError {
     #[error("Analysis cancelled.")]
@@ -955,7 +955,6 @@ impl TurnManaPool {
             false
         }
     }
-
     fn pay_with_additional_generic(
         &mut self,
         cost: Option<&ManaCostProfile>,
@@ -1612,8 +1611,6 @@ fn immutable_devoid_query_object_id(
     KeywordObjectId(u64::from_le_bytes(bytes) | (1u64 << 63))
 }
 
-// Production queries retain the evaluated contract inline for direct borrowing.
-#[allow(clippy::large_enum_variant)]
 enum DelegatedStaticKeywordState {
     Absent,
     Live(StaticKeywordEvaluation),
@@ -1787,6 +1784,17 @@ fn battlefield_color_mask(
         card_types,
         base_battlefield_color_mask(card, zones, sequence),
     )
+}
+fn attraction_visits_on_roll(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+    roll: u8,
+) -> Option<bool> {
+    card.effects
+        .structural_characteristics
+        .battlefield_profile(battlefield_face_index(zones, sequence))
+        .attraction_visits_on_roll(roll)
 }
 
 fn battlefield_has_keyword(
@@ -3866,7 +3874,6 @@ fn delegated_equip_bindings(
     bindings.sort_by_key(|binding| binding.clause.clone());
     bindings
 }
-
 fn equip_object_snapshot(
     deck: &CompiledDeck,
     zones: &KnownLineZoneState,
@@ -4039,7 +4046,7 @@ fn targeting_is_legal_for_sequence(
             }
         }
     }
-    !(fallback_has_shroud || (source_controller != KeywordPlayerId(0) && fallback_has_hexproof))
+    !fallback_has_shroud && !(source_controller != KeywordPlayerId(0) && fallback_has_hexproof)
 }
 
 fn equipment_keyword_source_profile(source: &EquipObjectSnapshot) -> KeywordSourceProfile {
@@ -5584,6 +5591,10 @@ fn printed_hand_card_colors_for_occurrence(
     .ok()
 }
 
+fn printed_hand_card_colors(card: &CompiledCard) -> Option<ManaColorMask> {
+    printed_hand_card_colors_for_occurrence(card, 0, 0)
+}
+
 fn mana_color_mask_from_symbols(symbols: &[String]) -> ManaColorMask {
     symbols
         .iter()
@@ -5927,7 +5938,6 @@ impl KnownCardZone {
     fn len(&self) -> usize {
         self.cards.len()
     }
-
     fn get(&self, position: usize) -> Option<&usize> {
         self.cards.get(position).map(|object| &object.card_index)
     }
@@ -5943,7 +5953,6 @@ impl KnownCardZone {
     fn iter_objects(&self) -> impl DoubleEndedIterator<Item = &KnownZoneCard> + ExactSizeIterator {
         self.cards.iter()
     }
-
     fn canonical_objects(&self) -> Vec<KnownZoneCard> {
         let mut objects = self.cards.clone();
         objects.sort_unstable();
@@ -7455,7 +7464,6 @@ impl KnownLineZoneState {
         let lost = (before - after).max(0.0).floor().min(u32::MAX as f32) as u32;
         self.record_controller_life_loss(lost);
     }
-
     fn remove_object_state(&mut self, sequence: u16) {
         self.turn_events.state.unregister_object(sequence);
         self.battlefield_faces.remove(&sequence);
@@ -8431,6 +8439,7 @@ fn apply_opponent_turn_activity(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn apply_table_turn_activity_with_end_steps(
     deck: &CompiledDeck,
     zones: &mut KnownLineZoneState,
@@ -8848,9 +8857,9 @@ fn entry_filter_matches(
     let card_types = if hand.exact {
         hand.card_types
     } else if legacy_single_face_hand_characteristics_available(card) {
-        // This is an explicitly uncertified, single-face-only trajectory
-        // fallback. Strict coverage remains blocked until the source record is
-        // refreshed.
+        // See `printed_hand_card_colors`: this is an explicitly uncertified,
+        // single-face-only trajectory fallback. Strict coverage remains
+        // blocked until the source record is refreshed.
         card.effects.card_types
     } else {
         return false;
@@ -10007,7 +10016,6 @@ fn commit_atomic_spell_initiation_with_choice(
         choice,
     })
 }
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AtomicSpellResolution {
     searched_card: Option<usize>,
@@ -10136,9 +10144,9 @@ impl IntuitionPlanningModel {
                     .map(|(card_index, _)| *card_index)
                     .collect::<Vec<_>>();
                 if complete
+                    && reviewed_program.is_some()
                     && !identities.is_empty()
                     && identities.len() <= MAX_INTUITION_IDENTITIES_PER_ROUTE
-                    && let Some(program) = reviewed_program
                 {
                     routes.push(IntuitionRouteTemplate {
                         key: format!(
@@ -10146,7 +10154,9 @@ impl IntuitionPlanningModel {
                             crate::parser::normalize_card_name(&line.name),
                             line_index
                         ),
-                        kind: IntuitionRouteKind::ReviewedEmptyLibrary { program },
+                        kind: IntuitionRouteKind::ReviewedEmptyLibrary {
+                            program: reviewed_program.expect("checked reviewed program"),
+                        },
                         required,
                         identities,
                     });
@@ -11149,7 +11159,6 @@ fn execute_atomic_spell_resolution_with_choice_and_intuition_model(
     }
     resolution
 }
-
 #[allow(clippy::too_many_arguments)]
 fn execute_atomic_search_to_hand(
     tutor: &ProgramTutorEffect,
@@ -15997,7 +16006,6 @@ impl TurnPlanningDomain for CombatAwareCastPlanningDomain<'_, '_, '_> {
         self.base.conservative_next_turn_state(state)
     }
 }
-
 fn plan_hand_action_order_with_intuition_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
@@ -16049,7 +16057,6 @@ fn plan_hand_action_order_with_intuition_model(
     .unwrap_or_default();
     trim_plan_for_opponent_end_step_access(domain, initial, planned_actions, intuition_model, None)
 }
-
 fn plan_hand_action_order_with_combat_and_intuition_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
@@ -16397,7 +16404,6 @@ fn card_has_reviewed_primer_setup_mana_capability(card: &CompiledCard) -> bool {
         || compile_typed_conditional_mana_source(card)
             .is_some_and(TypedConditionalManaSource::is_receipted_artifact_family)
 }
-
 fn certified_reviewed_graveyard_storm_primer_continuation_with_model(
     domain: &CastPlanningDomain<'_>,
     initial: CastPlanningState,
@@ -16581,7 +16587,6 @@ fn reviewed_primer_window_preempts_eager_tutor(
         .is_empty()
     })
 }
-
 fn hand_plan_completes_credible_executable_route_with_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
@@ -17954,6 +17959,12 @@ struct ScenarioSuiteCollector {
 }
 
 #[derive(Debug)]
+struct FinalizedScenarioSuite {
+    compact_reports: Vec<CompactScenarioReport>,
+    full_reports: Vec<ScenarioReport>,
+}
+
+#[derive(Debug)]
 struct IsolatedScenarioRuntime {
     scenario: Option<InteractionScenario>,
     trace: IsolatedScenarioTrace,
@@ -18039,7 +18050,6 @@ fn rule_of_law_blocks_next_spell(
     }
     true
 }
-
 pub fn simulate_opening_hands_with_mana(
     deck: &CompiledDeck,
     mana: &ManaModel,
@@ -18634,7 +18644,8 @@ fn execute_early_route_witness_candidates(
     let worker_count = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1)
-        .clamp(1, EARLY_ROUTE_WITNESS_MAX_WORKERS);
+        .min(EARLY_ROUTE_WITNESS_MAX_WORKERS)
+        .max(1);
     for (batch_index, batch) in candidates.chunks(worker_count).enumerate() {
         if cancellation.load(Ordering::Relaxed) {
             return None;
@@ -18997,7 +19008,6 @@ fn early_route_library_order_sha256(deck: &CompiledDeck, draw_order: &[usize]) -
     }
     format!("{:x}", hasher.finalize())
 }
-
 pub fn simulate_win_speed_with_mana(
     deck: &CompiledDeck,
     mana: &ManaModel,
@@ -19006,6 +19016,40 @@ pub fn simulate_win_speed_with_mana(
     cancellation: &AtomicBool,
     report_progress: impl FnMut(bool, u32, u32),
 ) -> Result<WinSpeedReport, SimulationError> {
+    let mana_access = ManaAccessProfile::compile(deck, mana);
+    simulate_win_speed_inner_with_report_retention(
+        deck,
+        Some(&mana_access),
+        options,
+        seed,
+        cancellation,
+        false,
+        report_progress,
+    )
+    .map(|output| output.report)
+}
+
+/// Calibration-only projection retaining the bounded paired episode reports.
+///
+/// The desktop analyzer deliberately calls [`simulate_win_speed_with_mana`],
+/// which drops `scenario_reports` before constructing the serializable
+/// [`WinSpeedReport`]. Keeping this type crate-private and non-serializable
+/// prevents the high-cardinality observations from entering desktop reports
+/// or cache payloads.
+#[derive(Debug)]
+pub(crate) struct CalibrationWinSpeedOutput {
+    pub report: WinSpeedReport,
+    pub scenario_reports: Vec<ScenarioReport>,
+}
+
+pub(crate) fn simulate_win_speed_with_mana_for_calibration(
+    deck: &CompiledDeck,
+    mana: &ManaModel,
+    options: &AnalysisOptions,
+    seed: u64,
+    cancellation: &AtomicBool,
+    report_progress: impl FnMut(bool, u32, u32),
+) -> Result<CalibrationWinSpeedOutput, SimulationError> {
     let mana_access = ManaAccessProfile::compile(deck, mana);
     simulate_win_speed_inner(
         deck,
@@ -19024,29 +19068,50 @@ fn simulate_win_speed_inner(
     seed: u64,
     cancellation: &AtomicBool,
     report_progress: impl FnMut(bool, u32, u32),
-) -> Result<WinSpeedReport, SimulationError> {
+) -> Result<CalibrationWinSpeedOutput, SimulationError> {
+    simulate_win_speed_inner_with_report_retention(
+        deck,
+        mana_access,
+        options,
+        seed,
+        cancellation,
+        true,
+        report_progress,
+    )
+}
+
+fn simulate_win_speed_inner_with_report_retention(
+    deck: &CompiledDeck,
+    mana_access: Option<&ManaAccessProfile>,
+    options: &AnalysisOptions,
+    seed: u64,
+    cancellation: &AtomicBool,
+    retain_full_scenario_reports: bool,
+    report_progress: impl FnMut(bool, u32, u32),
+) -> Result<CalibrationWinSpeedOutput, SimulationError> {
     let simulations = bounded_simulation_count(options.game_simulations, 100, 50_000);
-    simulate_win_speed_inner_with_worker_count(
+    simulate_win_speed_inner_with_worker_count_and_report_retention(
         deck,
         mana_access,
         options,
         seed,
         cancellation,
         episode_worker_count(simulations),
+        retain_full_scenario_reports,
         report_progress,
     )
 }
-
 #[allow(clippy::too_many_arguments)]
-fn simulate_win_speed_inner_with_worker_count(
+fn simulate_win_speed_inner_with_worker_count_and_report_retention(
     deck: &CompiledDeck,
     mana_access: Option<&ManaAccessProfile>,
     options: &AnalysisOptions,
     seed: u64,
     cancellation: &AtomicBool,
     worker_count: usize,
+    retain_full_scenario_reports: bool,
     mut report_progress: impl FnMut(bool, u32, u32),
-) -> Result<WinSpeedReport, SimulationError> {
+) -> Result<CalibrationWinSpeedOutput, SimulationError> {
     if deck.library.len() < 7 {
         return Err(SimulationError::LibraryTooSmall);
     }
@@ -19283,7 +19348,9 @@ fn simulate_win_speed_inner_with_worker_count(
     let attempt_denominator = interfered.first_attempt_opportunities.max(1) as f32;
     let recovery_by_max_turn_rate = (interfered.stopped_attempts > 0)
         .then_some(interfered.recovered_attempts as f32 / interfered.stopped_attempts as f32);
-    let interaction_scenarios = finalize_scenario_suite(scenario_collectors, seed)?;
+    let finalized_scenarios =
+        finalize_scenario_suite(scenario_collectors, seed, retain_full_scenario_reports)?;
+    let interaction_scenarios = finalized_scenarios.compact_reports;
     let attempt_provenance = build_attempt_provenance_report(
         deck,
         &baseline,
@@ -19334,7 +19401,10 @@ fn simulate_win_speed_inner_with_worker_count(
         interaction_scenarios,
         stress_tests: build_stress_tests(deck, win_attempt_median_delay),
     };
-    Ok(report)
+    Ok(CalibrationWinSpeedOutput {
+        report,
+        scenario_reports: finalized_scenarios.full_reports,
+    })
 }
 
 fn scenario_episode_input(
@@ -19401,7 +19471,8 @@ fn scenario_outcome_input(outcome: EpisodeOutcome, maximum_turn: u8) -> EpisodeO
 fn finalize_scenario_suite(
     collectors: Vec<ScenarioSuiteCollector>,
     seed: u64,
-) -> Result<Vec<CompactScenarioReport>, ScenarioReportError> {
+    retain_full_reports: bool,
+) -> Result<FinalizedScenarioSuite, ScenarioReportError> {
     std::thread::scope(|scope| {
         let handles = collectors
             .into_iter()
@@ -19417,18 +19488,29 @@ fn finalize_scenario_suite(
                         seed,
                         INTERACTION_SCENARIO_SEED_DERIVATION_VERSION,
                     );
-                    Ok::<_, ScenarioReportError>(compact)
+                    Ok::<_, ScenarioReportError>((compact, retain_full_reports.then_some(report)))
                 })
             })
             .collect::<Vec<_>>();
         let mut compact_reports = Vec::with_capacity(handles.len());
+        let mut full_reports = if retain_full_reports {
+            Vec::with_capacity(handles.len())
+        } else {
+            Vec::new()
+        };
         for handle in handles {
-            let compact = handle
+            let (compact, full) = handle
                 .join()
                 .expect("scenario report worker completed without panicking")?;
             compact_reports.push(compact);
+            if let Some(full) = full {
+                full_reports.push(full);
+            }
         }
-        Ok(compact_reports)
+        Ok(FinalizedScenarioSuite {
+            compact_reports,
+            full_reports,
+        })
     })
 }
 
@@ -22349,7 +22431,6 @@ fn resolve_typed_overrun_creature_tutor(
     );
     true
 }
-
 fn prepare_episode(
     deck: &CompiledDeck,
     mana_access: Option<&ManaAccessProfile>,
@@ -26700,7 +26781,6 @@ fn execute_reviewed_random_discard_resolution_after_mana_response(
         ..AtomicSpellResolution::default()
     })
 }
-
 fn exact_mill_storm_spell(card: &CompiledCard) -> Option<u8> {
     if !plain_executable_ability_root_is_complete(card, 2) {
         return None;
@@ -26892,6 +26972,7 @@ fn execute_graveyard_storm_under_isolated_scenario(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn execute_graveyard_storm_transaction_with_receipt(
     line: &crate::domain::KnownLine,
@@ -30190,10 +30271,9 @@ fn repeatable_access_bounds_from_copies(
         if *copies == 0 {
             continue;
         }
-        let mana_value = deck
-            .cards
-            .get(*card_index)
-            .and_then(actual_card_mana_value)?;
+        let Some(mana_value) = deck.cards.get(*card_index).and_then(actual_card_mana_value) else {
+            return None;
+        };
         library_size = library_size.saturating_add(usize::from(*copies));
         maximum_mana_value = maximum_mana_value.max(mana_value);
     }
@@ -32286,13 +32366,76 @@ fn resolve_immediate_spell_draws(
         *next_draw_position += 1;
     }
 }
-
 fn immediate_creature_tokens(card: &CompiledCard) -> u8 {
     immediate_effect_value(card, card.effects.creature_tokens, 1).min(12)
 }
 
 fn immediate_extra_turns(card: &CompiledCard) -> u8 {
     immediate_effect_value(card, card.effects.extra_turns, 1).min(2)
+}
+/// A reviewed Oracle-style spell is deliberately conserved until every named
+/// member of at least one reviewed package is either usable this turn or in
+/// hand and the remaining printed costs are jointly payable. This is a small,
+/// versioned sequencing adapter. It is not a general combo executor.
+#[allow(clippy::too_many_arguments)]
+fn should_hold_reviewed_sequence_piece(
+    deck: &CompiledDeck,
+    card_index: usize,
+    hand: &[usize],
+    zones: &KnownLineZoneState,
+    turn: u8,
+    mana_pool: &TurnManaPool,
+    mana_access: Option<&ManaAccessProfile>,
+    additional_generic_per_cast: u8,
+) -> bool {
+    let Some(card) = deck.cards.get(card_index) else {
+        return false;
+    };
+    if deck.known_lines.iter().any(|line| {
+        compile_graveyard_storm_program(line, deck).is_some()
+            && line
+                .cards
+                .iter()
+                .any(|name| crate::parser::normalize_card_name(name) == card.normalized_name)
+    }) {
+        // The atomic executor stages every member together. Letting ordinary
+        // planning spend the permission source or mill spell early can expire
+        // the route. The exact whole-hand source is different: casting it does
+        // not activate it, and putting the physical object onto the
+        // battlefield before a random discard is required by the primer line.
+        return exact_discard_sacrifice_mana_ability(card).is_none();
+    }
+    let candidate_lines = deck
+        .known_lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| reviewed_empty_library_sequence(line))
+        .filter(|(_, line)| {
+            line.cards
+                .iter()
+                .any(|name| crate::parser::normalize_card_name(name) == card.normalized_name)
+        })
+        .collect::<Vec<_>>();
+    !candidate_lines.is_empty()
+        && !candidate_lines.iter().any(|(line_index, line)| {
+            let Some(program) = compile_reviewed_empty_library_win_program(*line_index, line, deck)
+            else {
+                return false;
+            };
+            if !reviewed_empty_library_program_access_is_complete(program, hand, zones, turn) {
+                return false;
+            }
+            reviewed_sequence_package_is_jointly_payable(
+                line,
+                deck,
+                hand,
+                zones,
+                turn,
+                mana_pool,
+                mana_access,
+                additional_generic_per_cast,
+            )
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -32478,7 +32621,6 @@ fn reviewed_sequence_package_is_jointly_payable(
     }
     true
 }
-
 /// Goldfish trajectories do not have legal opposing targets. Conserving a
 /// purely reactive spell prevents counters, removal, wipes, and protection
 /// from being converted into imaginary proactive board development. A broad
@@ -33502,6 +33644,5 @@ fn derive_episode_seed(master: u64, scenario: u64, simulation_index: u32) -> u64
     value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
     value ^ (value >> 31)
 }
-
 // Keep simulation unit tests in simulation/tests.rs. The explicit path is part
 // of the source-layout contract and prevents the test module being redirected.

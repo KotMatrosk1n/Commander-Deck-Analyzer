@@ -127,7 +127,6 @@ pub struct SemanticOverrideApplicationSummary {
     pub rules_backed_mechanics: Vec<String>,
     pub rules_report_only_cards: Vec<String>,
 }
-
 #[allow(dead_code)]
 pub fn compile_deck_with_semantic_overrides(
     entries: &[DeckEntry],

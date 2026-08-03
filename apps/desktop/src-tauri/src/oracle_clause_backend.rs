@@ -32,9 +32,11 @@ use crate::bounded_oracle_runtime::{
     retain_extended_cast_zone_keyword_program, retain_face_down_merge_keyword_program,
     retain_graveyard_hand_library_keyword_program, retain_graveyard_transform_keyword_program,
     retain_level_progression_program, retain_linked_cast_cost_keyword_program,
-    retain_oracle_action_program, retain_oracle_clause_composition_program,
-    retain_oracle_face_modal_line_program, retain_regeneration_action_program,
-    retain_residual_cost_keyword_program, retain_static_special_keyword_program,
+    retain_oracle_ability_envelope_program, retain_oracle_action_program,
+    retain_oracle_cast_zone_envelope_program, retain_oracle_clause_composition_program,
+    retain_oracle_face_modal_line_program, retain_oracle_static_replacement_program,
+    retain_regeneration_action_program, retain_residual_cost_keyword_program,
+    retain_static_special_keyword_program,
 };
 use crate::cast_choice_keyword_runtime::{
     CastChoiceClauseClassification, classify_cast_choice_keyword_clause,
@@ -125,9 +127,17 @@ use crate::linked_cast_cost_keyword_runtime::{
     SnapshotCandidateClass as LinkedCastCostCandidateClass,
     classify_linked_cast_cost_snapshot_candidate, compile_linked_cast_cost_keyword_program,
 };
+use crate::oracle_ability_envelope_runtime::{
+    AbilityEnvelopeCompileInput, compile_oracle_ability_envelope,
+    reviewed_ability_envelope_normalized_source,
+};
 use crate::oracle_action_algebra_runtime::{
     OracleActionClassification, OracleActionCompileInput, OracleActionSemanticContext,
     classify_oracle_action_instruction, reviewed_oracle_action_normalized_source,
+};
+use crate::oracle_cast_zone_envelope_runtime::{
+    CastZoneSemanticContext, compile_cast_zone_envelope_program,
+    reviewed_cast_zone_normalized_source,
 };
 use crate::oracle_clause_composition::{
     OracleClauseCompositionInput, OracleCompositionNode, SemanticCapability, SourceSpan,
@@ -143,18 +153,23 @@ use crate::oracle_face_program_assembler::{
     OracleFaceProgramInput, OracleFaceProvenance,
     assemble_oracle_face_modal_program_containing_offset,
 };
+use crate::oracle_static_replacement_runtime::{
+    OracleStaticReplacementCompileInput, compile_oracle_static_replacement_program,
+    looks_like_static_or_replacement_clause,
+};
 use crate::regeneration_action_runtime::{
     RegenerationClauseClassification, classify_regeneration_action_clause,
     contains_regeneration_lexeme,
 };
 use crate::residual_cost_keyword_runtime::compile_residual_cost_keyword_program;
+
 use crate::static_special_keyword_runtime::{
     StaticSpecialClauseClassification, StaticSpecialSourceContext,
     classify_static_special_keyword_clause, reviewed_static_special_normalized_source,
 };
 
-pub const ORACLE_CLAUSE_BACKEND_COMPILER_VERSION: &str = "oracle-clause-backend-compiler-0.32";
-pub const ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION: &str = "oracle-clause-backend-runtime-0.11";
+pub const ORACLE_CLAUSE_BACKEND_COMPILER_VERSION: &str = "oracle-clause-backend-compiler-0.46";
+pub const ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION: &str = "oracle-clause-backend-runtime-0.25";
 
 const DEVOID_LIVE_BRIDGE_CAPABILITIES: &[LiveBridgeCapability] = &[
     LiveBridgeCapability::StaticKeywordInstallation,
@@ -809,8 +824,6 @@ impl fmt::Display for OracleClauseBackendError {
 
 impl std::error::Error for OracleClauseBackendError {}
 
-// Kept inline because this public clause contract is matched throughout production.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompiledOracleClause {
     Bounded(BoundedOracleClause),
@@ -1079,8 +1092,6 @@ fn compile_oracle_clause_program(
     )
 }
 
-// Kept explicit because each compiler input carries independent source evidence.
-#[allow(clippy::too_many_arguments)]
 fn compile_oracle_clause_program_inner(
     input: OracleClauseBackendInput<'_>,
     validated: ValidatedOracleClauseLine<'_>,
@@ -1352,21 +1363,6 @@ fn compile_oracle_clause_program_inner(
                 }
             }
 
-            if rejected_static_special_candidate
-                || rejected_common_action_candidate
-                || rejected_regeneration_candidate
-            {
-                return match delegated_error {
-                    Some(keyword_error) => Err(OracleClauseBackendError::DelegatedKeyword {
-                        native_error: bounded_error,
-                        keyword_error,
-                    }),
-                    None => Err(OracleClauseBackendError::Native {
-                        error: bounded_error,
-                    }),
-                };
-            }
-
             if delegated_error.is_none()
                 && let Some(program) = compile_ability_clause_bridge(
                     validated_input.oracle_clause,
@@ -1404,6 +1400,104 @@ fn compile_oracle_clause_program_inner(
                 )
             {
                 return Ok(CompiledOracleClause::Bounded(clause));
+            }
+
+            // These audited next-layer compilers are retention-only until their
+            // dedicated state adapters and runtime receipts exist. Preserve every
+            // earlier live, delegated, bridge, composition, and modal owner first,
+            // and never let a recursive child compilation claim a standalone root.
+            if allow_composition {
+                let ability_normalized =
+                    reviewed_ability_envelope_normalized_source(validated_input.oracle_clause);
+                if let Ok(program) = compile_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+                    exact_source: validated_input.oracle_clause,
+                    normalized_source: &ability_normalized,
+                }) {
+                    return retain_oracle_ability_envelope_program(
+                        validated_input.bounded_input(),
+                        program,
+                    )
+                    .map(CompiledOracleClause::Bounded)
+                    .map_err(|error| OracleClauseBackendError::Native { error });
+                }
+
+                if looks_like_static_or_replacement_clause(validated_input.oracle_clause)
+                    && let Ok(mut program) = compile_oracle_static_replacement_program(
+                        OracleStaticReplacementCompileInput::permanent_ability(
+                            validated_input.oracle_clause,
+                        ),
+                    )
+                {
+                    if matches!(
+                        program.kind(),
+                        crate::oracle_static_replacement_runtime::OracleStaticReplacementProgramKind::Replacement(
+                            crate::oracle_static_replacement_runtime::ReplacementEffect {
+                                predicate:
+                                    crate::oracle_static_replacement_runtime::ReplacementEventPredicate::EnterBattlefield {
+                                        object,
+                                        ..
+                                    },
+                                ..
+                            }
+                        ) if object.reference
+                            == crate::oracle_static_replacement_runtime::SelectorReference::Source
+                    ) {
+                        program = compile_oracle_static_replacement_program(
+                            OracleStaticReplacementCompileInput {
+                                exact_source: validated_input.oracle_clause,
+                                normalized_source: validated_input.oracle_clause,
+                                semantic_context:
+                                    crate::oracle_static_replacement_runtime::SourceSemanticContext::CardAbility,
+                            },
+                        )
+                        .expect("source entry replacement recompiles in card-zone context");
+                    }
+                    return retain_oracle_static_replacement_program(
+                        validated_input.bounded_input(),
+                        program,
+                    )
+                    .map(CompiledOracleClause::Bounded)
+                    .map_err(|error| OracleClauseBackendError::Native { error });
+                }
+
+                if let Some(cast_zone_context) = CastZoneSemanticContext::from_type_line(
+                    validated_input.source_type_line,
+                    validated_input.face_index == 0,
+                ) {
+                    let cast_zone_normalized =
+                        reviewed_cast_zone_normalized_source(validated_input.oracle_clause);
+                    if let Ok(program) = compile_cast_zone_envelope_program(
+                        validated_input.oracle_clause,
+                        &cast_zone_normalized,
+                        cast_zone_context,
+                    ) {
+                        return retain_oracle_cast_zone_envelope_program(
+                            validated_input.bounded_input(),
+                            program,
+                        )
+                        .map(CompiledOracleClause::Bounded)
+                        .map_err(|error| OracleClauseBackendError::Native { error });
+                    }
+                }
+            }
+
+            // Candidate rejection by an earlier narrow compiler is not proof that
+            // a later exact typed family cannot own the whole clause. Only fail
+            // after every audited standalone family has had its turn; each family
+            // still fails closed when any operand or semantic boundary is unknown.
+            if rejected_static_special_candidate
+                || rejected_common_action_candidate
+                || rejected_regeneration_candidate
+            {
+                return match delegated_error {
+                    Some(keyword_error) => Err(OracleClauseBackendError::DelegatedKeyword {
+                        native_error: bounded_error,
+                        keyword_error,
+                    }),
+                    None => Err(OracleClauseBackendError::Native {
+                        error: bounded_error,
+                    }),
+                };
             }
 
             match delegated_error {
@@ -2025,6 +2119,9 @@ fn composition_timing_class(compiled: &CompiledOracleClause) -> CompositionTimin
                         }
                     }
                 }
+                [Effect::StandaloneRuleProgram(StandaloneRuleProgram::TargetingProtection(_))] => {
+                    CompositionTimingClass::Static
+                }
                 _ => CompositionTimingClass::Unknown,
             },
         },
@@ -2196,11 +2293,13 @@ fn proven_bounded_composition_capabilities(
     let mut proven = Vec::new();
     let effects = clause.effects();
     let has_standalone = effects_have_standalone_program(effects);
-    let standalone_semantic_atom = matches!(
-        effects,
-        [Effect::StandaloneRuleProgram(StandaloneRuleProgram::AbilityClause(program))]
-            if !program.ability().effects.is_empty()
-    );
+    let standalone_semantic_atom = match effects {
+        [Effect::StandaloneRuleProgram(StandaloneRuleProgram::AbilityClause(program))] => {
+            !program.ability().effects.is_empty()
+        }
+        [Effect::StandaloneRuleProgram(StandaloneRuleProgram::TargetingProtection(_))] => true,
+        _ => false,
+    };
     if (!effects.is_empty() && !has_standalone) || standalone_semantic_atom {
         proven.push(SemanticCapability::SemanticAtom);
     }
@@ -2507,6 +2606,15 @@ fn compile_syntax_only_clause(
         native_error,
         delegated_diagnostic,
     })
+}
+
+/// Recognize an exact keyword clause without consulting the native bounded
+/// grammar. `Ok(None)` means that the clause is not part of the delegated
+/// keyword slice.
+fn compile_delegated_keyword_clause(
+    input: &OracleClauseBackendInput<'_>,
+) -> Result<Option<DelegatedKeywordClause>, KeywordCompileError> {
+    compile_delegated_keyword_clause_with_context(input, None)
 }
 
 fn compile_delegated_keyword_clause_with_context(
@@ -3495,6 +3603,16 @@ fn required_live_bridge_capabilities_for_program(
             | RegenerationRecipientScope::EachCreatureControlledByEffectController { .. },
         ) => REGENERATE_STATIC_LIVE_BRIDGE_CAPABILITIES,
     }
+}
+
+fn exact_printed_keyword<'a>(
+    printed_keywords: &'a [&'a str],
+    keyword: OfficialKeyword,
+) -> Option<&'a str> {
+    printed_keywords
+        .iter()
+        .copied()
+        .find(|printed| printed.trim().eq_ignore_ascii_case(keyword.printed_label()))
 }
 
 fn delegated_keyword_semantic_digest(

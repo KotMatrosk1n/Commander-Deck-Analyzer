@@ -21,19 +21,31 @@ use crate::bounded_oracle_consumer::{
 };
 use crate::bounded_oracle_runtime::{
     AttachmentKind, BoundedOracleClause, CardType, ClauseAddress, Color, Condition, Keyword, Step,
-    Timing, Zone,
+    Supertype, Timing, Zone,
 };
 use crate::keyword_production_bridge::{
-    CombatEvasionProductionBridgeError, validate_combat_evasion_program_set,
+    COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION, CombatEvasionProductionBridgeError,
+    StaticKeywordObjectBinding, evaluate_combat_evasion_keywords,
+    validate_combat_evasion_program_set,
 };
-use crate::keyword_rules_runtime::{KeywordProgram, OfficialKeyword};
+use crate::keyword_rules_runtime::{
+    CardType as KeywordCardType, KeywordProgram, KeywordReceipt, ManaColor as KeywordManaColor,
+    ObjectCharacteristics as KeywordObjectCharacteristics, ObjectId as KeywordObjectId,
+    OfficialKeyword, PlayerId as KeywordPlayerId, Zone as KeywordZone,
+};
 use crate::oracle_clause_backend::{
     DelegatedKeywordClause, LiveBridgeCapability, ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION,
 };
-use crate::printed_cost_runtime::{PrintedManaCost, printed_mana_cost_has_exact_payment_contract};
+use crate::printed_cost_runtime::{
+    PRINTED_COST_PAYMENT_BRIDGE_VERSION, PrintedManaCost, PrintedManaPaymentChoices,
+    PrintedManaPaymentError, PrintedManaPaymentReceipt, PrintedManaPaymentResources,
+    pay_printed_mana_cost, printed_mana_cost_has_exact_payment_contract,
+};
 use crate::semantics::CompiledCard;
 
 pub const BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION: &str = "bounded-oracle-simulation-bridge-0.5";
+pub(crate) const COMBAT_BLOCK_DECLARATION_PRODUCTION_BRIDGE_VERSION: &str =
+    "bounded-combat-block-declaration-bridge/v1";
 
 const COMBAT_BLOCK_LEGALITY_CAPABILITIES: &[LiveBridgeCapability] = &[
     LiveBridgeCapability::StaticKeywordInstallation,
@@ -61,6 +73,46 @@ pub(crate) fn printed_cost_has_live_bridge_contract(cost: &PrintedManaCost) -> b
     printed_mana_cost_has_exact_payment_contract(cost)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrintedCostPaymentBatch {
+    pub bridge_version: &'static str,
+    pub receipt: PrintedManaPaymentReceipt,
+    pub resources_before: PrintedManaPaymentResources,
+    pub resources_after: PrintedManaPaymentResources,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PrintedCostSimulationError {
+    InvalidCostContract,
+    Payment(PrintedManaPaymentError),
+}
+
+/// Pays one selected printed-cost face through the exact staged-payment
+/// runtime. The simulator-facing resource state changes only after the
+/// complete cost succeeds.
+pub(crate) fn execute_printed_cost_payment(
+    cost: &PrintedManaCost,
+    face_index: usize,
+    choices: &PrintedManaPaymentChoices,
+    resources: &mut PrintedManaPaymentResources,
+) -> Result<PrintedCostPaymentBatch, PrintedCostSimulationError> {
+    if !printed_cost_has_live_bridge_contract(cost) {
+        return Err(PrintedCostSimulationError::InvalidCostContract);
+    }
+    let resources_before = resources.clone();
+    let mut staged = resources_before.clone();
+    let receipt = pay_printed_mana_cost(cost, face_index, choices, &mut staged)
+        .map_err(PrintedCostSimulationError::Payment)?;
+    let resources_after = staged.clone();
+    *resources = staged;
+    Ok(PrintedCostPaymentBatch {
+        bridge_version: PRINTED_COST_PAYMENT_BRIDGE_VERSION,
+        receipt,
+        resources_before,
+        resources_after,
+    })
+}
+
 /// Stable binding between one physical object and its exact compiled program.
 ///
 /// A copy receives its own `ObjectId`; `origin_id` on `PhysicalObject` retains
@@ -69,6 +121,17 @@ pub(crate) fn printed_cost_has_live_bridge_contract(cost: &PrintedManaCost) -> b
 pub struct BoundObjectProgram {
     pub object_id: ObjectId,
     pub clauses: Vec<BoundedOracleClause>,
+}
+
+/// Exact delegated combat clauses bound to one physical object identity.
+///
+/// Clause addresses stay attached to the object across zone and control
+/// changes. The query activates only clauses on the object's current face and
+/// still requires the object to be a battlefield creature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundCombatEvasionProgram {
+    pub object_id: ObjectId,
+    pub clauses: Vec<DelegatedKeywordClause>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,7 +150,22 @@ pub struct CompiledCardProgramBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CombatBlockDeclarationResult {
+    pub bridge_version: &'static str,
+    pub kernel_bridge_version: &'static str,
+    pub attacker: ObjectId,
+    pub blocker: ObjectId,
+    pub defending_player: PlayerId,
+    pub attacker_clause_addresses: Vec<ClauseAddress>,
+    pub blocker_clause_addresses: Vec<ClauseAddress>,
+    pub attacker_keyword_receipts: Vec<KeywordReceipt>,
+    pub blocker_keyword_receipts: Vec<KeywordReceipt>,
+    pub legal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CombatBlockDeclarationError {
+    MissingPlayer(PlayerId),
     MissingObject(ObjectId),
     ProgramFaceUnavailable {
         object: ObjectId,
@@ -101,6 +179,9 @@ pub(crate) enum CombatBlockDeclarationError {
         object: ObjectId,
         address: ClauseAddress,
     },
+    MissingActiveCombatEvasionProgram(ObjectId),
+    CharacteristicOutOfRange(ObjectId),
+    EffectiveState(ExecutionError),
     KeywordBridge(CombatEvasionProductionBridgeError),
 }
 
@@ -561,6 +642,16 @@ impl BoundedOracleSimulation {
             .map(|clauses| BoundObjectProgram { object_id, clauses })
     }
 
+    pub(crate) fn bound_combat_evasion_program(
+        &self,
+        object_id: ObjectId,
+    ) -> Option<BoundCombatEvasionProgram> {
+        self.combat_evasion_programs
+            .get(&object_id)
+            .cloned()
+            .map(|clauses| BoundCombatEvasionProgram { object_id, clauses })
+    }
+
     pub fn can_block(&self, object: ObjectId) -> Result<bool, ExecutionError> {
         let candidate = self
             .state
@@ -607,6 +698,172 @@ impl BoundedOracleSimulation {
             object,
             &ExecutionContext::new(candidate.controller, object, ActionWindow::Static),
         )
+    }
+
+    /// Evaluate one real block declaration from the current bounded state.
+    ///
+    /// The attacker and blocker are current physical objects. Effective
+    /// characteristics are resolved before translating the complete
+    /// battlefield into the keyword kernel. Exact programs are selected by
+    /// physical object identity and current face. No retained keyword metadata
+    /// or card name can authorize the result.
+    pub(crate) fn evaluate_combat_evasion_block_declaration(
+        &self,
+        attacker: ObjectId,
+        blocker: ObjectId,
+        defending_player: PlayerId,
+    ) -> Result<CombatBlockDeclarationResult, CombatBlockDeclarationError> {
+        if !self.state.players.contains_key(&defending_player) {
+            return Err(CombatBlockDeclarationError::MissingPlayer(defending_player));
+        }
+        let raw_attacker = self
+            .state
+            .object(attacker)
+            .ok_or(CombatBlockDeclarationError::MissingObject(attacker))?;
+        let raw_blocker = self
+            .state
+            .object(blocker)
+            .ok_or(CombatBlockDeclarationError::MissingObject(blocker))?;
+        let attacker_clauses =
+            self.active_combat_evasion_clauses(attacker, raw_attacker.active_face);
+        if attacker_clauses.is_empty() {
+            return Err(CombatBlockDeclarationError::MissingActiveCombatEvasionProgram(attacker));
+        }
+        let blocker_clauses = self
+            .active_combat_evasion_clauses(blocker, raw_blocker.active_face)
+            .into_iter()
+            .filter(|clause| clause.keyword_program().keyword() == OfficialKeyword::Shadow)
+            .collect::<Vec<_>>();
+        let attacker_addresses = attacker_clauses
+            .iter()
+            .map(|clause| clause.address())
+            .collect::<Vec<_>>();
+        let blocker_addresses = blocker_clauses
+            .iter()
+            .map(|clause| clause.address())
+            .collect::<Vec<_>>();
+
+        let effective_attacker = self
+            .effective_object(attacker)
+            .map_err(CombatBlockDeclarationError::EffectiveState)?;
+        let effective_blocker = self
+            .effective_object(blocker)
+            .map_err(CombatBlockDeclarationError::EffectiveState)?;
+        let attacker_is_creature = effective_attacker
+            .characteristics()
+            .card_types
+            .contains(&CardType::Creature);
+        let blocker_is_creature = effective_blocker
+            .characteristics()
+            .card_types
+            .contains(&CardType::Creature);
+        let physical_context_is_legal = attacker != blocker
+            && effective_attacker.zone == Zone::Battlefield
+            && effective_blocker.zone == Zone::Battlefield
+            && attacker_is_creature
+            && blocker_is_creature
+            && effective_attacker.attacking
+            && !effective_blocker.attacking
+            && effective_attacker.controller != defending_player
+            && effective_blocker.controller == defending_player;
+        if !physical_context_is_legal {
+            return Ok(CombatBlockDeclarationResult {
+                bridge_version: COMBAT_BLOCK_DECLARATION_PRODUCTION_BRIDGE_VERSION,
+                kernel_bridge_version: COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION,
+                attacker,
+                blocker,
+                defending_player,
+                attacker_clause_addresses: attacker_addresses,
+                blocker_clause_addresses: blocker_addresses,
+                attacker_keyword_receipts: Vec::new(),
+                blocker_keyword_receipts: Vec::new(),
+                legal: false,
+            });
+        }
+
+        let attacker_binding = combat_object_binding(&effective_attacker);
+        let blocker_binding = combat_object_binding(&effective_blocker);
+        let attacker_printed = combat_object_characteristics(&effective_attacker)?;
+        let blocker_printed = combat_object_characteristics(&effective_blocker)?;
+        let attacker_programs = attacker_clauses
+            .iter()
+            .map(|clause| clause.keyword_program())
+            .collect::<Vec<_>>();
+        let blocker_programs = blocker_clauses
+            .iter()
+            .map(|clause| clause.keyword_program())
+            .collect::<Vec<_>>();
+
+        let mut battlefield = Vec::new();
+        for object_id in self.state.object_ids() {
+            if object_id == attacker || object_id == blocker {
+                continue;
+            }
+            let effective = self
+                .effective_object(object_id)
+                .map_err(CombatBlockDeclarationError::EffectiveState)?;
+            if effective.zone != Zone::Battlefield {
+                continue;
+            }
+            battlefield.push((
+                combat_object_binding(&effective),
+                combat_object_characteristics(&effective)?,
+            ));
+        }
+
+        let evaluation = evaluate_combat_evasion_keywords(
+            &attacker_programs,
+            attacker_binding,
+            attacker_printed,
+        )?;
+        let kernel_evaluation = evaluation.evaluate_block_by(
+            blocker_binding,
+            blocker_printed,
+            &blocker_programs,
+            &battlefield,
+        )?;
+        let bounded_legal = object_can_block(
+            &self.state,
+            blocker,
+            &ExecutionContext::new(effective_blocker.controller, blocker, ActionWindow::Static),
+        )
+        .map_err(CombatBlockDeclarationError::EffectiveState)?
+            && object_can_be_blocked(
+                &self.state,
+                attacker,
+                &ExecutionContext::new(
+                    effective_attacker.controller,
+                    attacker,
+                    ActionWindow::Static,
+                ),
+            )
+            .map_err(CombatBlockDeclarationError::EffectiveState)?;
+
+        Ok(CombatBlockDeclarationResult {
+            bridge_version: COMBAT_BLOCK_DECLARATION_PRODUCTION_BRIDGE_VERSION,
+            kernel_bridge_version: evaluation.bridge_version(),
+            attacker,
+            blocker,
+            defending_player,
+            attacker_clause_addresses: attacker_addresses,
+            blocker_clause_addresses: blocker_addresses,
+            attacker_keyword_receipts: evaluation.receipts().to_vec(),
+            blocker_keyword_receipts: kernel_evaluation.blocker_receipts().to_vec(),
+            legal: bounded_legal && kernel_evaluation.permitted(),
+        })
+    }
+
+    fn active_combat_evasion_clauses(
+        &self,
+        object: ObjectId,
+        face_index: u8,
+    ) -> Vec<&DelegatedKeywordClause> {
+        self.combat_evasion_programs
+            .get(&object)
+            .into_iter()
+            .flatten()
+            .filter(|clause| clause.address().face_index == u16::from(face_index))
+            .collect()
     }
 
     pub fn attach(
@@ -1079,6 +1336,85 @@ fn physical_object_face(
     }
 }
 
+fn combat_object_binding(object: &PhysicalObject) -> StaticKeywordObjectBinding {
+    StaticKeywordObjectBinding::new(
+        KeywordObjectId(object.id),
+        KeywordPlayerId(u16::from(object.owner)),
+        KeywordPlayerId(u16::from(object.controller)),
+        combat_zone(object.zone),
+        true,
+        object.tapped,
+    )
+}
+
+fn combat_zone(zone: Zone) -> KeywordZone {
+    match zone {
+        Zone::Library => KeywordZone::Library,
+        Zone::Hand => KeywordZone::Hand,
+        Zone::Battlefield => KeywordZone::Battlefield,
+        Zone::Graveyard => KeywordZone::Graveyard,
+        Zone::Exile => KeywordZone::Exile,
+        Zone::Stack => KeywordZone::Stack,
+        Zone::Command => KeywordZone::Command,
+    }
+}
+
+fn combat_object_characteristics(
+    object: &PhysicalObject,
+) -> Result<KeywordObjectCharacteristics, CombatBlockDeclarationError> {
+    let characteristics = object.characteristics();
+    let power = i32::try_from(characteristics.power)
+        .map_err(|_| CombatBlockDeclarationError::CharacteristicOutOfRange(object.id))?;
+    let toughness = i32::try_from(characteristics.toughness)
+        .map_err(|_| CombatBlockDeclarationError::CharacteristicOutOfRange(object.id))?;
+    Ok(KeywordObjectCharacteristics {
+        name: characteristics.names.first().cloned(),
+        card_types: characteristics
+            .card_types
+            .iter()
+            .filter_map(|card_type| match card_type {
+                CardType::Artifact => Some(KeywordCardType::Artifact),
+                CardType::Battle => Some(KeywordCardType::Battle),
+                CardType::Creature => Some(KeywordCardType::Creature),
+                CardType::Enchantment => Some(KeywordCardType::Enchantment),
+                CardType::Instant => Some(KeywordCardType::Instant),
+                CardType::Land => Some(KeywordCardType::Land),
+                CardType::Planeswalker => Some(KeywordCardType::Planeswalker),
+                CardType::Sorcery => Some(KeywordCardType::Sorcery),
+                CardType::Spell | CardType::Permanent => None,
+            })
+            .collect(),
+        supertypes: characteristics
+            .supertypes
+            .iter()
+            .map(|supertype| match supertype {
+                Supertype::Basic => "Basic",
+                Supertype::Legendary => "Legendary",
+                Supertype::Snow => "Snow",
+                Supertype::Nonbasic => "Nonbasic",
+            })
+            .map(str::to_owned)
+            .collect(),
+        subtypes: characteristics.subtypes.iter().cloned().collect(),
+        colors: characteristics
+            .colors
+            .iter()
+            .map(|color| match color {
+                Color::White => KeywordManaColor::White,
+                Color::Blue => KeywordManaColor::Blue,
+                Color::Black => KeywordManaColor::Black,
+                Color::Red => KeywordManaColor::Red,
+                Color::Green => KeywordManaColor::Green,
+                Color::Colorless => KeywordManaColor::Colorless,
+            })
+            .collect(),
+        mana_value: characteristics.mana_value,
+        power: Some(power),
+        toughness: Some(toughness),
+        oracle_text: None,
+    })
+}
+
 fn event_player(event: &TriggerEvent) -> Option<PlayerId> {
     match event {
         TriggerEvent::SpellCast { player, .. }
@@ -1086,11 +1422,18 @@ fn event_player(event: &TriggerEvent) -> Option<PlayerId> {
         | TriggerEvent::LifeGained { player, .. }
         | TriggerEvent::TokenCreated { player, .. }
         | TriggerEvent::PlayerAction { player, .. }
-        | TriggerEvent::CombatDamageToPlayer { player, .. } => Some(*player),
+        | TriggerEvent::CombatDamageToPlayer { player, .. }
+        | TriggerEvent::DamageToPlayer { player, .. } => Some(*player),
         TriggerEvent::BecameTarget { controller, .. } => Some(*controller),
         TriggerEvent::BeginningOf { active_player, .. } => Some(*active_player),
         TriggerEvent::ObjectEntered { .. }
         | TriggerEvent::ObjectAttacked { .. }
+        | TriggerEvent::ObjectBlocked { .. }
+        | TriggerEvent::SchemeSetInMotion { .. }
+        | TriggerEvent::ObjectTappedForMana { .. }
+        | TriggerEvent::AttachmentTargetEvent { .. }
+        | TriggerEvent::CombatDamageToObject { .. }
+        | TriggerEvent::DamageToObject { .. }
         | TriggerEvent::ObjectEvent { .. } => None,
     }
 }
@@ -1105,10 +1448,19 @@ fn populate_trigger_context(context: &mut ExecutionContext, event: &TriggerEvent
             context.triggering_object = Some(*card);
             context.that_player = Some(*player);
         }
-        TriggerEvent::ObjectEntered { object } | TriggerEvent::ObjectAttacked { object } => {
+        TriggerEvent::ObjectEntered { object }
+        | TriggerEvent::ObjectAttacked { object }
+        | TriggerEvent::SchemeSetInMotion { object }
+        | TriggerEvent::ObjectTappedForMana { object } => {
             context.triggering_object = Some(*object);
         }
+        TriggerEvent::ObjectBlocked { blocked, .. } => {
+            context.triggering_object = Some(*blocked);
+        }
         TriggerEvent::ObjectEvent { object, .. } => {
+            context.triggering_object = Some(*object);
+        }
+        TriggerEvent::AttachmentTargetEvent { object, .. } => {
             context.triggering_object = Some(*object);
         }
         TriggerEvent::LifeGained { player, .. } => {
@@ -1122,9 +1474,14 @@ fn populate_trigger_context(context: &mut ExecutionContext, event: &TriggerEvent
             context.triggering_object = *object;
             context.that_player = Some(*player);
         }
-        TriggerEvent::CombatDamageToPlayer { source, player, .. } => {
+        TriggerEvent::CombatDamageToPlayer { source, player, .. }
+        | TriggerEvent::DamageToPlayer { source, player, .. } => {
             context.triggering_object = Some(*source);
             context.that_player = Some(*player);
+        }
+        TriggerEvent::CombatDamageToObject { object, .. }
+        | TriggerEvent::DamageToObject { object, .. } => {
+            context.triggering_object = Some(*object);
         }
         TriggerEvent::BecameTarget {
             controller, source, ..
@@ -1168,6 +1525,7 @@ pub fn physical_object_from_compiled_card(
         ("Lifelink", Keyword::Lifelink),
         ("Menace", Keyword::Menace),
         ("Reach", Keyword::Reach),
+        ("Shroud", Keyword::Shroud),
         ("Trample", Keyword::Trample),
         ("Vigilance", Keyword::Vigilance),
     ]
@@ -1184,9 +1542,18 @@ pub fn physical_object_from_compiled_card(
         token: false,
         tapped: false,
         attacking: false,
+        blocking: false,
         prepared: false,
         face_down: false,
         active_face: 0,
+        class_level: if subtypes_from_type_line(&card.type_line)
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Class"))
+        {
+            1
+        } else {
+            0
+        },
         front: ObjectCharacteristics {
             names: vec![card.name.clone()],
             card_types,
@@ -1279,6 +1646,7 @@ pub fn insert_player(
         mana: Default::default(),
         commander_identity,
         library: Vec::new(),
+        counters: Default::default(),
         chosen_creature_type: None,
         maximum_hand_size: Some(7),
     });

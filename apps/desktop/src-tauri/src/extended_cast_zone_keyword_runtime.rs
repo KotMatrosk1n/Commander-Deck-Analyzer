@@ -1053,8 +1053,6 @@ impl ExtendedCastZoneRuntime {
         self.objects.get(&object_id)
     }
 
-    // The explicit arguments keep the public special action transaction clear.
-    #[allow(clippy::too_many_arguments)]
     pub fn perform_foretell_special_action(
         &mut self,
         player: PlayerId,
@@ -1079,8 +1077,6 @@ impl ExtendedCastZoneRuntime {
         Ok(evidence)
     }
 
-    // The explicit arguments mirror the staged special action transaction.
-    #[allow(clippy::too_many_arguments)]
     fn perform_foretell_special_action_inner(
         &mut self,
         player: PlayerId,
@@ -1202,8 +1198,6 @@ impl ExtendedCastZoneRuntime {
         })
     }
 
-    // The explicit arguments keep the public special action transaction clear.
-    #[allow(clippy::too_many_arguments)]
     pub fn perform_plot_special_action(
         &mut self,
         player: PlayerId,
@@ -1228,8 +1222,6 @@ impl ExtendedCastZoneRuntime {
         Ok(evidence)
     }
 
-    // The explicit arguments mirror the staged special action transaction.
-    #[allow(clippy::too_many_arguments)]
     fn perform_plot_special_action_inner(
         &mut self,
         player: PlayerId,

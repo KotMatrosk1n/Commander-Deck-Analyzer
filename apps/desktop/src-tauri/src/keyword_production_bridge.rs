@@ -5,6 +5,8 @@
 //! rules kernel, executes Devoid through that kernel, and returns the resulting
 //! effective characteristics.
 
+#![allow(dead_code)]
+
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -12,13 +14,17 @@ use crate::keyword_rules_runtime::{
     CombatKeyword, KeywordAction, KeywordEvidenceEvent, KeywordExecutionError, KeywordGameState,
     KeywordObject, KeywordPlayerState, KeywordProgram, KeywordProgramKind, KeywordReceipt,
     ManaColor, ObjectCharacteristics, ObjectId, OfficialKeyword, PlayerId, ProtectionTarget,
-    SourceProfile, Zone, can_activate_tap_or_untap_symbol, can_attack, can_cast_at_instant_timing,
-    execute_keyword_action, targeting_is_legal,
+    SourceProfile, Zone, can_activate_tap_or_untap_symbol, can_attack,
+    can_block_for_defending_player, can_cast_at_instant_timing, execute_keyword_action,
+    targeting_is_legal,
 };
 
 pub(crate) const DEVOID_PRODUCTION_BRIDGE_VERSION: &str = "devoid-production-bridge/v1";
 pub(crate) const STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION: &str =
     "static-keyword-production-bridge/v1";
+pub(crate) const COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION: &str =
+    "combat-evasion-production-bridge/v1";
+
 pub(crate) const STATIC_KEYWORD_PRODUCTION_KEYWORDS: &[OfficialKeyword] = &[
     OfficialKeyword::Flying,
     OfficialKeyword::Flash,
@@ -83,6 +89,18 @@ impl StaticKeywordObjectBinding {
 
     pub(crate) const fn object_id(self) -> ObjectId {
         self.object_id
+    }
+
+    pub(crate) const fn owner(self) -> PlayerId {
+        self.owner
+    }
+
+    pub(crate) const fn controller(self) -> PlayerId {
+        self.controller
+    }
+
+    pub(crate) const fn zone(self) -> Zone {
+        self.zone
     }
 }
 
@@ -415,6 +433,110 @@ fn static_combat_keyword(keyword: OfficialKeyword) -> Option<CombatKeyword> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CombatEvasionEvaluation {
+    bridge_version: &'static str,
+    binding: StaticKeywordObjectBinding,
+    state: KeywordGameState,
+    programs: Vec<KeywordProgram>,
+    receipts: Vec<KeywordReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CombatEvasionBlockEvaluation {
+    permitted: bool,
+    blocker_receipts: Vec<KeywordReceipt>,
+}
+
+impl CombatEvasionBlockEvaluation {
+    pub(crate) const fn permitted(&self) -> bool {
+        self.permitted
+    }
+
+    pub(crate) fn blocker_receipts(&self) -> &[KeywordReceipt] {
+        &self.blocker_receipts
+    }
+}
+
+impl CombatEvasionEvaluation {
+    pub(crate) const fn bridge_version(&self) -> &'static str {
+        self.bridge_version
+    }
+
+    pub(crate) const fn binding(&self) -> StaticKeywordObjectBinding {
+        self.binding
+    }
+
+    pub(crate) fn object(&self) -> &KeywordObject {
+        self.state
+            .object(self.binding.object_id)
+            .expect("validated combat evasion binding retains its object")
+    }
+
+    pub(crate) fn receipts(&self) -> &[KeywordReceipt] {
+        &self.receipts
+    }
+
+    pub(crate) fn programs(&self) -> &[KeywordProgram] {
+        &self.programs
+    }
+
+    pub(crate) fn permits_block_by(
+        &self,
+        blocker_binding: StaticKeywordObjectBinding,
+        blocker_printed: ObjectCharacteristics,
+        blocker_programs: &[&KeywordProgram],
+        defending_permanents: &[(StaticKeywordObjectBinding, ObjectCharacteristics)],
+    ) -> Result<bool, CombatEvasionProductionBridgeError> {
+        self.evaluate_block_by(
+            blocker_binding,
+            blocker_printed,
+            blocker_programs,
+            defending_permanents,
+        )
+        .map(|evaluation| evaluation.permitted)
+    }
+
+    pub(crate) fn evaluate_block_by(
+        &self,
+        blocker_binding: StaticKeywordObjectBinding,
+        blocker_printed: ObjectCharacteristics,
+        blocker_programs: &[&KeywordProgram],
+        defending_permanents: &[(StaticKeywordObjectBinding, ObjectCharacteristics)],
+    ) -> Result<CombatEvasionBlockEvaluation, CombatEvasionProductionBridgeError> {
+        let mut state = self.state.clone();
+        insert_bound_object(&mut state, blocker_binding, blocker_printed.clone())?;
+        let blocker_receipts = if blocker_programs.is_empty() {
+            Vec::new()
+        } else {
+            let receipts =
+                install_combat_evasion_programs(&mut state, blocker_binding, blocker_programs)?;
+            validate_combat_evasion_object(
+                &state,
+                blocker_binding,
+                &blocker_printed,
+                blocker_programs,
+                &receipts,
+            )?;
+            receipts
+        };
+        for (binding, printed) in defending_permanents {
+            insert_bound_object(&mut state, *binding, printed.clone())?;
+        }
+        let permitted = can_block_for_defending_player(
+            &state,
+            self.binding.object_id,
+            blocker_binding.object_id,
+            blocker_binding.controller,
+        )
+        .map_err(CombatEvasionProductionBridgeError::Kernel)?;
+        Ok(CombatEvasionBlockEvaluation {
+            permitted,
+            blocker_receipts,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CombatEvasionProductionBridgeError {
     EmptyProgramSet,
     UnsupportedProgram(OfficialKeyword),
@@ -422,6 +544,12 @@ pub(crate) enum CombatEvasionProductionBridgeError {
     InexactProgramSemantics,
     MixedSourceFaces,
     DuplicateClauseAddress,
+    Kernel(KeywordExecutionError),
+    ReceiptContractMismatch,
+    BoundObjectIdentityChanged,
+    BoundObjectContextChanged,
+    PrintedCharacteristicsChanged,
+    KeywordStateMismatch,
 }
 
 impl fmt::Display for CombatEvasionProductionBridgeError {
@@ -431,6 +559,47 @@ impl fmt::Display for CombatEvasionProductionBridgeError {
 }
 
 impl std::error::Error for CombatEvasionProductionBridgeError {}
+
+impl From<KeywordExecutionError> for CombatEvasionProductionBridgeError {
+    fn from(error: KeywordExecutionError) -> Self {
+        Self::Kernel(error)
+    }
+}
+
+pub(crate) fn evaluate_combat_evasion_keywords(
+    programs: &[&KeywordProgram],
+    binding: StaticKeywordObjectBinding,
+    printed: ObjectCharacteristics,
+) -> Result<CombatEvasionEvaluation, CombatEvasionProductionBridgeError> {
+    validate_combat_evasion_program_set(programs)?;
+    let mut state =
+        bind_static_keyword_object(binding, printed.clone()).map_err(|error| match error {
+            StaticKeywordProductionBridgeError::Kernel(error) => {
+                CombatEvasionProductionBridgeError::Kernel(error)
+            }
+            _ => CombatEvasionProductionBridgeError::BoundObjectContextChanged,
+        })?;
+    let receipts = install_combat_evasion_programs(&mut state, binding, programs)?;
+    validate_combat_evasion_object(&state, binding, &printed, programs, &receipts)?;
+    let mut installed_programs = programs
+        .iter()
+        .map(|program| (*program).clone())
+        .collect::<Vec<_>>();
+    installed_programs.sort_by_key(|program| {
+        (
+            program.source().face_index,
+            program.source().clause_index,
+            program.keyword(),
+        )
+    });
+    Ok(CombatEvasionEvaluation {
+        bridge_version: COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION,
+        binding,
+        state,
+        programs: installed_programs,
+        receipts,
+    })
+}
 
 pub(crate) fn validate_combat_evasion_program_set(
     programs: &[&KeywordProgram],
@@ -474,6 +643,128 @@ pub(crate) fn validate_combat_evasion_program_set(
     Ok(())
 }
 
+fn install_combat_evasion_programs(
+    state: &mut KeywordGameState,
+    binding: StaticKeywordObjectBinding,
+    programs: &[&KeywordProgram],
+) -> Result<Vec<KeywordReceipt>, CombatEvasionProductionBridgeError> {
+    validate_combat_evasion_program_set(programs)?;
+    let mut ordered = programs.to_vec();
+    ordered.sort_by_key(|program| {
+        (
+            program.source().face_index,
+            program.source().clause_index,
+            program.keyword(),
+        )
+    });
+    ordered
+        .into_iter()
+        .map(|program| {
+            let receipt = execute_keyword_action(
+                state,
+                program,
+                KeywordAction::InstallStaticKeyword {
+                    object: binding.object_id,
+                },
+            )?;
+            validate_static_keyword_receipt(&receipt, program, binding, state)
+                .map_err(|_| CombatEvasionProductionBridgeError::ReceiptContractMismatch)?;
+            Ok(receipt)
+        })
+        .collect()
+}
+
+fn validate_combat_evasion_object(
+    state: &KeywordGameState,
+    binding: StaticKeywordObjectBinding,
+    expected_printed: &ObjectCharacteristics,
+    programs: &[&KeywordProgram],
+    receipts: &[KeywordReceipt],
+) -> Result<(), CombatEvasionProductionBridgeError> {
+    if receipts.len() != programs.len() {
+        return Err(CombatEvasionProductionBridgeError::ReceiptContractMismatch);
+    }
+    let object = state.object(binding.object_id)?;
+    if object.id != binding.object_id {
+        return Err(CombatEvasionProductionBridgeError::BoundObjectIdentityChanged);
+    }
+    if object.owner != binding.owner
+        || object.controller != binding.controller
+        || object.zone != binding.zone
+        || object.controlled_since_turn_began != binding.controlled_since_turn_began
+        || object.tapped != binding.tapped
+    {
+        return Err(CombatEvasionProductionBridgeError::BoundObjectContextChanged);
+    }
+    if &object.printed != expected_printed {
+        return Err(CombatEvasionProductionBridgeError::PrintedCharacteristicsChanged);
+    }
+
+    let mut expected_keyword_instances = std::collections::BTreeMap::new();
+    let mut expected_landwalk_instances = std::collections::BTreeMap::new();
+    let mut expected_combat_keywords = BTreeSet::new();
+    for program in programs {
+        let instances = expected_keyword_instances
+            .entry(program.keyword())
+            .or_insert(0u16);
+        *instances = instances.saturating_add(1);
+        match program.kind() {
+            KeywordProgramKind::Fear(_) => {
+                expected_combat_keywords.insert(CombatKeyword::Fear);
+            }
+            KeywordProgramKind::Shadow(_) => {
+                expected_combat_keywords.insert(CombatKeyword::Shadow);
+            }
+            KeywordProgramKind::Landwalk(program) => {
+                let instances = expected_landwalk_instances
+                    .entry(program.quality)
+                    .or_insert(0u16);
+                *instances = instances.saturating_add(1);
+            }
+            _ => {
+                return Err(CombatEvasionProductionBridgeError::UnsupportedProgram(
+                    program.keyword(),
+                ));
+            }
+        }
+    }
+    if object.keyword_instances != expected_keyword_instances
+        || object.landwalk_instances != expected_landwalk_instances
+        || object.combat_keywords != expected_combat_keywords
+        || object.rules_keywords
+            != expected_keyword_instances
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>()
+    {
+        return Err(CombatEvasionProductionBridgeError::KeywordStateMismatch);
+    }
+    Ok(())
+}
+
+fn insert_bound_object(
+    state: &mut KeywordGameState,
+    binding: StaticKeywordObjectBinding,
+    printed: ObjectCharacteristics,
+) -> Result<(), CombatEvasionProductionBridgeError> {
+    for player in [binding.owner, binding.controller] {
+        if !state.players.contains_key(&player) {
+            state.add_player(KeywordPlayerState::new(player, 40))?;
+        }
+    }
+    let mut object = KeywordObject::new(
+        binding.object_id,
+        binding.owner,
+        binding.controller,
+        binding.zone,
+        printed,
+    );
+    object.controlled_since_turn_began = binding.controlled_since_turn_began;
+    object.tapped = binding.tapped;
+    state.insert_object(object)?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DevoidObjectBinding {
     object_id: ObjectId,
@@ -495,6 +786,22 @@ impl DevoidObjectBinding {
             controller,
             zone,
         }
+    }
+
+    pub(crate) const fn object_id(self) -> ObjectId {
+        self.object_id
+    }
+
+    pub(crate) const fn owner(self) -> PlayerId {
+        self.owner
+    }
+
+    pub(crate) const fn controller(self) -> PlayerId {
+        self.controller
+    }
+
+    pub(crate) const fn zone(self) -> Zone {
+        self.zone
     }
 }
 
@@ -520,8 +827,16 @@ impl DevoidCharacteristicEvaluation {
         &self.printed
     }
 
+    pub(crate) fn effective_characteristics(&self) -> &ObjectCharacteristics {
+        &self.effective
+    }
+
     pub(crate) fn effective_colors(&self) -> &BTreeSet<ManaColor> {
         &self.effective.colors
+    }
+
+    pub(crate) fn receipt(&self) -> &KeywordReceipt {
+        &self.receipt
     }
 }
 

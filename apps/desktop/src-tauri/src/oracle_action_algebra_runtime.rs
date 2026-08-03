@@ -26,9 +26,9 @@ use std::sync::OnceLock;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-pub const ORACLE_ACTION_ALGEBRA_COMPILER_VERSION: &str = "oracle-action-algebra-compiler-0.4";
-pub const ORACLE_ACTION_ALGEBRA_RUNTIME_VERSION: &str = "oracle-action-algebra-runtime-0.4";
-pub const ORACLE_ACTION_ALGEBRA_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101-102,104,107,109,111,119-122,400-406,608.2c-d,609-611,613,701.3,701.6-9,701.13-15,701.17-20,701.25,701.32,701.35,701.45,707";
+pub const ORACLE_ACTION_ALGEBRA_COMPILER_VERSION: &str = "oracle-action-algebra-compiler-0.7";
+pub const ORACLE_ACTION_ALGEBRA_RUNTIME_VERSION: &str = "oracle-action-algebra-runtime-0.7";
+pub const ORACLE_ACTION_ALGEBRA_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101-102,104,107,109,111,119-122,400-406,608.2c-d,609-611,613,615,701.3,701.6-9,701.13-15,701.17-20,701.25,701.32,701.35,701.45,707";
 
 /// Recognition here cannot become production execution coverage until the
 /// host engine binds every choice and its replacement-effect pipeline.
@@ -454,6 +454,11 @@ pub enum ActionKind {
         recipient: DamageRecipient,
         amount: Amount,
     },
+    CreateDamagePreventionShield {
+        recipient: DamageRecipient,
+        amount: Amount,
+        duration: Duration,
+    },
     Fight {
         first: ObjectOperand,
         second: ObjectOperand,
@@ -553,6 +558,7 @@ impl ActionKind {
             Self::Sacrifice { .. } => OracleActionFamily::Sacrifice,
             Self::GainLife { .. } | Self::LoseLife { .. } => OracleActionFamily::Life,
             Self::DealDamage { .. } => OracleActionFamily::Damage,
+            Self::CreateDamagePreventionShield { .. } => OracleActionFamily::Prevention,
             Self::Fight { .. } => OracleActionFamily::Fight,
             Self::Tap { .. } | Self::Untap { .. } => OracleActionFamily::TapUntap,
             Self::ChangeCounters { .. } => OracleActionFamily::Counters,
@@ -580,6 +586,7 @@ pub enum OracleActionFamily {
     Sacrifice,
     Life,
     Damage,
+    Prevention,
     Fight,
     TapUntap,
     Counters,
@@ -664,8 +671,6 @@ impl fmt::Display for OracleActionRejection {
 
 impl std::error::Error for OracleActionRejection {}
 
-// Kept inline because this public classification contract is matched throughout production.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OracleActionClassification {
     Program(OracleActionProgram),
@@ -750,7 +755,7 @@ fn reject_outer_envelope(source: &str) -> Option<OracleActionRejection> {
     {
         return Some(OracleActionRejection::TimingRestrictionEnvelope);
     }
-    if lower.contains(" would ")
+    if (lower.contains(" would ") && !lower.starts_with("prevent the next "))
         || lower.contains(" instead")
         || lower.starts_with("as ") && lower.contains(" enters ")
     {
@@ -990,8 +995,13 @@ fn flatten_sequence(actions: Vec<ActionNode>, separator: SequenceSeparator) -> A
                 if !flat_actions.is_empty() && !nested.is_empty() {
                     separators.push(separator);
                 }
+                let prior = flat_actions.len();
                 flat_actions.extend(nested);
-                separators.extend(nested_separators);
+                if prior == 0 {
+                    separators.extend(nested_separators);
+                } else {
+                    separators.extend(nested_separators);
+                }
             }
             _ => {
                 if !flat_actions.is_empty() {
@@ -1046,6 +1056,11 @@ fn assign_object_target_slots(kind: &mut ActionKind) {
             if let DamageSource::Object(source) = source {
                 assign(source, &mut next_slot);
             }
+            if let DamageRecipient::Object(recipient) = recipient {
+                assign(recipient, &mut next_slot);
+            }
+        }
+        ActionKind::CreateDamagePreventionShield { recipient, .. } => {
             if let DamageRecipient::Object(recipient) = recipient {
                 assign(recipient, &mut next_slot);
             }
@@ -1132,11 +1147,11 @@ fn rebind_implicit_you(node: &mut ActionNode, actor: PlayerOperand) {
             rebind_zone(&mut selection.zone, actor);
             rebind_zone(destination, actor);
         }
-        ActionKind::DealDamage {
-            recipient: DamageRecipient::Player(player),
-            ..
-        } => {
-            rebind_player(player, actor);
+        ActionKind::DealDamage { recipient, .. }
+        | ActionKind::CreateDamagePreventionShield { recipient, .. } => {
+            if let DamageRecipient::Player(player) = recipient {
+                rebind_player(player, actor);
+            }
         }
         ActionKind::Optional {
             actor: nested_actor,
@@ -1168,6 +1183,7 @@ fn parse_atomic_action(source: &str) -> Option<ActionNode> {
         .or_else(|| parse_sacrifice(source))
         .or_else(|| parse_life(source))
         .or_else(|| parse_damage(source))
+        .or_else(|| parse_damage_prevention(source))
         .or_else(|| parse_fight(source))
         .or_else(|| parse_tap_untap(source))
         .or_else(|| parse_counters(source))
@@ -1186,6 +1202,9 @@ fn parse_atomic_action(source: &str) -> Option<ActionNode> {
 
 fn parse_draw(source: &str) -> Option<ActionKind> {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
+    let canonical_source = source
+        .replace("additional card", "card")
+        .replace("extra card", "card");
     let captures = PATTERN
         .get_or_init(|| {
             Regex::new(
@@ -1193,7 +1212,7 @@ fn parse_draw(source: &str) -> Option<ActionKind> {
             )
             .expect("draw pattern")
         })
-        .captures(source)?;
+        .captures(&canonical_source)?;
     let player = parse_player_and_verb(
         captures.name("subject").map(|value| value.as_str()),
         captures.name("verb")?.as_str(),
@@ -1273,7 +1292,13 @@ fn parse_sacrifice(source: &str) -> Option<ActionKind> {
     )?;
     let body = captures.name("body")?.as_str();
     if let Some(objects) = parse_object_operand(body)
-        && matches!(objects, ObjectOperand::Source | ObjectOperand::Set { .. })
+        && matches!(
+            objects,
+            ObjectOperand::Source
+                | ObjectOperand::It
+                | ObjectOperand::ThatObject
+                | ObjectOperand::Set { .. }
+        )
     {
         return Some(ActionKind::Sacrifice {
             player,
@@ -1301,7 +1326,7 @@ fn parse_life(source: &str) -> Option<ActionKind> {
     let captures = PATTERN
         .get_or_init(|| {
             Regex::new(
-                r"^(?:(?P<subject>You|Target player|Target opponent|Each player|Each opponent|That player|Chosen player) )?(?P<verb>Gain|gain|gains|Lose|lose|loses) (?P<amount>[A-Za-z0-9]+(?: many)?) life$",
+                r"^(?:(?P<subject>You|Target player|Target opponent|Each player|Each opponent|That player|Chosen player) )?(?P<verb>Gain|gain|gains|Lose|lose|loses) (?P<amount>[A-Za-z0-9]+(?: many| much)?) life$",
             )
             .expect("life pattern")
         })
@@ -1357,6 +1382,32 @@ fn parse_damage(source: &str) -> Option<ActionKind> {
         source,
         recipient,
         amount: parse_amount(captures.name("amount")?.as_str())?,
+    })
+}
+
+fn parse_damage_prevention(source: &str) -> Option<ActionKind> {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    let captures = PATTERN
+        .get_or_init(|| {
+            Regex::new(
+                r"^Prevent the next (?P<amount>[A-Za-z0-9]+) damage that would be dealt to (?P<recipient>any target|target player|target opponent|target creature|target permanent|you) (?P<duration>this turn|until end of turn)$",
+            )
+            .expect("damage prevention pattern")
+        })
+        .captures(source)?;
+    let recipient = match captures.name("recipient")?.as_str() {
+        "any target" => DamageRecipient::AnyTarget,
+        "target player" => DamageRecipient::Player(PlayerOperand::TargetPlayer),
+        "target opponent" => DamageRecipient::Player(PlayerOperand::TargetOpponent),
+        "you" => DamageRecipient::Player(PlayerOperand::You),
+        "target creature" => DamageRecipient::Object(parse_object_operand("target creature")?),
+        "target permanent" => DamageRecipient::Object(parse_object_operand("target permanent")?),
+        _ => return None,
+    };
+    Some(ActionKind::CreateDamagePreventionShield {
+        recipient,
+        amount: parse_amount(captures.name("amount")?.as_str())?,
+        duration: parse_duration(captures.name("duration")?.as_str())?,
     })
 }
 
@@ -1438,7 +1489,7 @@ fn parse_power_toughness(source: &str) -> Option<ActionKind> {
     let captures = PATTERN
         .get_or_init(|| {
             Regex::new(
-                r"^(?P<object>.+?) gets (?P<power>[+-][0-9]+)/(?P<toughness>[+-][0-9]+) (?P<duration>until end of turn|this turn|until your next turn)$",
+                r"^(?P<object>.+?) (?:gets|get) (?P<power>[+-][0-9]+)/(?P<toughness>[+-][0-9]+) (?P<duration>until end of turn|this turn|until your next turn)$",
             )
             .expect("power toughness pattern")
         })
@@ -1899,7 +1950,7 @@ fn parse_amount(source: &str) -> Option<Amount> {
         "nineteen" => Some(Amount::Fixed(19)),
         "twenty" => Some(Amount::Fixed(20)),
         "x" => Some(Amount::Variable(VariableAmount::X)),
-        "that many" => Some(Amount::Variable(VariableAmount::ThatMany)),
+        "that many" | "that much" => Some(Amount::Variable(VariableAmount::ThatMany)),
         _ => lower.parse::<u32>().ok().and_then(Amount::fixed_positive),
     }
 }
@@ -1978,7 +2029,7 @@ fn parse_object_operand(source: &str) -> Option<ObjectOperand> {
     }
 }
 
-fn parse_object_filter(source: &str) -> Option<ObjectFilter> {
+pub(crate) fn parse_object_filter(source: &str) -> Option<ObjectFilter> {
     let mut original = source.trim().to_owned();
     let mut source = original.to_ascii_lowercase();
     let mut filter = ObjectFilter::permanent();
@@ -2089,7 +2140,7 @@ fn parse_object_filter(source: &str) -> Option<ObjectFilter> {
             filter.excluded_types = BTreeSet::from([CardType::Instant, CardType::Sorcery]);
         }
         _ => {
-            let (subtype, original_subtype) = [
+            if let Some((subtype, original_subtype)) = [
                 " creature cards",
                 " creature card",
                 " creatures",
@@ -2105,17 +2156,37 @@ fn parse_object_filter(source: &str) -> Option<ObjectFilter> {
                             .unwrap_or_default(),
                     )
                 })
-            })?;
-            if subtype.is_empty()
-                || !original_subtype.chars().next()?.is_uppercase()
-                || !original_subtype
-                    .chars()
-                    .all(|character| character.is_ascii_alphabetic() || character == '-')
-            {
-                return None;
+            }) {
+                if subtype.is_empty()
+                    || !original_subtype.chars().next()?.is_uppercase()
+                    || !original_subtype
+                        .chars()
+                        .all(|character| character.is_ascii_alphabetic() || character == '-')
+                {
+                    return None;
+                }
+                filter.required_types.insert(CardType::Creature);
+                filter.required_subtypes.insert(subtype.to_owned());
+            } else {
+                if !original.chars().next()?.is_uppercase()
+                    || !original
+                        .chars()
+                        .all(|character| character.is_ascii_alphabetic() || character == '-')
+                {
+                    return None;
+                }
+                let subtype = if let Some(stem) = original.strip_suffix("ies") {
+                    format!("{stem}y")
+                } else if let Some(stem) = original.strip_suffix('s') {
+                    stem.to_owned()
+                } else {
+                    original.clone()
+                };
+                if subtype.is_empty() {
+                    return None;
+                }
+                filter.required_subtypes.insert(subtype);
             }
-            filter.required_types.insert(CardType::Creature);
-            filter.required_subtypes.insert(subtype.to_owned());
         }
     }
     Some(filter)
@@ -2388,11 +2459,11 @@ fn rebind_inherited_target_player(node: &mut ActionNode) {
             rebind_zone(&mut selection.zone);
             rebind_zone(destination);
         }
-        ActionKind::DealDamage {
-            recipient: DamageRecipient::Player(player),
-            ..
-        } => {
-            rebind_player(player);
+        ActionKind::DealDamage { recipient, .. }
+        | ActionKind::CreateDamagePreventionShield { recipient, .. } => {
+            if let DamageRecipient::Player(player) = recipient {
+                rebind_player(player);
+            }
         }
         ActionKind::Optional { actor, action } => {
             rebind_player(actor);
@@ -2796,6 +2867,15 @@ pub enum ResolvedDamageRecipient {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DamagePreventionShield {
+    pub recipient: ResolvedDamageRecipient,
+    pub remaining: u32,
+    pub duration: Duration,
+    pub source: Option<ObjectRef>,
+    pub program_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibilityEvent {
     pub action_id: ActionId,
     pub viewer: Option<PlayerId>,
@@ -2824,6 +2904,7 @@ pub struct OracleActionWorldState {
     pub libraries: BTreeMap<PlayerId, Vec<ObjectRef>>,
     pub objects: BTreeMap<ObjectRef, GameObject>,
     pub continuous_effects: Vec<ContinuousActionEffect>,
+    pub damage_prevention_shields: Vec<DamagePreventionShield>,
     pub damage_events: Vec<DamageEvent>,
     pub visibility_events: Vec<VisibilityEvent>,
     pub zone_moves: Vec<ZoneMoveEvent>,
@@ -2843,6 +2924,7 @@ impl Default for OracleActionWorldState {
             libraries: BTreeMap::new(),
             objects: BTreeMap::new(),
             continuous_effects: Vec::new(),
+            damage_prevention_shields: Vec::new(),
             damage_events: Vec::new(),
             visibility_events: Vec::new(),
             zone_moves: Vec::new(),
@@ -3083,6 +3165,11 @@ pub enum ActionReceiptKind {
     },
     Damage {
         events: Vec<DamageEvent>,
+    },
+    DamagePreventionCreated {
+        recipients: Vec<ResolvedDamageRecipient>,
+        amount: u32,
+        duration: Duration,
     },
     Fought {
         first: ObjectRef,
@@ -3424,6 +3511,50 @@ fn execute_action_node(
                 kind: ActionReceiptKind::LifeChanged { players, deltas },
             });
         }
+        ActionKind::CreateDamagePreventionShield {
+            recipient,
+            amount,
+            duration,
+        } => {
+            let recipients =
+                resolve_damage_recipients(recipient, node.id, bindings, state, memory)?;
+            let amount = resolve_amount(amount, node.id, bindings, state, memory)?;
+            for recipient in &recipients {
+                state
+                    .damage_prevention_shields
+                    .push(DamagePreventionShield {
+                        recipient: *recipient,
+                        remaining: amount,
+                        duration: *duration,
+                        source: bindings.source,
+                        program_digest: program_digest.to_owned(),
+                    });
+            }
+            memory.last_objects = recipients
+                .iter()
+                .filter_map(|recipient| match recipient {
+                    ResolvedDamageRecipient::Object(object) => Some(*object),
+                    ResolvedDamageRecipient::Player(_) => None,
+                })
+                .collect();
+            memory.last_players = recipients
+                .iter()
+                .filter_map(|recipient| match recipient {
+                    ResolvedDamageRecipient::Player(player) => Some(*player),
+                    ResolvedDamageRecipient::Object(_) => None,
+                })
+                .collect();
+            memory.last_amount = Some(amount);
+            memory.previous_action_succeeded = true;
+            receipts.push(ActionReceipt {
+                action_id: node.id,
+                kind: ActionReceiptKind::DamagePreventionCreated {
+                    recipients,
+                    amount,
+                    duration: *duration,
+                },
+            });
+        }
         ActionKind::DealDamage {
             source,
             recipient,
@@ -3434,12 +3565,13 @@ fn execute_action_node(
             let recipients =
                 resolve_damage_recipients(recipient, node.id, bindings, state, memory)?;
             let amount = resolve_amount(amount, node.id, bindings, state, memory)?;
-            let events = recipients
+            let mut events = recipients
                 .into_iter()
                 .map(|recipient| {
                     build_damage_event(node.id, source, recipient, amount, state, program_digest)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            apply_damage_prevention_shields(&mut events, state);
             apply_damage_batch(&events, state)?;
             memory.last_objects = events
                 .iter()
@@ -3475,7 +3607,7 @@ fn execute_action_node(
                 .ok_or(OracleActionRuntimeError::MissingTarget(node.id))?;
             let first_power = current_power(first, state)?;
             let second_power = current_power(second, state)?;
-            let events = vec![
+            let mut events = vec![
                 build_damage_event(
                     node.id,
                     Some(first),
@@ -3495,6 +3627,7 @@ fn execute_action_node(
                     program_digest,
                 )?,
             ];
+            apply_damage_prevention_shields(&mut events, state);
             apply_damage_batch(&events, state)?;
             state.damage_events.extend(events.clone());
             memory.last_objects = vec![first, second];
@@ -4297,7 +4430,7 @@ fn resolve_objects(
     Ok(objects)
 }
 
-fn object_matches_filter(
+pub(crate) fn object_matches_filter(
     object: &GameObject,
     filter: &ObjectFilter,
     controller: PlayerId,
@@ -4623,14 +4756,15 @@ fn resolve_amount(
 ) -> Result<u32, OracleActionRuntimeError> {
     match amount {
         Amount::Fixed(amount) => Ok(*amount),
-        Amount::Variable(VariableAmount::ThatMany) => {
-            memory
-                .last_amount
-                .ok_or(OracleActionRuntimeError::MissingVariableAmount {
-                    action,
-                    variable: VariableAmount::ThatMany,
-                })
-        }
+        Amount::Variable(VariableAmount::ThatMany) => bindings
+            .variable_amounts
+            .get(&VariableAmount::ThatMany)
+            .copied()
+            .or(memory.last_amount)
+            .ok_or(OracleActionRuntimeError::MissingVariableAmount {
+                action,
+                variable: VariableAmount::ThatMany,
+            }),
         Amount::Variable(VariableAmount::NumberOfSelectedObjects) => {
             u32::try_from(memory.last_objects.len())
                 .map_err(|_| OracleActionRuntimeError::AmountOverflow)
@@ -4894,6 +5028,28 @@ fn apply_damage_batch(
         remove_damage_counters(object, "defense", amount, state)?;
     }
     Ok(())
+}
+
+fn apply_damage_prevention_shields(events: &mut [DamageEvent], state: &mut OracleActionWorldState) {
+    for event in events {
+        let mut remaining_damage = event.amount;
+        for shield in state
+            .damage_prevention_shields
+            .iter_mut()
+            .filter(|shield| shield.recipient == event.recipient && shield.remaining > 0)
+        {
+            let prevented = shield.remaining.min(remaining_damage);
+            shield.remaining -= prevented;
+            remaining_damage -= prevented;
+            if remaining_damage == 0 {
+                break;
+            }
+        }
+        event.amount = remaining_damage;
+    }
+    state
+        .damage_prevention_shields
+        .retain(|shield| shield.remaining > 0);
 }
 
 fn remove_damage_counters(
@@ -5398,4 +5554,7 @@ pub fn expire_oracle_action_effects(boundary: Duration, state: &mut OracleAction
         duration != boundary
             && (duration != Duration::UntilSourceLeavesBattlefield || source_still_exists)
     });
+    state
+        .damage_prevention_shields
+        .retain(|shield| shield.duration != boundary);
 }

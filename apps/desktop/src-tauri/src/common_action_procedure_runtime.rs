@@ -592,7 +592,9 @@ fn parse_support(source: &str, timing: CommonActionTiming) -> Option<CommonActio
     let (core, reminder) = split_trailing_reminder(source);
     let amount_text = strip_optional_terminal_period(core).strip_prefix("support ")?;
     let maximum_targets = parse_amount(amount_text)?;
-    let reminder = reminder?;
+    let Some(reminder) = reminder else {
+        return None;
+    };
     let amount_words = amount_words(maximum_targets)?;
     let other = reminder
         == format!("Put a +1/+1 counter on each of up to {amount_words} other target creatures.");
@@ -659,7 +661,9 @@ fn parse_amass(source: &str) -> Option<CommonActionKind> {
     let ResolvedAmount::Fixed(fixed) = amount else {
         return None;
     };
-    let reminder = reminder?;
+    let Some(reminder) = reminder else {
+        return None;
+    };
     let subtype_word = match subtype {
         ArmySubtype::Orc => "Orc",
         ArmySubtype::Zombie => "Zombie",
@@ -1748,8 +1752,10 @@ fn resolve_venture(
                 .checked_add(1)
                 .ok_or(CommonActionRuntimeError::DungeonCompletionOverflow)?;
         } else {
-            if let Some(dungeon) = choice.dungeon {
-                return Err(CommonActionRuntimeError::IllegalDungeonChoice(dungeon));
+            if choice.dungeon.is_some() {
+                return Err(CommonActionRuntimeError::IllegalDungeonChoice(
+                    choice.dungeon.expect("checked some"),
+                ));
             }
             let room = choice
                 .room

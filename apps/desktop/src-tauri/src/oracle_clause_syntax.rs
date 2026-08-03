@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 pub const ORACLE_CLAUSE_SYNTAX_COMPILER_VERSION: &str = "oracle-clause-syntax-compiler-0.2";
 pub const ORACLE_CLAUSE_SYNTAX_RUNTIME_VERSION: &str = "oracle-clause-syntax-runtime-0.1";
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum OracleSyntaxSemanticContext {
     /// Rules text printed on a card or one of its retained faces. This includes
     /// Dungeon, Attraction, and sticker-sheet card records. The other variants
@@ -1208,12 +1208,14 @@ fn recognize_lead_in(
     }
     let prefix = prefix_span.slice(line)?.to_ascii_lowercase();
     let remainder = line[comma + 1..end].trim().to_ascii_lowercase();
-    let kind = if ((prefix.contains(" would ") || prefix.ends_with(" would"))
-        && (remainder.starts_with("instead") || remainder.contains(" instead")))
-        || (prefix.starts_with("as ")
-            && (prefix.contains(" enters")
-                || prefix.contains(" is turned face up")
-                || prefix.contains(" is cast")))
+    let kind = if (prefix.contains(" would ") || prefix.ends_with(" would"))
+        && (remainder.starts_with("instead") || remainder.contains(" instead"))
+    {
+        LeadInKind::Replacement
+    } else if prefix.starts_with("as ")
+        && (prefix.contains(" enters")
+            || prefix.contains(" is turned face up")
+            || prefix.contains(" is cast"))
     {
         LeadInKind::Replacement
     } else if prefix.starts_with("when ")

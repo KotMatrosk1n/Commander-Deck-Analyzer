@@ -28,6 +28,7 @@ pub(crate) enum FaceLayoutKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FaceRole {
+    Single,
     SplitPart,
     TransformFront,
     TransformBack,
@@ -41,6 +42,7 @@ pub(crate) enum FaceRole {
     ReversibleBack,
     TokenFront,
     TokenBack,
+    MeldFront,
     PreparePermanent,
     PrepareSpell,
 }
@@ -110,8 +112,6 @@ pub(crate) struct FaceLayoutRuntimeReceipt {
     pub contract_sha256: String,
 }
 
-// Retained as the transition contract vocabulary; production currently compiles layout receipts.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FaceZone {
     Library,
@@ -124,8 +124,6 @@ pub(crate) enum FaceZone {
     OutsideGame,
 }
 
-// Retained as the transition contract vocabulary; production currently compiles layout receipts.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActiveFaceView {
     Face(u16),
@@ -136,8 +134,6 @@ pub(crate) enum ActiveFaceView {
     },
 }
 
-// Retained as the transition contract state; production currently compiles layout receipts.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FaceLayoutState {
     pub zone: FaceZone,
@@ -147,8 +143,6 @@ pub(crate) struct FaceLayoutState {
     pub unlocked_halves: [bool; 2],
 }
 
-// Retained as the transition contract vocabulary; production currently compiles layout receipts.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FaceLayoutEvent {
     CastFace(u16),
@@ -171,8 +165,6 @@ pub(crate) enum FaceLayoutRuntimeError {
     UnsupportedLayout,
     IncompleteFaceEvidence,
     IncompleteRelatedComponentEvidence,
-    // Retained for transition contract failures; production currently compiles layout receipts.
-    #[allow(dead_code)]
     IllegalTransition,
 }
 
@@ -438,8 +430,6 @@ impl FaceLayoutRuntimeReceipt {
     }
 }
 
-// Retained as the transition contract entry point; production currently compiles layout receipts.
-#[allow(dead_code)]
 pub(crate) fn initial_layout_state(
     program: &FaceLayoutProgram,
     zone: FaceZone,
@@ -497,8 +487,6 @@ pub(crate) fn initial_layout_state(
     })
 }
 
-// Retained as the transition contract executor; production currently compiles layout receipts.
-#[allow(dead_code)]
 pub(crate) fn apply_layout_event(
     program: &FaceLayoutProgram,
     state: &FaceLayoutState,
@@ -791,8 +779,6 @@ pub(crate) fn apply_layout_event(
     Ok(next)
 }
 
-// Retained as the meld transition projection; production currently compiles layout receipts.
-#[allow(dead_code)]
 pub(crate) fn meld_cards_released_on_leave(
     program: &FaceLayoutProgram,
     state: &FaceLayoutState,
@@ -815,8 +801,6 @@ pub(crate) fn meld_cards_released_on_leave(
         .then(|| part_ids.clone())
 }
 
-// Retained by the transition executor; production currently compiles layout receipts.
-#[allow(dead_code)]
 fn valid_face_selection(
     selected_face: Option<u16>,
     face_count: usize,

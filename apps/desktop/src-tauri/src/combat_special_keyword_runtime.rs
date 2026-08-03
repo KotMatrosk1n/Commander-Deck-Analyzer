@@ -12,7 +12,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const COMBAT_SPECIAL_KEYWORD_COMPILER_VERSION: &str = "combat-special-keyword-compiler-0.1";
+pub const COMBAT_SPECIAL_KEYWORD_COMPILER_VERSION: &str = "combat-special-keyword-compiler-0.2";
 pub const COMBAT_SPECIAL_KEYWORD_RUNTIME_VERSION: &str = "combat-special-keyword-runtime-0.1";
 pub const COMBAT_SPECIAL_KEYWORD_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:117,118,400.7,506.3,508.1,508.4,509.1h,\
      602,603.7,707,702.49,702.141,702.171";
@@ -218,18 +218,22 @@ pub fn classify_combat_special_keyword_clause(
         parse_mana_cost(cost_text).map(|cost| CombatSpecialKeywordKind::Encore { cost })
     } else {
         exact_source
-            .strip_prefix("Saddle ")
-            .and_then(|remainder| remainder.split_once(" ("))
-            .and_then(|(number, _)| parse_positive_u32(number))
-            .filter(|threshold| {
-                exact_source
-                    == format!(
-                        "Saddle {threshold} (Tap any number of other creatures you control with \
-                     total power {threshold} or more: This Mount becomes saddled until end of \
-                     turn. Saddle only as a sorcery.)"
-                    )
+        .strip_prefix("Saddle ")
+        .and_then(|remainder| {
+            parse_positive_u32(remainder).or_else(|| {
+                remainder
+                    .split_once(" (")
+                    .and_then(|(number, _)| parse_positive_u32(number))
+                    .filter(|threshold| {
+                        exact_source
+                            == format!(
+                                "Saddle {threshold} (Tap any number of other creatures you control with \
+                                 total power {threshold} or more: This Mount becomes saddled until end of \
+                                 turn. Saddle only as a sorcery.)"
+                            )
+                    })
             })
-            .map(|threshold| CombatSpecialKeywordKind::Saddle { threshold })
+        }).map(|threshold| CombatSpecialKeywordKind::Saddle { threshold })
     };
 
     let Some(kind) = kind else {

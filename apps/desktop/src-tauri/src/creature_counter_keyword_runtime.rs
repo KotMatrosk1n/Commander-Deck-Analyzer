@@ -13,8 +13,8 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const CREATURE_COUNTER_COMPILER_VERSION: &str = "creature-counter-compiler-0.1";
-pub const CREATURE_COUNTER_RUNTIME_VERSION: &str = "creature-counter-runtime-0.1";
+pub const CREATURE_COUNTER_COMPILER_VERSION: &str = "creature-counter-compiler-0.2";
+pub const CREATURE_COUNTER_RUNTIME_VERSION: &str = "creature-counter-runtime-0.2";
 pub const CREATURE_COUNTER_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:107.3,115,117,118,122,400.7,602,603,608,614,616,701.37,701.39,701.46,702.38,702.43,702.44,702.54,702.58,702.82,702.100,702.104,702.112,702.123";
 
 const EVOLVE_CANONICAL: &str = "Evolve (Whenever a creature you control enters, if that creature has greater power or toughness than this creature, put a +1/+1 counter on this creature.)";
@@ -253,6 +253,36 @@ pub enum CounterAmount {
     Sunburst,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryCounterKind {
+    PlusOnePlusOne,
+    Charge,
+}
+
+impl EntryCounterKind {
+    fn stable_id(self) -> &'static str {
+        match self {
+            Self::PlusOnePlusOne => "plus-one-plus-one",
+            Self::Charge => "charge",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastColorCounterOrigin {
+    Sunburst,
+    Converge,
+}
+
+impl CastColorCounterOrigin {
+    fn stable_id(self) -> &'static str {
+        match self {
+            Self::Sunburst => "sunburst",
+            Self::Converge => "converge",
+        }
+    }
+}
+
 impl CounterAmount {
     fn stable_id(self) -> String {
         match self {
@@ -307,6 +337,10 @@ pub enum CreatureCounterKeywordKind {
     Modular {
         counters: CounterAmount,
     },
+    CastColorEntryCounters {
+        counter: EntryCounterKind,
+        origin: CastColorCounterOrigin,
+    },
     Monstrosity {
         activation_cost: ManaCost,
         counters: CounterAmount,
@@ -330,6 +364,14 @@ impl CreatureCounterKeywordKind {
             Self::Fabricate { .. } => "Fabricate",
             Self::Graft { .. } => "Graft",
             Self::Modular { .. } => "Modular",
+            Self::CastColorEntryCounters {
+                origin: CastColorCounterOrigin::Sunburst,
+                ..
+            } => "Sunburst",
+            Self::CastColorEntryCounters {
+                origin: CastColorCounterOrigin::Converge,
+                ..
+            } => "Converge",
             Self::Monstrosity { .. } => "Monstrosity",
             Self::ResidualRenown { .. } => "Renown",
             Self::Tribute { .. } => "Tribute",
@@ -372,6 +414,11 @@ impl CreatureCounterKeywordKind {
             Self::Modular { counters } => format!(
                 "modular/v1;entry-counters={};death-trigger=optional-put-lki-plus-one-counter-count-on-target-artifact-creature",
                 counters.stable_id()
+            ),
+            Self::CastColorEntryCounters { counter, origin } => format!(
+                "cast-color-entry-counters/v1;counter={};origin={};amount=distinct-colors-spent-to-cast;entry-replacement=true",
+                counter.stable_id(),
+                origin.stable_id()
             ),
             Self::Monstrosity {
                 activation_cost,
@@ -469,6 +516,7 @@ pub fn compile_creature_counter_keyword_program(
         .or_else(|| parse_fabricate(exact_source, &source_context))
         .or_else(|| parse_graft(exact_source, &source_context))
         .or_else(|| parse_modular(exact_source, &source_context))
+        .or_else(|| parse_cast_color_entry_counters(exact_source, &source_context))
         .or_else(|| parse_monstrosity(exact_source, &source_context))
         .or_else(|| parse_residual_renown(exact_source, &source_context))
         .or_else(|| parse_tribute(exact_source, &source_context))?;
@@ -799,6 +847,39 @@ fn parse_modular(
     })
 }
 
+fn parse_cast_color_entry_counters(
+    source: &str,
+    context: &SourceSemanticContext,
+) -> Option<CreatureCounterKeywordKind> {
+    let (counter, subject) = if context.is_creature() {
+        (EntryCounterKind::PlusOnePlusOne, "creature")
+    } else if context.is_artifact_permanent() {
+        (EntryCounterKind::Charge, "artifact")
+    } else {
+        return None;
+    };
+    let entry = format!(
+        "This {subject} enters with a {} counter on it for each color of mana spent to cast it.",
+        match counter {
+            EntryCounterKind::PlusOnePlusOne => "+1/+1",
+            EntryCounterKind::Charge => "charge",
+        }
+    );
+
+    if source == format!("Sunburst ({entry})") {
+        return Some(CreatureCounterKeywordKind::CastColorEntryCounters {
+            counter,
+            origin: CastColorCounterOrigin::Sunburst,
+        });
+    }
+    (context.is_creature() && source == format!("Converge \u{2014} {entry}")).then_some(
+        CreatureCounterKeywordKind::CastColorEntryCounters {
+            counter,
+            origin: CastColorCounterOrigin::Converge,
+        },
+    )
+}
+
 fn parse_monstrosity(
     source: &str,
     context: &SourceSemanticContext,
@@ -904,6 +985,8 @@ fn candidate_family(source: &str) -> Option<&'static str> {
         ("fabricate", "Fabricate"),
         ("graft", "Graft"),
         ("modular", "Modular"),
+        ("sunburst", "Sunburst"),
+        ("converge", "Converge"),
         ("monstrosity", "Monstrosity"),
         ("renown", "Renown"),
         ("riot", "Riot"),
@@ -1144,6 +1227,7 @@ pub struct TrackedObject {
     pub card_types: BTreeSet<CardType>,
     pub subtypes: BTreeSet<String>,
     pub plus_one_counters: u32,
+    pub charge_counters: u32,
     pub effective_power: Option<i32>,
     pub effective_toughness: Option<i32>,
     pub is_token: bool,
@@ -1166,6 +1250,7 @@ impl TrackedObject {
             card_types: card_types.into_iter().collect(),
             subtypes: subtypes.into_iter().collect(),
             plus_one_counters: 0,
+            charge_counters: 0,
             effective_power: printed_power_toughness.map(|values| values.0),
             effective_toughness: printed_power_toughness.map(|values| values.1),
             is_token: false,
@@ -1265,6 +1350,10 @@ pub enum EntryKeywordChoice {
     Fabricate,
     Graft,
     Modular {
+        colors_spent_to_cast: BTreeSet<ManaColor>,
+        cast_payment_evidence_complete: bool,
+    },
+    CastColors {
         colors_spent_to_cast: BTreeSet<ManaColor>,
         cast_payment_evidence_complete: bool,
     },
@@ -1830,6 +1919,26 @@ impl CreatureCounterRuntime {
                 CounterAmount::BoundX => return Err(CreatureCounterRuntimeError::WrongProgramKind),
             },
             (
+                CreatureCounterKeywordKind::CastColorEntryCounters { .. },
+                EntryKeywordChoice::CastColors {
+                    colors_spent_to_cast,
+                    cast_payment_evidence_complete,
+                },
+            ) => {
+                if !cast_payment_evidence_complete
+                    || source_object.zone != Zone::Stack
+                    || colors_spent_to_cast.iter().any(|color| !color.is_colored())
+                {
+                    return Err(if !cast_payment_evidence_complete {
+                        CreatureCounterRuntimeError::IncompleteCastPaymentBoundary
+                    } else {
+                        CreatureCounterRuntimeError::InvalidCastColorEvidence
+                    });
+                }
+                u32::try_from(colors_spent_to_cast.len())
+                    .map_err(|_| CreatureCounterRuntimeError::CounterQuantityOverflow)?
+            }
+            (
                 CreatureCounterKeywordKind::Tribute { counters },
                 EntryKeywordChoice::Tribute {
                     chosen_opponent,
@@ -1877,7 +1986,12 @@ impl CreatureCounterRuntime {
                 .expect("moved object remains tracked");
             permanent.controller = Some(input.controller);
         }
-        self.add_placed_counters(change.after, placed)?;
+        match program.kind() {
+            CreatureCounterKeywordKind::CastColorEntryCounters { counter, .. } => {
+                self.add_placed_entry_counters(change.after, placed, *counter)?
+            }
+            _ => self.add_placed_counters(change.after, placed)?,
+        }
         if matches!(program.kind(), CreatureCounterKeywordKind::Devour { .. }) {
             self.devoured_counts.insert(
                 change.after,
@@ -2783,6 +2897,26 @@ impl CreatureCounterRuntime {
                 .checked_add(amount)
                 .ok_or(CreatureCounterRuntimeError::CharacteristicOverflow)?;
         }
+        Ok(())
+    }
+
+    fn add_placed_entry_counters(
+        &mut self,
+        object: ObjectRef,
+        placed: u32,
+        counter: EntryCounterKind,
+    ) -> Result<(), CreatureCounterRuntimeError> {
+        if counter == EntryCounterKind::PlusOnePlusOne {
+            return self.add_placed_counters(object, placed);
+        }
+        if placed == 0 {
+            return Ok(());
+        }
+        let permanent = self.require_object_mut(object, Zone::Battlefield)?;
+        permanent.charge_counters = permanent
+            .charge_counters
+            .checked_add(placed)
+            .ok_or(CreatureCounterRuntimeError::CounterQuantityOverflow)?;
         Ok(())
     }
 

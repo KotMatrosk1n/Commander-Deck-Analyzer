@@ -11,8 +11,8 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const COMBAT_RESTRICTION_COMPILER_VERSION: &str = "combat-restriction-compiler-0.1";
-pub const COMBAT_RESTRICTION_RUNTIME_VERSION: &str = "combat-restriction-runtime-0.1";
+pub const COMBAT_RESTRICTION_COMPILER_VERSION: &str = "combat-restriction-compiler-0.4";
+pub const COMBAT_RESTRICTION_RUNTIME_VERSION: &str = "combat-restriction-runtime-0.4";
 pub const COMBAT_DECLARATION_RULES_CONTEXT: &str =
     "combat-declaration-context-0.1:current-characteristics;simultaneous-blocks;source-incarnation";
 
@@ -35,7 +35,10 @@ pub enum PermanentSubtype {
 pub enum CombatRestrictionKind {
     BlockerMayBlockOnlyAttackerWithKeyword { required_keyword: CombatKeyword },
     AttackRequiresDefendingPlayerPermanentSubtype { required_subtype: PermanentSubtype },
+    AttackerRequiresAnotherAttacker,
     AttackerCannotBeBlockedByPowerAtMost { maximum_power: i32 },
+    AttackerCannotBeBlockedByLowerPower,
+    AttackerCannotBeBlockedByFlying,
     AttackerMaximumBlockers { maximum_blockers: usize },
     BlockerAdditionalCapacity { additional_creatures: usize },
 }
@@ -82,8 +85,17 @@ pub fn compile_combat_restriction_program(source: &str) -> Option<CombatRestrict
                 required_subtype: PermanentSubtype::Island,
             }
         }
+        "This creature can't attack alone." => {
+            CombatRestrictionKind::AttackerRequiresAnotherAttacker
+        }
         "This creature can't be blocked by creatures with power 2 or less." => {
             CombatRestrictionKind::AttackerCannotBeBlockedByPowerAtMost { maximum_power: 2 }
+        }
+        "Creatures with power less than this creature's power can't block it." => {
+            CombatRestrictionKind::AttackerCannotBeBlockedByLowerPower
+        }
+        "This creature can't be blocked by creatures with flying." => {
+            CombatRestrictionKind::AttackerCannotBeBlockedByFlying
         }
         "This creature can't be blocked by more than one creature." => {
             CombatRestrictionKind::AttackerMaximumBlockers {
@@ -117,9 +129,15 @@ fn canonical_semantics(kind: &CombatRestrictionKind) -> String {
         CombatRestrictionKind::AttackRequiresDefendingPlayerPermanentSubtype {
             required_subtype: PermanentSubtype::Island,
         } => "subject=self;declaration=attack;defending-player-controls-subtype=island".to_owned(),
+        CombatRestrictionKind::AttackerRequiresAnotherAttacker =>
+            "subject=self;declaration=attack;minimum-distinct-attackers=2".to_owned(),
         CombatRestrictionKind::AttackerCannotBeBlockedByPowerAtMost { maximum_power } => format!(
             "subject=self;declaration=block;each-blocker-current-effective-power>{maximum_power}"
         ),
+        CombatRestrictionKind::AttackerCannotBeBlockedByLowerPower =>
+            "subject=self;declaration=block;each-blocker-current-effective-power>=attacker-current-effective-power".to_owned(),
+        CombatRestrictionKind::AttackerCannotBeBlockedByFlying =>
+            "subject=self;declaration=block;blocker-must-not-have-keyword=flying".to_owned(),
         CombatRestrictionKind::AttackerMaximumBlockers { maximum_blockers } => {
             format!("subject=self;declaration=block;maximum-distinct-blockers={maximum_blockers}")
         }
@@ -359,6 +377,9 @@ pub enum CombatRestrictionViolation {
         attacker: ObjectRef,
         controller: PlayerId,
     },
+    AttacksAlone {
+        attacker: ObjectRef,
+    },
     DefendingPlayerLacksSubtype {
         attacker: ObjectRef,
         defending_player: PlayerId,
@@ -383,6 +404,16 @@ pub enum CombatRestrictionViolation {
         blocker: ObjectRef,
         blocker_power: i32,
         maximum_power: i32,
+    },
+    BlockerPowerBelowAttacker {
+        attacker: ObjectRef,
+        blocker: ObjectRef,
+        attacker_power: i32,
+        blocker_power: i32,
+    },
+    FlyingBlockerForbidden {
+        attacker: ObjectRef,
+        blocker: ObjectRef,
     },
     TooManyBlockers {
         attacker: ObjectRef,
@@ -413,8 +444,15 @@ pub enum CombatStateAmbiguity {
         attacker: ObjectRef,
         required_keyword: CombatKeyword,
     },
+    BlockerKeywordUnknown {
+        blocker: ObjectRef,
+        keyword: CombatKeyword,
+    },
     BlockerPowerUnknown {
         blocker: ObjectRef,
+    },
+    AttackerPowerUnknown {
+        attacker: ObjectRef,
     },
     CapacityOverflow {
         blocker: ObjectRef,
@@ -529,6 +567,10 @@ impl CombatRestrictionRuntime {
     ) -> CombatLegalityReport {
         let mut report = CombatLegalityBuilder::default();
         let mut declared_attackers = BTreeSet::new();
+        let all_distinct_attackers = attacks
+            .iter()
+            .map(|attack| attack.attacker)
+            .collect::<BTreeSet<_>>();
 
         for attack in attacks {
             if !declared_attackers.insert(attack.attacker) {
@@ -562,11 +604,10 @@ impl CombatRestrictionRuntime {
             }
 
             for binding in self.active_bindings(attack.attacker, battlefield) {
-                if let CombatRestrictionKind::AttackRequiresDefendingPlayerPermanentSubtype {
-                    required_subtype,
-                } = binding.program.kind()
-                {
-                    match battlefield
+                match binding.program.kind() {
+                    CombatRestrictionKind::AttackRequiresDefendingPlayerPermanentSubtype {
+                        required_subtype,
+                    } => match battlefield
                         .defender_controls_subtype(attack.defending_player, *required_subtype)
                     {
                         Some(true) => {}
@@ -587,7 +628,17 @@ impl CombatRestrictionRuntime {
                                 },
                             );
                         }
+                    },
+                    CombatRestrictionKind::AttackerRequiresAnotherAttacker
+                        if all_distinct_attackers.len() < 2 =>
+                    {
+                        report
+                            .violations
+                            .insert(CombatRestrictionViolation::AttacksAlone {
+                                attacker: attack.attacker,
+                            });
                     }
+                    _ => {}
                 }
             }
         }
@@ -715,11 +766,10 @@ impl CombatRestrictionRuntime {
             }
 
             for binding in self.active_bindings(assignment.attacker, battlefield) {
-                if let CombatRestrictionKind::AttackerCannotBeBlockedByPowerAtMost {
-                    maximum_power,
-                } = binding.program.kind()
-                {
-                    match blocker.effective_power_at_block_declaration {
+                match binding.program.kind() {
+                    CombatRestrictionKind::AttackerCannotBeBlockedByPowerAtMost {
+                        maximum_power,
+                    } => match blocker.effective_power_at_block_declaration {
                         Some(blocker_power) if blocker_power <= *maximum_power => {
                             report.violations.insert(
                                 CombatRestrictionViolation::BlockerPowerAtOrBelowMaximum {
@@ -738,7 +788,63 @@ impl CombatRestrictionRuntime {
                                     blocker: assignment.blocker,
                                 });
                         }
+                    },
+                    CombatRestrictionKind::AttackerCannotBeBlockedByLowerPower => {
+                        match (
+                            attacker.effective_power_at_block_declaration,
+                            blocker.effective_power_at_block_declaration,
+                        ) {
+                            (Some(attacker_power), Some(blocker_power))
+                                if blocker_power < attacker_power =>
+                            {
+                                report.violations.insert(
+                                    CombatRestrictionViolation::BlockerPowerBelowAttacker {
+                                        attacker: assignment.attacker,
+                                        blocker: assignment.blocker,
+                                        attacker_power,
+                                        blocker_power,
+                                    },
+                                );
+                            }
+                            (Some(_), Some(_)) => {}
+                            (None, _) => {
+                                report.ambiguities.insert(
+                                    CombatStateAmbiguity::AttackerPowerUnknown {
+                                        attacker: assignment.attacker,
+                                    },
+                                );
+                            }
+                            (_, None) => {
+                                report.ambiguities.insert(
+                                    CombatStateAmbiguity::BlockerPowerUnknown {
+                                        blocker: assignment.blocker,
+                                    },
+                                );
+                            }
+                        }
                     }
+                    CombatRestrictionKind::AttackerCannotBeBlockedByFlying => {
+                        match blocker.has_flying {
+                            Some(true) => {
+                                report.violations.insert(
+                                    CombatRestrictionViolation::FlyingBlockerForbidden {
+                                        attacker: assignment.attacker,
+                                        blocker: assignment.blocker,
+                                    },
+                                );
+                            }
+                            Some(false) => {}
+                            None => {
+                                report.ambiguities.insert(
+                                    CombatStateAmbiguity::BlockerKeywordUnknown {
+                                        blocker: assignment.blocker,
+                                        keyword: CombatKeyword::Flying,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
