@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 pub const ORACLE_CLAUSE_COMPOSITION_COMPILER_VERSION: &str =
     "oracle-clause-composition-compiler-0.3";
-pub const ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION: &str = "oracle-clause-composition-runtime-0.2";
+pub const ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION: &str = "oracle-clause-composition-runtime-0.3";
 pub const ORACLE_CLAUSE_COMPOSITION_RULES_CONTEXT_VERSION: &str =
     "magic-comprehensive-rules-2026-06-19";
 
@@ -22,9 +22,8 @@ pub const fn oracle_clause_composition_production_adapter_connected() -> bool {
     false
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OracleCompositionSemanticContext {
-    #[default]
     CardFace,
     SpellAbility,
     PermanentAbility,
@@ -43,6 +42,12 @@ impl OracleCompositionSemanticContext {
             Self::DungeonRoom => "dungeon-room/v1",
             Self::GrantedAbility => "granted-ability/v1",
         }
+    }
+}
+
+impl Default for OracleCompositionSemanticContext {
+    fn default() -> Self {
+        Self::CardFace
     }
 }
 
@@ -80,7 +85,7 @@ impl SourceSpan {
         self.start >= self.end
     }
 
-    pub fn slice(self, source: &str) -> Option<&str> {
+    pub fn slice<'a>(self, source: &'a str) -> Option<&'a str> {
         source.get(self.start..self.end)
     }
 }
@@ -317,6 +322,75 @@ pub struct OracleClauseComposition {
     requirements: Vec<SemanticRequirement>,
     quoted_fragments: Vec<QuotedFragment>,
     exclusions: Vec<StructuralExclusion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedOracleClauseComposition {
+    composition: OracleClauseComposition,
+    semantic_digest: String,
+}
+
+impl RetainedOracleClauseComposition {
+    pub fn exact_oracle(&self) -> &str {
+        self.composition.exact_oracle()
+    }
+
+    pub const fn semantic_context(&self) -> OracleCompositionSemanticContext {
+        self.composition.semantic_context()
+    }
+
+    pub fn structural_digest(&self) -> &str {
+        self.composition.structural_digest()
+    }
+
+    pub fn semantic_digest(&self) -> &str {
+        &self.semantic_digest
+    }
+
+    pub fn root(&self) -> &OracleCompositionNode {
+        self.composition.root()
+    }
+
+    pub fn requirements(&self) -> &[SemanticRequirement] {
+        self.composition.requirements()
+    }
+
+    pub fn exclusions(&self) -> &[StructuralExclusion] {
+        self.composition.exclusions()
+    }
+
+    pub const fn production_adapter_connected(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetainedCompositionError {
+    Parse(OracleCompositionError),
+}
+
+pub fn compile_retained_oracle_clause_composition(
+    input: OracleClauseCompositionInput<'_>,
+) -> Result<RetainedOracleClauseComposition, RetainedCompositionError> {
+    let composition =
+        parse_oracle_clause_composition(input).map_err(RetainedCompositionError::Parse)?;
+    let mut hasher = Sha256::new();
+    for component in [
+        "oracle-clause-composition-retained/v1",
+        ORACLE_CLAUSE_COMPOSITION_COMPILER_VERSION,
+        ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION,
+        ORACLE_CLAUSE_COMPOSITION_RULES_CONTEXT_VERSION,
+        composition.semantic_context().stable_id(),
+        composition.exact_oracle(),
+        composition.structural_digest(),
+    ] {
+        hasher.update((component.len() as u64).to_le_bytes());
+        hasher.update(component.as_bytes());
+    }
+    Ok(RetainedOracleClauseComposition {
+        composition,
+        semantic_digest: format!("{:x}", hasher.finalize()),
+    })
 }
 
 impl OracleClauseComposition {
@@ -933,13 +1007,17 @@ impl CompositionParser<'_> {
                     otherwise_body,
                     ..
                 }) = parts.last_mut()
-                    && otherwise_body.is_none()
                 {
-                    *conditional_span = SourceSpan::new(conditional_span.start, sentence_span.end);
-                    *otherwise_marker_span = Some(SourceSpan::new(previous_end, marker_span.end));
-                    *otherwise_body = Some(Box::new(self.parse_fragment(body_span, depth + 1)?));
-                    previous_end = sentence_span.end;
-                    continue;
+                    if otherwise_body.is_none() {
+                        *conditional_span =
+                            SourceSpan::new(conditional_span.start, sentence_span.end);
+                        *otherwise_marker_span =
+                            Some(SourceSpan::new(previous_end, marker_span.end));
+                        *otherwise_body =
+                            Some(Box::new(self.parse_fragment(body_span, depth + 1)?));
+                        previous_end = sentence_span.end;
+                        continue;
+                    }
                 }
                 self.exclusions.push(StructuralExclusion {
                     kind: StructuralExclusionKind::DetachedOtherwise,
@@ -1775,11 +1853,11 @@ fn sentence_spans(source: &str, scan: &LocalScan) -> Vec<SourceSpan> {
     }
     let trailing = trim_span(source, SourceSpan::new(start, source.len()));
     if !trailing.is_empty() {
-        if let Some(last) = spans.last_mut()
-            && is_parenthetical_only(trailing.slice(source).unwrap_or_default())
-        {
-            last.end = trailing.end;
-            return spans;
+        if let Some(last) = spans.last_mut() {
+            if is_parenthetical_only(trailing.slice(source).unwrap_or_default()) {
+                last.end = trailing.end;
+                return spans;
+            }
         }
         spans.push(trailing);
     }

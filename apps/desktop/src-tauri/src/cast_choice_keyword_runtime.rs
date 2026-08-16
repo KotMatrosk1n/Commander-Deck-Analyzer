@@ -9,7 +9,8 @@
 //! Program identity uses exact Oracle content, relevant derived type or face
 //! context, and versioned rules contracts. It never uses card names, card
 //! identifiers, database rows, addresses, snapshot metadata, or memory
-//! location. The transaction runtime is not connected to production.
+//! location. Reviewed families are connected through the bounded production
+//! transaction adapter.
 
 #![allow(dead_code)]
 
@@ -18,8 +19,8 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const CAST_CHOICE_KEYWORD_COMPILER_VERSION: &str = "cast-choice-keyword-compiler-0.1";
-pub const CAST_CHOICE_KEYWORD_RUNTIME_VERSION: &str = "cast-choice-keyword-runtime-0.1";
+pub const CAST_CHOICE_KEYWORD_COMPILER_VERSION: &str = "cast-choice-keyword-compiler-0.11";
+pub const CAST_CHOICE_KEYWORD_RUNTIME_VERSION: &str = "cast-choice-keyword-runtime-0.13";
 pub const CAST_CHOICE_KEYWORD_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:107.3,111.12,115,116,118.7-9,122.1-2,207.2c,\
      305.2,400.7,601.2a-h,603.3d,603.6,603.11,607,608.2b,612,701.9,701.18,701.20,\
      701.21,701.28,702.33,702.48,702.94,702.113,702.119,702.120,702.132,702.148,\
@@ -382,8 +383,38 @@ impl CastChoiceKeywordProgram {
         &self.kind
     }
 
-    pub const fn production_adapter_connected(&self) -> bool {
-        cast_choice_keyword_production_adapter_connected()
+    pub fn production_adapter_connected(&self) -> bool {
+        match &self.kind {
+            CastChoiceKeywordKind::Offspring { .. } => true,
+            CastChoiceKeywordKind::Cleave { .. }
+            | CastChoiceKeywordKind::Offering { .. }
+            | CastChoiceKeywordKind::Assist
+            | CastChoiceKeywordKind::Impending { .. }
+            | CastChoiceKeywordKind::MoreThanMeetsTheEye { .. } => true,
+            CastChoiceKeywordKind::Squad { .. } => true,
+            CastChoiceKeywordKind::Strive { .. } => true,
+            CastChoiceKeywordKind::Casualty { .. } => true,
+            CastChoiceKeywordKind::Emerge { .. } => true,
+            CastChoiceKeywordKind::WebSlinging { .. } => true,
+            CastChoiceKeywordKind::Awaken { .. } => true,
+            CastChoiceKeywordKind::Prototype {
+                alternative_cost, ..
+            } => !alternative_cost
+                .symbols
+                .iter()
+                .any(|symbol| matches!(symbol, ManaSymbol::VariableX)),
+            CastChoiceKeywordKind::Miracle { .. } => true,
+            CastChoiceKeywordKind::Mayhem { .. } => true,
+            CastChoiceKeywordKind::Freerunning { alternative_cost } => {
+                (alternative_cost.mana.is_some() && alternative_cost.nonmana.is_empty())
+                    || (alternative_cost.mana.is_none()
+                        && matches!(
+                            alternative_cost.nonmana.as_slice(),
+                            [NonManaCost::ReturnBlueCreatureYouControlToOwnersHand]
+                        ))
+            }
+            CastChoiceKeywordKind::Escalate { .. } => true,
+        }
     }
 }
 
@@ -473,14 +504,15 @@ fn parse_prior_multikicker(source: &str) -> Option<ManaCost> {
     let (core, reminder) = split_optional_reminder(source)?;
     let cost_text = core.strip_prefix("Multikicker ")?;
     let cost = parse_mana_cost(cost_text)?;
-    if let Some(reminder) = reminder
-        && reminder
+    if let Some(reminder) = reminder {
+        if reminder
             != format!(
                 "You may pay an additional {} any number of times as you cast this spell.",
                 cost.oracle_text()
             )
-    {
-        return None;
+        {
+            return None;
+        }
     }
     Some(cost)
 }
@@ -540,16 +572,14 @@ fn parse_emerge(source: &str) -> Option<CastChoiceKeywordKind> {
     };
     let alternative_cost = parse_mana_cost(cost_text)?;
     let expected = match quality {
-        SacrificeQuality::Artifact => {
+        SacrificeQuality::Artifact => format!(
             "You may cast this spell by sacrificing an artifact and paying the emerge cost \
              reduced by that artifact's mana value."
-                .to_string()
-        }
-        SacrificeQuality::Creature => {
+        ),
+        SacrificeQuality::Creature => format!(
             "You may cast this spell by sacrificing a creature and paying the emerge cost reduced \
              by that creature's mana value."
-                .to_string()
-        }
+        ),
         SacrificeQuality::Subtype(_) => return None,
     };
     (reminder == expected).then_some(CastChoiceKeywordKind::Emerge {
@@ -699,7 +729,7 @@ fn parse_strive(source: &str, context: &CastChoiceSourceContext) -> Option<CastC
     let cost_text = source
         .strip_prefix("Strive \u{2014} This spell costs ")?
         .strip_suffix(" more to cast for each target beyond the first.")?;
-    if !context.spell_has_targets? || !context.variable_target_count? {
+    if context.spell_has_targets? != true || context.variable_target_count? != true {
         return None;
     }
     Some(CastChoiceKeywordKind::Strive {
@@ -2214,13 +2244,14 @@ fn prepare_keyword_cost(
                     "assist requires another player",
                 ));
             }
-            if let Some(player) = selected
-                && !state
+            if let Some(player) = selected {
+                if !state
                     .players
                     .get(player)
                     .is_some_and(|candidate| candidate.in_game)
-            {
-                return Err(CastChoiceRuntimeError::MissingPlayer(*player));
+                {
+                    return Err(CastChoiceRuntimeError::MissingPlayer(*player));
+                }
             }
             assisting_player = *selected;
         }

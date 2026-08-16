@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 pub const ORACLE_FACE_PROGRAM_ASSEMBLER_COMPILER_VERSION: &str =
     "oracle-face-program-assembler-compiler-0.1";
 pub const ORACLE_FACE_PROGRAM_ASSEMBLER_RUNTIME_VERSION: &str =
-    "oracle-face-program-assembler-runtime-0.1";
+    "oracle-face-program-assembler-runtime-0.2";
 pub const ORACLE_FACE_MODAL_RULES_CONTEXT_VERSION: &str =
     "magic-comprehensive-rules-2026-06-19:601.2b,700.2,700.2a-g";
 
@@ -43,7 +43,7 @@ impl SourceSpan {
         self.start >= self.end
     }
 
-    pub fn slice(self, source: &str) -> Option<&str> {
+    pub fn slice<'a>(self, source: &'a str) -> Option<&'a str> {
         source.get(self.start..self.end)
     }
 }

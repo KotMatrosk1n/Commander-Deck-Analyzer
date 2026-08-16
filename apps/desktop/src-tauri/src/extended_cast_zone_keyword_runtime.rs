@@ -14,7 +14,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const EXTENDED_CAST_ZONE_COMPILER_VERSION: &str = "extended-cast-zone-keyword-compiler-0.2";
-pub const EXTENDED_CAST_ZONE_RUNTIME_VERSION: &str = "extended-cast-zone-keyword-runtime-0.2";
+pub const EXTENDED_CAST_ZONE_RUNTIME_VERSION: &str = "extended-cast-zone-keyword-runtime-0.5";
 pub const EXTENDED_CAST_ZONE_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:108.3,116,117,400.7,601.2,603.7,609.3,614.1,616.1,702.81,702.133,702.143,702.170,702.185";
 
 const FORETELL_REMINDER: &str = "During your turn, you may pay {2} and exile this card from your hand face down. Cast it on a later turn for its foretell cost.";
@@ -320,7 +320,14 @@ impl ExtendedCastZoneProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        extended_cast_zone_production_adapter_connected()
+        matches!(
+            &self.kind,
+            ExtendedCastZoneKind::Foretell(_)
+                | ExtendedCastZoneKind::Plot(_)
+                | ExtendedCastZoneKind::Warp(_)
+                | ExtendedCastZoneKind::Retrace(_)
+                | ExtendedCastZoneKind::JumpStart(_)
+        )
     }
 }
 
@@ -813,10 +820,19 @@ pub enum ReplacementOrderEntry {
     External(ReplacementEffectId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManaPayment {
     pub x_value: u32,
     pub mana_units: Vec<ManaUnitId>,
+}
+
+impl Default for ManaPayment {
+    fn default() -> Self {
+        Self {
+            x_value: 0,
+            mana_units: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

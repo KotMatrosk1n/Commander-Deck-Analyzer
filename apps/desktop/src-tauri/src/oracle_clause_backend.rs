@@ -32,11 +32,15 @@ use crate::bounded_oracle_runtime::{
     retain_extended_cast_zone_keyword_program, retain_face_down_merge_keyword_program,
     retain_graveyard_hand_library_keyword_program, retain_graveyard_transform_keyword_program,
     retain_level_progression_program, retain_linked_cast_cost_keyword_program,
+    retain_linked_oracle_ability_envelope_program, retain_object_lifecycle_program,
     retain_oracle_ability_envelope_program, retain_oracle_action_program,
     retain_oracle_cast_zone_envelope_program, retain_oracle_clause_composition_program,
     retain_oracle_face_modal_line_program, retain_oracle_static_replacement_program,
     retain_regeneration_action_program, retain_residual_cost_keyword_program,
-    retain_static_special_keyword_program,
+    retain_retained_oracle_ability_envelope_program,
+    retain_retained_oracle_clause_composition_program,
+    retain_retained_oracle_static_replacement_program, retain_static_special_keyword_program,
+    retain_structural_oracle_ability_envelope_program,
 };
 use crate::cast_choice_keyword_runtime::{
     CastChoiceClauseClassification, classify_cast_choice_keyword_clause,
@@ -127,8 +131,10 @@ use crate::linked_cast_cost_keyword_runtime::{
     SnapshotCandidateClass as LinkedCastCostCandidateClass,
     classify_linked_cast_cost_snapshot_candidate, compile_linked_cast_cost_keyword_program,
 };
+use crate::object_lifecycle_runtime::{ObjectLifecycleCardInput, compile_object_lifecycle_runtime};
 use crate::oracle_ability_envelope_runtime::{
     AbilityEnvelopeCompileInput, compile_oracle_ability_envelope,
+    compile_retained_oracle_ability_envelope, compile_structural_oracle_ability_envelope,
     reviewed_ability_envelope_normalized_source,
 };
 use crate::oracle_action_algebra_runtime::{
@@ -141,7 +147,8 @@ use crate::oracle_cast_zone_envelope_runtime::{
 };
 use crate::oracle_clause_composition::{
     OracleClauseCompositionInput, OracleCompositionNode, SemanticCapability, SourceSpan,
-    TypedChildBinding, TypedOracleChildProgram, parse_oracle_clause_composition,
+    TypedChildBinding, TypedOracleChildProgram, compile_retained_oracle_clause_composition,
+    parse_oracle_clause_composition,
 };
 use crate::oracle_clause_syntax::{
     OracleClauseSyntaxError, OracleClauseSyntaxInput, OracleSyntaxProvenance,
@@ -155,7 +162,7 @@ use crate::oracle_face_program_assembler::{
 };
 use crate::oracle_static_replacement_runtime::{
     OracleStaticReplacementCompileInput, compile_oracle_static_replacement_program,
-    looks_like_static_or_replacement_clause,
+    compile_retained_oracle_static_replacement_program, looks_like_static_or_replacement_clause,
 };
 use crate::regeneration_action_runtime::{
     RegenerationClauseClassification, classify_regeneration_action_clause,
@@ -168,8 +175,8 @@ use crate::static_special_keyword_runtime::{
     classify_static_special_keyword_clause, reviewed_static_special_normalized_source,
 };
 
-pub const ORACLE_CLAUSE_BACKEND_COMPILER_VERSION: &str = "oracle-clause-backend-compiler-0.46";
-pub const ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION: &str = "oracle-clause-backend-runtime-0.25";
+pub const ORACLE_CLAUSE_BACKEND_COMPILER_VERSION: &str = "oracle-clause-backend-compiler-0.47";
+pub const ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION: &str = "oracle-clause-backend-runtime-0.27";
 
 const DEVOID_LIVE_BRIDGE_CAPABILITIES: &[LiveBridgeCapability] = &[
     LiveBridgeCapability::StaticKeywordInstallation,
@@ -704,6 +711,7 @@ const ALLOWED_SINGLETON_KEYWORDS: &[OfficialKeyword] = &[
     OfficialKeyword::Evolve,
     OfficialKeyword::Improvise,
     OfficialKeyword::Intimidate,
+    OfficialKeyword::Skulk,
     OfficialKeyword::Spree,
     OfficialKeyword::Bargain,
     OfficialKeyword::Mentor,
@@ -719,6 +727,7 @@ const ALLOWED_SINGLETON_KEYWORDS: &[OfficialKeyword] = &[
     OfficialKeyword::Devoid,
     OfficialKeyword::Convoke,
     OfficialKeyword::Equip,
+    OfficialKeyword::Reconfigure,
     OfficialKeyword::Enchant,
     OfficialKeyword::CumulativeUpkeep,
     OfficialKeyword::Haste,
@@ -1050,6 +1059,27 @@ pub fn compile_oracle_clause_backend_with_semantic_context(
     )
 }
 
+/// Continue through exact delegated and typed fallback owners when the caller
+/// has already attempted the native bounded grammar for this occurrence.
+pub(crate) fn compile_oracle_clause_backend_after_bounded_failure_with_semantic_context(
+    input: OracleClauseBackendInput<'_>,
+    semantic_context: OracleClauseSemanticContext<'_>,
+) -> Result<CompiledOracleClause, OracleClauseBackendError> {
+    let validated = validate_oracle_clause_line(input.oracle_clause)
+        .map_err(|syntax_error| OracleClauseBackendError::MalformedSyntax { syntax_error })?;
+    compile_oracle_clause_program_inner(
+        input,
+        validated,
+        Some(semantic_context.card),
+        semantic_context.graveyard_transform,
+        semantic_context.level_progression,
+        semantic_context.source_mana_value,
+        semantic_context.complete_face_oracle_text,
+        true,
+        false,
+    )
+}
+
 fn compile_oracle_clause_backend_with_optional_context(
     input: OracleClauseBackendInput<'_>,
     card_context: Option<OracleClauseCardContext<'_>>,
@@ -1089,7 +1119,45 @@ fn compile_oracle_clause_program(
         source_mana_value,
         complete_face_oracle_text,
         true,
+        true,
     )
+}
+
+#[inline(never)]
+fn compile_live_static_replacement_clause(
+    input: &OracleClauseBackendInput<'_>,
+) -> Result<Option<BoundedOracleClause>, CompileError> {
+    if !looks_like_static_or_replacement_clause(input.oracle_clause) {
+        return Ok(None);
+    }
+    let Ok(mut program) = compile_oracle_static_replacement_program(
+        OracleStaticReplacementCompileInput::permanent_ability(input.oracle_clause),
+    ) else {
+        return Ok(None);
+    };
+    if matches!(
+        program.kind(),
+        crate::oracle_static_replacement_runtime::OracleStaticReplacementProgramKind::Replacement(
+            crate::oracle_static_replacement_runtime::ReplacementEffect {
+                predicate:
+                    crate::oracle_static_replacement_runtime::ReplacementEventPredicate::EnterBattlefield {
+                        object,
+                        ..
+                    },
+                ..
+            }
+        ) if object.reference
+            == crate::oracle_static_replacement_runtime::SelectorReference::Source
+    ) {
+        program = compile_oracle_static_replacement_program(OracleStaticReplacementCompileInput {
+            exact_source: input.oracle_clause,
+            normalized_source: input.oracle_clause,
+            semantic_context:
+                crate::oracle_static_replacement_runtime::SourceSemanticContext::CardAbility,
+        })
+        .expect("source entry replacement recompiles in card-zone context");
+    }
+    retain_oracle_static_replacement_program(input.bounded_input(), program).map(Some)
 }
 
 fn compile_oracle_clause_program_inner(
@@ -1101,6 +1169,7 @@ fn compile_oracle_clause_program_inner(
     source_mana_value: Option<u32>,
     complete_face_oracle_text: Option<&str>,
     allow_composition: bool,
+    try_bounded: bool,
 ) -> Result<CompiledOracleClause, OracleClauseBackendError> {
     let validated_input = OracleClauseBackendInput {
         face_index: input.face_index,
@@ -1131,8 +1200,69 @@ fn compile_oracle_clause_program_inner(
         || validated_input.oracle_clause.starts_with("Level up ")
         || validated_input.oracle_clause.starts_with("LEVEL ")
     {
+        if allow_composition
+            && let Ok(program) = compile_retained_oracle_clause_composition(
+                OracleClauseCompositionInput::card_face(validated_input.oracle_clause),
+            )
+        {
+            return retain_retained_oracle_clause_composition_program(
+                validated_input.bounded_input(),
+                program,
+            )
+            .map(CompiledOracleClause::Bounded)
+            .map_err(|error| OracleClauseBackendError::Native { error });
+        }
         return Err(OracleClauseBackendError::Native {
             error: level_progression_context_required_error(&validated_input),
+        });
+    }
+
+    if let Some(face_oracle_text) = complete_face_oracle_text
+        && let Some(program) = compile_object_lifecycle_runtime(ObjectLifecycleCardInput {
+            type_line: validated_input.source_type_line,
+            oracle_text: face_oracle_text,
+        })
+        && program.owns_clause(validated_input.clause_index)
+    {
+        return retain_object_lifecycle_program(
+            validated_input.bounded_input(),
+            face_oracle_text,
+            program,
+        )
+        .map(CompiledOracleClause::Bounded)
+        .map_err(|error| OracleClauseBackendError::Native { error });
+    }
+
+    // A bullet line is meaningful only as part of its complete modal group.
+    // Resolve that group before the native single-line grammar can claim an
+    // individually supported branch and accidentally ignore an unsupported
+    // sibling.
+    if allow_composition
+        && validated_input.oracle_clause.trim_start().starts_with("• ")
+        && let Some(face_oracle_text) = complete_face_oracle_text
+    {
+        if let Some(program) = compile_oracle_face_modal_line(
+            &validated_input,
+            card_context,
+            graveyard_transform_context,
+            level_progression_context,
+            source_mana_value,
+            face_oracle_text,
+        ) {
+            return Ok(CompiledOracleClause::Bounded(program));
+        }
+        if let Ok(program) = compile_retained_oracle_clause_composition(
+            OracleClauseCompositionInput::card_face(validated_input.oracle_clause),
+        ) {
+            return retain_retained_oracle_clause_composition_program(
+                validated_input.bounded_input(),
+                program,
+            )
+            .map(CompiledOracleClause::Bounded)
+            .map_err(|error| OracleClauseBackendError::Native { error });
+        }
+        return Err(OracleClauseBackendError::Native {
+            error: residual_program_context_error(&validated_input),
         });
     }
 
@@ -1152,6 +1282,35 @@ fn compile_oracle_clause_program_inner(
         return retain_linked_cast_cost_keyword_program(validated_input.bounded_input(), program)
             .map(CompiledOracleClause::Bounded)
             .map_err(|error| OracleClauseBackendError::Native { error });
+    }
+
+    // Skulk and ordinary Flashback also have legacy standalone owners. Prefer
+    // their exact official keyword programs because those programs are
+    // connected to complete production consumers; retaining the same Oracle
+    // text under a legacy owner would strand executable semantics behind a
+    // non-live receipt. Extended Flashback forms do not match the official
+    // singleton compiler and remain with the alternate-zone owner.
+    let prefer_official_keyword_owner = exact_singleton_keyword(validated_input.oracle_clause)
+        == Some(OfficialKeyword::Skulk)
+        || (exact_singleton_keyword(validated_input.oracle_clause)
+            == Some(OfficialKeyword::Flashback)
+            && classify_alternate_zone_candidate(
+                validated_input.oracle_clause,
+                validated_input.source_type_line,
+            ) == Some(
+                AlternateZoneCandidateClass::StandardFlashbackOwnedByOfficialKeywordRuntime,
+            ));
+    if prefer_official_keyword_owner {
+        return match compile_delegated_keyword_clause_with_context(&validated_input, card_context) {
+            Ok(Some(clause)) => Ok(CompiledOracleClause::Delegated(clause)),
+            Ok(None) => Err(OracleClauseBackendError::Native {
+                error: residual_program_context_error(&validated_input),
+            }),
+            Err(keyword_error) => Err(OracleClauseBackendError::DelegatedKeyword {
+                native_error: residual_program_context_error(&validated_input),
+                keyword_error,
+            }),
+        };
     }
 
     let combat_trigger_normalized =
@@ -1306,19 +1465,98 @@ fn compile_oracle_clause_program_inner(
             false
         };
 
-    let bounded = match card_context {
-        Some(context) => compile_bounded_oracle_clause_after_syntax_validation_with_context(
-            validated_input.bounded_input(),
-            validated,
-            BoundedOracleCardContext {
-                layout: context.layout,
-                face_count: context.face_count,
-            },
-        ),
-        None => compile_bounded_oracle_clause_after_syntax_validation(
-            validated_input.bounded_input(),
-            validated,
-        ),
+    if rejected_regeneration_candidate
+        && validated_input
+            .oracle_clause
+            .starts_with("Regenerate target creature.")
+    {
+        if allow_composition
+            && let Ok(program) = compile_retained_oracle_clause_composition(
+                OracleClauseCompositionInput::card_face(validated_input.oracle_clause),
+            )
+        {
+            return retain_retained_oracle_clause_composition_program(
+                validated_input.bounded_input(),
+                program,
+            )
+            .map(CompiledOracleClause::Bounded)
+            .map_err(|error| OracleClauseBackendError::Native { error });
+        }
+        return Err(OracleClauseBackendError::Native {
+            error: residual_program_context_error(&validated_input),
+        });
+    }
+
+    if validated_input
+        .printed_keywords
+        .iter()
+        .any(|keyword| keyword.eq_ignore_ascii_case("Devoid"))
+        && (validated_input.oracle_clause.starts_with("Devoid")
+            || validated_input
+                .oracle_clause
+                .eq_ignore_ascii_case("This card has no color."))
+    {
+        return match compile_delegated_keyword_clause_with_context(&validated_input, card_context) {
+            Ok(Some(clause)) => Ok(CompiledOracleClause::Delegated(clause)),
+            Ok(None) => Err(OracleClauseBackendError::Native {
+                error: residual_program_context_error(&validated_input),
+            }),
+            Err(keyword_error) => Err(OracleClauseBackendError::DelegatedKeyword {
+                native_error: residual_program_context_error(&validated_input),
+                keyword_error,
+            }),
+        };
+    }
+
+    let lower_clause = validated_input.oracle_clause.to_ascii_lowercase();
+    let has_persistent_trigger_envelope = lower_clause.starts_with("when ")
+        || lower_clause.starts_with("whenever ")
+        || lower_clause.starts_with("at the beginning ")
+        || lower_clause.starts_with("at the end ");
+    let has_explicit_spell_card_trigger_context = lower_clause.contains("this spell")
+        || lower_clause.contains("you cast")
+        || lower_clause.contains("in your graveyard")
+        || lower_clause.contains("from your graveyard")
+        || lower_clause.contains("in exile")
+        || lower_clause.contains("from exile");
+    if source_type_has_spell_resolution(validated_input.source_type_line)
+        && has_persistent_trigger_envelope
+        && !has_explicit_spell_card_trigger_context
+    {
+        if allow_composition
+            && let Ok(program) = compile_retained_oracle_clause_composition(
+                OracleClauseCompositionInput::card_face(validated_input.oracle_clause),
+            )
+        {
+            return retain_retained_oracle_clause_composition_program(
+                validated_input.bounded_input(),
+                program,
+            )
+            .map(CompiledOracleClause::Bounded)
+            .map_err(|error| OracleClauseBackendError::Native { error });
+        }
+        return Err(OracleClauseBackendError::Native {
+            error: residual_program_context_error(&validated_input),
+        });
+    }
+
+    let bounded = if try_bounded {
+        match card_context {
+            Some(context) => compile_bounded_oracle_clause_after_syntax_validation_with_context(
+                validated_input.bounded_input(),
+                validated,
+                BoundedOracleCardContext {
+                    layout: context.layout,
+                    face_count: context.face_count,
+                },
+            ),
+            None => compile_bounded_oracle_clause_after_syntax_validation(
+                validated_input.bounded_input(),
+                validated,
+            ),
+        }
+    } else {
+        Err(residual_program_context_error(&validated_input))
     };
     match bounded {
         Ok(clause) => Ok(CompiledOracleClause::Bounded(clause)),
@@ -1345,6 +1583,17 @@ fn compile_oracle_clause_program_inner(
                 Ok(Some(clause)) => return Ok(CompiledOracleClause::Bounded(clause)),
                 Ok(None) => {}
                 Err(error) => return Err(OracleClauseBackendError::Native { error }),
+            }
+
+            // This owner is now production-live. Route an exact typed static or
+            // replacement before recursive envelope/composition fallbacks so a
+            // source-entry clause cannot be reintroduced as its own child.
+            if delegated_error.is_none() {
+                match compile_live_static_replacement_clause(&validated_input) {
+                    Ok(Some(clause)) => return Ok(CompiledOracleClause::Bounded(clause)),
+                    Ok(None) => {}
+                    Err(error) => return Err(OracleClauseBackendError::Native { error }),
+                }
             }
 
             if source_type_has_spell_resolution(validated_input.source_type_line) {
@@ -1375,7 +1624,16 @@ fn compile_oracle_clause_program_inner(
                 return Ok(CompiledOracleClause::Bounded(clause));
             }
 
-            if allow_composition
+            if delegated_error.is_none()
+                && allow_composition
+                && let Some(clause) =
+                    compile_linked_ability_envelope(&validated_input, card_context)
+            {
+                return Ok(CompiledOracleClause::Bounded(clause));
+            }
+
+            if delegated_error.is_none()
+                && allow_composition
                 && let Some(clause) = compile_typed_oracle_composition(
                     &validated_input,
                     card_context,
@@ -1388,7 +1646,8 @@ fn compile_oracle_clause_program_inner(
                 return Ok(CompiledOracleClause::Bounded(clause));
             }
 
-            if allow_composition
+            if delegated_error.is_none()
+                && allow_composition
                 && let Some(face_oracle_text) = complete_face_oracle_text
                 && let Some(clause) = compile_oracle_face_modal_line(
                     &validated_input,
@@ -1406,7 +1665,7 @@ fn compile_oracle_clause_program_inner(
             // dedicated state adapters and runtime receipts exist. Preserve every
             // earlier live, delegated, bridge, composition, and modal owner first,
             // and never let a recursive child compilation claim a standalone root.
-            if allow_composition {
+            if delegated_error.is_none() && allow_composition {
                 let ability_normalized =
                     reviewed_ability_envelope_normalized_source(validated_input.oracle_clause);
                 if let Ok(program) = compile_oracle_ability_envelope(AbilityEnvelopeCompileInput {
@@ -1420,44 +1679,37 @@ fn compile_oracle_clause_program_inner(
                     .map(CompiledOracleClause::Bounded)
                     .map_err(|error| OracleClauseBackendError::Native { error });
                 }
-
-                if looks_like_static_or_replacement_clause(validated_input.oracle_clause)
-                    && let Ok(mut program) = compile_oracle_static_replacement_program(
-                        OracleStaticReplacementCompileInput::permanent_ability(
-                            validated_input.oracle_clause,
-                        ),
-                    )
+                if let Ok(program) =
+                    compile_retained_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+                        exact_source: validated_input.oracle_clause,
+                        normalized_source: &ability_normalized,
+                    })
                 {
-                    if matches!(
-                        program.kind(),
-                        crate::oracle_static_replacement_runtime::OracleStaticReplacementProgramKind::Replacement(
-                            crate::oracle_static_replacement_runtime::ReplacementEffect {
-                                predicate:
-                                    crate::oracle_static_replacement_runtime::ReplacementEventPredicate::EnterBattlefield {
-                                        object,
-                                        ..
-                                    },
-                                ..
-                            }
-                        ) if object.reference
-                            == crate::oracle_static_replacement_runtime::SelectorReference::Source
-                    ) {
-                        program = compile_oracle_static_replacement_program(
-                            OracleStaticReplacementCompileInput {
-                                exact_source: validated_input.oracle_clause,
-                                normalized_source: validated_input.oracle_clause,
-                                semantic_context:
-                                    crate::oracle_static_replacement_runtime::SourceSemanticContext::CardAbility,
-                            },
-                        )
-                        .expect("source entry replacement recompiles in card-zone context");
-                    }
-                    return retain_oracle_static_replacement_program(
+                    return retain_retained_oracle_ability_envelope_program(
                         validated_input.bounded_input(),
                         program,
                     )
                     .map(CompiledOracleClause::Bounded)
                     .map_err(|error| OracleClauseBackendError::Native { error });
+                }
+                if let Ok(program) =
+                    compile_structural_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+                        exact_source: validated_input.oracle_clause,
+                        normalized_source: &ability_normalized,
+                    })
+                {
+                    return retain_structural_oracle_ability_envelope_program(
+                        validated_input.bounded_input(),
+                        program,
+                    )
+                    .map(CompiledOracleClause::Bounded)
+                    .map_err(|error| OracleClauseBackendError::Native { error });
+                }
+
+                match compile_live_static_replacement_clause(&validated_input) {
+                    Ok(Some(clause)) => return Ok(CompiledOracleClause::Bounded(clause)),
+                    Ok(None) => {}
+                    Err(error) => return Err(OracleClauseBackendError::Native { error }),
                 }
 
                 if let Some(cast_zone_context) = CastZoneSemanticContext::from_type_line(
@@ -1479,6 +1731,45 @@ fn compile_oracle_clause_program_inner(
                         .map_err(|error| OracleClauseBackendError::Native { error });
                     }
                 }
+
+                if looks_like_static_or_replacement_clause(validated_input.oracle_clause)
+                    && let Ok(program) = compile_retained_oracle_static_replacement_program(
+                        OracleStaticReplacementCompileInput::permanent_ability(
+                            validated_input.oracle_clause,
+                        ),
+                    )
+                {
+                    return retain_retained_oracle_static_replacement_program(
+                        validated_input.bounded_input(),
+                        program,
+                    )
+                    .map(CompiledOracleClause::Bounded)
+                    .map_err(|error| OracleClauseBackendError::Native { error });
+                }
+
+                if let Ok(program) = compile_retained_oracle_clause_composition(
+                    OracleClauseCompositionInput::card_face(validated_input.oracle_clause),
+                ) {
+                    return retain_retained_oracle_clause_composition_program(
+                        validated_input.bounded_input(),
+                        program,
+                    )
+                    .map(CompiledOracleClause::Bounded)
+                    .map_err(|error| OracleClauseBackendError::Native { error });
+                }
+            }
+
+            if allow_composition
+                && let Ok(program) = compile_retained_oracle_clause_composition(
+                    OracleClauseCompositionInput::card_face(validated_input.oracle_clause),
+                )
+            {
+                return retain_retained_oracle_clause_composition_program(
+                    validated_input.bounded_input(),
+                    program,
+                )
+                .map(CompiledOracleClause::Bounded)
+                .map_err(|error| OracleClauseBackendError::Native { error });
             }
 
             // Candidate rejection by an earlier narrow compiler is not proof that
@@ -1517,6 +1808,68 @@ fn source_type_has_spell_resolution(source_type_line: &str) -> bool {
     source_type_line
         .split(|character: char| !character.is_alphanumeric())
         .any(|word| word.eq_ignore_ascii_case("instant") || word.eq_ignore_ascii_case("sorcery"))
+}
+
+fn compile_linked_ability_envelope(
+    input: &OracleClauseBackendInput<'_>,
+    card_context: Option<OracleClauseCardContext<'_>>,
+) -> Option<BoundedOracleClause> {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("oracle-ability-envelope-compiler".to_owned())
+            .stack_size(8 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                compile_linked_ability_envelope_on_worker_stack(input, card_context)
+            })
+            .ok()?;
+        worker.join().ok().flatten()
+    })
+}
+
+fn compile_linked_ability_envelope_on_worker_stack(
+    input: &OracleClauseBackendInput<'_>,
+    card_context: Option<OracleClauseCardContext<'_>>,
+) -> Option<BoundedOracleClause> {
+    let normalized = reviewed_ability_envelope_normalized_source(input.oracle_clause);
+    if compile_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+        exact_source: input.oracle_clause,
+        normalized_source: &normalized,
+    })
+    .is_ok()
+    {
+        return None;
+    }
+    let envelope = compile_retained_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+        exact_source: input.oracle_clause,
+        normalized_source: &normalized,
+    })
+    .ok()?;
+    let body_validated = validate_oracle_clause_line(envelope.exact_body()).ok()?;
+    let body_input = OracleClauseBackendInput {
+        face_index: input.face_index,
+        clause_index: input.clause_index,
+        source_name: input.source_name,
+        source_type_line: input.source_type_line,
+        oracle_clause: envelope.exact_body(),
+        printed_keywords: input.printed_keywords,
+    };
+    let body = match card_context {
+        Some(context) => compile_bounded_oracle_clause_after_syntax_validation_with_context(
+            body_input.bounded_input(),
+            body_validated,
+            BoundedOracleCardContext {
+                layout: context.layout,
+                face_count: context.face_count,
+            },
+        ),
+        None => compile_bounded_oracle_clause_after_syntax_validation(
+            body_input.bounded_input(),
+            body_validated,
+        ),
+    }
+    .ok()?;
+    crate::bounded_oracle_consumer::clause_has_executable_contract(&body).then_some(())?;
+    retain_linked_oracle_ability_envelope_program(input.bounded_input(), envelope, body).ok()
 }
 
 struct BackendModalChildCompiler<'a> {
@@ -1572,6 +1925,7 @@ impl ClosedModalChildCompiler for BackendModalChildCompiler<'_> {
             self.source_mana_value,
             Some(self.complete_face_oracle_text),
             false,
+            true,
         );
         let (program, semantic_digest) = match compiled {
             Ok(CompiledOracleClause::Bounded(program)) => {
@@ -1593,10 +1947,20 @@ impl ClosedModalChildCompiler for BackendModalChildCompiler<'_> {
                     semantic_digest,
                 )
             }
-            Err(error) => {
-                return ModalChildCompilation::Unsupported {
-                    detail: format!("modal child has no exact typed program: {error}"),
-                };
+            Err(_) => {
+                let mut hasher = Sha256::new();
+                for component in ["oracle-face-modal-retained-syntax/v1", source.exact_source] {
+                    hasher.update((component.len() as u64).to_le_bytes());
+                    hasher.update(component.as_bytes());
+                }
+                let semantic_digest = format!("{:x}", hasher.finalize());
+                (
+                    OracleCompositionChildProgram::retained_syntax(
+                        source.exact_source.to_owned(),
+                        semantic_digest.clone(),
+                    ),
+                    semantic_digest,
+                )
             }
         };
         ModalChildCompilation::Closed(ClosedModalChildProgram {
@@ -1986,6 +2350,45 @@ fn compile_typed_oracle_composition(
     source_mana_value: Option<u32>,
     complete_face_oracle_text: Option<&str>,
 ) -> Option<BoundedOracleClause> {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name("oracle-composition-compiler".to_owned())
+            .stack_size(8 * 1024 * 1024)
+            .spawn_scoped(scope, || {
+                compile_typed_oracle_composition_on_worker_stack(
+                    input,
+                    card_context,
+                    graveyard_transform_context,
+                    level_progression_context,
+                    source_mana_value,
+                    complete_face_oracle_text,
+                )
+            })
+            .ok()?;
+        worker.join().ok().flatten()
+    })
+}
+
+fn compile_typed_oracle_composition_on_worker_stack(
+    input: &OracleClauseBackendInput<'_>,
+    card_context: Option<OracleClauseCardContext<'_>>,
+    graveyard_transform_context: Option<&GraveyardTransformSourceSemanticContext>,
+    level_progression_context: Option<&LevelProgressionProgram>,
+    source_mana_value: Option<u32>,
+    complete_face_oracle_text: Option<&str>,
+) -> Option<BoundedOracleClause> {
+    let lower_clause = input.oracle_clause.to_ascii_lowercase();
+    if lower_clause.contains("rather than pay")
+        || lower_clause.contains("perpetually ")
+        || input.oracle_clause.contains('"')
+    {
+        // This is one alternative-cost/perpetual rule, not independently
+        // resolvable instructions, or it contains quoted rules text that
+        // describes a granted ability rather than an outer instruction.
+        // Splitting either form loses its atomic semantic boundary and can
+        // feed contextual children back through the face.
+        return None;
+    }
     let composition = parse_oracle_clause_composition(OracleClauseCompositionInput::card_face(
         input.oracle_clause,
     ))
@@ -2006,6 +2409,13 @@ fn compile_typed_oracle_composition(
 
     let mut children = Vec::with_capacity(spans.len());
     for span in spans {
+        if span.start == 0 && span.end == input.oracle_clause.len() {
+            // A composition requirement must be a proper child span. Feeding
+            // the complete parent back through the child compiler is neither
+            // a decomposition nor finite, and previously exhausted the test
+            // worker stack for alternative-cost wording.
+            return None;
+        }
         let exact_source = span.slice(input.oracle_clause)?;
         let validated = validate_oracle_clause_line(exact_source).ok()?;
         let child_input = OracleClauseBackendInput {
@@ -2025,6 +2435,7 @@ fn compile_typed_oracle_composition(
             source_mana_value,
             complete_face_oracle_text,
             false,
+            true,
         )
         .ok()?;
         let requested = composition
@@ -2044,7 +2455,9 @@ fn compile_typed_oracle_composition(
             compiled,
         });
     }
-    composition_node_timing_class(composition.root(), &children)?;
+    if composition_node_timing_class(composition.root(), &children).is_none() {
+        return None;
+    }
 
     let bindings = children
         .iter()
@@ -2794,7 +3207,7 @@ fn is_exact_standalone_fight_action(core: &str, reminder: Option<&str>) -> bool 
         "Target creature you control fights target creature an opponent controls.",
         "Target creature fights another target creature.",
     ];
-    if !CORES.contains(&core) {
+    if !CORES.iter().any(|candidate| core == *candidate) {
         return false;
     }
     reminder.is_none_or(|reminder| reminder == "Each deals damage equal to its power to the other.")
@@ -2806,7 +3219,7 @@ fn is_exact_standalone_regenerate_action(core: &str, reminder: Option<&str>) -> 
         "Regenerate target permanent.",
         "Regenerate each creature you control.",
     ];
-    if !CORES.contains(&core) {
+    if !CORES.iter().any(|candidate| core == *candidate) {
         return false;
     }
     reminder.is_none_or(|reminder| {
@@ -2995,6 +3408,7 @@ fn keyword_core_matches(keyword: OfficialKeyword, core: &str) -> bool {
         OfficialKeyword::Evolve => lower == "evolve",
         OfficialKeyword::Improvise => lower == "improvise",
         OfficialKeyword::Intimidate => lower == "intimidate",
+        OfficialKeyword::Skulk => lower == "skulk",
         OfficialKeyword::Spree => lower == "spree",
         OfficialKeyword::Bargain => lower == "bargain",
         OfficialKeyword::Mentor => lower == "mentor",
@@ -3014,6 +3428,7 @@ fn keyword_core_matches(keyword: OfficialKeyword, core: &str) -> bool {
         OfficialKeyword::Devoid => lower == "devoid",
         OfficialKeyword::Convoke => lower == "convoke",
         OfficialKeyword::Equip => lower.starts_with("equip "),
+        OfficialKeyword::Reconfigure => lower.starts_with("reconfigure "),
         OfficialKeyword::Enchant => lower.starts_with("enchant "),
         OfficialKeyword::CumulativeUpkeep => lower.starts_with("cumulative upkeep"),
         OfficialKeyword::Haste => lower == "haste",
@@ -3145,6 +3560,7 @@ fn keyword_kind_agrees(keyword: OfficialKeyword, kind: &KeywordProgramKind) -> b
                 OfficialKeyword::Intimidate,
                 KeywordProgramKind::Intimidate(_)
             )
+            | (OfficialKeyword::Skulk, KeywordProgramKind::Skulk(_))
             | (OfficialKeyword::Spree, KeywordProgramKind::Spree(_))
             | (OfficialKeyword::Bargain, KeywordProgramKind::Bargain(_))
             | (OfficialKeyword::Mentor, KeywordProgramKind::Mentor(_))
@@ -3166,6 +3582,10 @@ fn keyword_kind_agrees(keyword: OfficialKeyword, kind: &KeywordProgramKind) -> b
             | (OfficialKeyword::Devoid, KeywordProgramKind::Devoid)
             | (OfficialKeyword::Convoke, KeywordProgramKind::Convoke(_))
             | (OfficialKeyword::Equip, KeywordProgramKind::Equip(_))
+            | (
+                OfficialKeyword::Reconfigure,
+                KeywordProgramKind::Reconfigure(_)
+            )
             | (OfficialKeyword::Enchant, KeywordProgramKind::Enchant(_))
             | (
                 OfficialKeyword::CumulativeUpkeep,
@@ -3283,6 +3703,16 @@ fn delegated_keyword_semantic_context(
         OfficialKeyword::Equip => Err(KeywordCompileError::InsufficientSourceData {
             keyword,
             detail: "Equip requires the source face to be an Artifact Equipment".into(),
+        }),
+        OfficialKeyword::Reconfigure
+            if contains("artifact") && contains("equipment") && contains("creature") =>
+        {
+            Ok(EQUIPMENT_CONTEXT)
+        }
+        OfficialKeyword::Reconfigure => Err(KeywordCompileError::InsufficientSourceData {
+            keyword,
+            detail: "Reconfigure requires the source face to be an Artifact Equipment creature"
+                .into(),
         }),
         OfficialKeyword::Enchant if contains("enchantment") && contains("aura") => Ok(AURA_CONTEXT),
         OfficialKeyword::Enchant => Err(KeywordCompileError::InsufficientSourceData {
@@ -3405,6 +3835,7 @@ fn delegated_keyword_semantic_context(
         | OfficialKeyword::Soulbond
         | OfficialKeyword::Evolve
         | OfficialKeyword::Intimidate
+        | OfficialKeyword::Skulk
             if contains("creature") =>
         {
             Ok(CREATURE_CONTEXT)
@@ -3412,7 +3843,8 @@ fn delegated_keyword_semantic_context(
         OfficialKeyword::Exploit
         | OfficialKeyword::Soulbond
         | OfficialKeyword::Evolve
-        | OfficialKeyword::Intimidate => Err(KeywordCompileError::InsufficientSourceData {
+        | OfficialKeyword::Intimidate
+        | OfficialKeyword::Skulk => Err(KeywordCompileError::InsufficientSourceData {
             keyword,
             detail: format!("{} requires a creature source", keyword.printed_label()),
         }),
@@ -3529,6 +3961,7 @@ fn required_live_bridge_capabilities(keyword: OfficialKeyword) -> &'static [Live
         OfficialKeyword::Evolve => EVOLVE_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::Improvise => IMPROVISE_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::Intimidate => INTIMIDATE_LIVE_BRIDGE_CAPABILITIES,
+        OfficialKeyword::Skulk => STATIC_BLOCK_LEGALITY_CAPABILITIES,
         OfficialKeyword::Spree => SPREE_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::Bargain => BARGAIN_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::Mentor => MENTOR_LIVE_BRIDGE_CAPABILITIES,
@@ -3550,6 +3983,7 @@ fn required_live_bridge_capabilities(keyword: OfficialKeyword) -> &'static [Live
         OfficialKeyword::Devoid => DEVOID_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::Convoke => CONVOKE_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::Equip => EQUIP_LIVE_BRIDGE_CAPABILITIES,
+        OfficialKeyword::Reconfigure => EQUIP_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::Enchant => ENCHANT_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::CumulativeUpkeep => CUMULATIVE_UPKEEP_LIVE_BRIDGE_CAPABILITIES,
         OfficialKeyword::Haste => HASTE_LIVE_BRIDGE_CAPABILITIES,
@@ -4833,6 +5267,35 @@ fn keyword_program_semantic_components(program: &KeywordProgram) -> Vec<String> 
                 intimidate.instances_are_redundant,
             ),
         ],
+        KeywordProgramKind::Skulk(skulk) => vec![
+            "skulk-program/v1".into(),
+            bool_semantic_component("is-static-evasion-ability", skulk.is_static_evasion_ability),
+            match skulk.blocker_qualification {
+                crate::keyword_rules_runtime::SkulkBlockerQualification::CreatureWithCurrentPowerNotGreaterThanAttacker =>
+                    "creature-with-current-power-not-greater-than-attacker/v1".into(),
+            },
+            bool_semantic_component(
+                "every-declared-blocker-must-individually-qualify",
+                skulk.every_declared_blocker_must_individually_qualify,
+            ),
+            bool_semantic_component(
+                "checks-current-power-during-block-declaration",
+                skulk.checks_current_power_during_block_declaration,
+            ),
+            bool_semantic_component(
+                "gain-or-loss-after-legal-declaration-does-not-change-block",
+                skulk.gain_or_loss_after_legal_declaration_does_not_change_block,
+            ),
+            bool_semantic_component(
+                "later-attacker-or-blocker-power-changes-do-not-change-block",
+                skulk.later_attacker_or_blocker_power_changes_do_not_change_block,
+            ),
+            bool_semantic_component(
+                "composes-with-other-block-restrictions",
+                skulk.composes_with_other_block_restrictions,
+            ),
+            bool_semantic_component("instances-are-redundant", skulk.instances_are_redundant),
+        ],
         KeywordProgramKind::Spree(spree) => vec![
             "spree-program/v1".into(),
             bool_semantic_component("is-static-ability", spree.is_static_ability),
@@ -5265,6 +5728,24 @@ fn keyword_program_semantic_components(program: &KeywordProgram) -> Vec<String> 
             bool_semantic_component(
                 "instances-trigger-separately-but-later-resolutions-do-nothing",
                 renown.instances_trigger_separately_but_later_resolutions_do_nothing,
+            ),
+        ],
+        KeywordProgramKind::Reconfigure(reconfigure) => vec![
+            "reconfigure-program/v1".into(),
+            format!("activation-cost/{:?}", reconfigure.activation_cost),
+            format!("target-filter/{:?}", reconfigure.target_filter),
+            bool_semantic_component("sorcery-timing-only", reconfigure.sorcery_timing_only),
+            bool_semantic_component(
+                "source-must-be-an-equipment-creature",
+                reconfigure.source_must_be_an_equipment_creature,
+            ),
+            bool_semantic_component(
+                "attached-source-is-not-a-creature",
+                reconfigure.attached_source_is_not_a_creature,
+            ),
+            bool_semantic_component(
+                "unattached-source-remains-a-creature",
+                reconfigure.unattached_source_remains_a_creature,
             ),
         ],
         _ => Vec::new(),

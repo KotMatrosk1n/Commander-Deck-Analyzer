@@ -106,8 +106,8 @@ use crate::interference::{
 use crate::keyword_production_bridge::{
     DEVOID_PRODUCTION_BRIDGE_VERSION, DevoidObjectBinding, DevoidProductionBridgeError,
     STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION, StaticKeywordEvaluation, StaticKeywordObjectBinding,
-    evaluate_devoid_characteristics, evaluate_static_keyword,
-    static_keyword_has_complete_production_contract,
+    changeling_program_has_complete_production_contract, evaluate_devoid_characteristics,
+    evaluate_static_keyword, static_keyword_has_complete_production_contract,
 };
 use crate::keyword_rules_runtime::{
     CardType as KeywordCardType, KeywordProgramKind, ManaColor as KeywordManaColor,
@@ -142,7 +142,8 @@ use crate::runtime_receipts::{
     ModeledLineCardKind, TypedAtomicTransaction, TypedConditionalManaSource,
     classify_atomic_runtime_transaction, classify_conditional_mana_source,
     classify_graveyard_reclamation, classify_sacrifice_self_any_color_mana,
-    classify_spell_resolution_mana, exact_any_card_tutor, modeled_line_card_kind,
+    classify_spell_resolution_mana, compile_bounded_oracle_runtime_receipts, exact_any_card_tutor,
+    modeled_line_card_kind,
 };
 use crate::semantics::{CompiledCard, CompiledDeck, role};
 use crate::turn_event_state::{ControllerCondition as RuntimeControllerCondition, TurnEventState};
@@ -233,6 +234,7 @@ fn starting_life_total(deck: &CompiledDeck) -> f32 {
         .map(|initialization| initialization.1)
         .unwrap_or(COMMANDER_STARTING_LIFE)
 }
+
 #[derive(Debug, thiserror::Error)]
 pub enum SimulationError {
     #[error("Analysis cancelled.")]
@@ -955,6 +957,7 @@ impl TurnManaPool {
             false
         }
     }
+
     fn pay_with_additional_generic(
         &mut self,
         cost: Option<&ManaCostProfile>,
@@ -1258,6 +1261,7 @@ fn audited_static_keyword(keyword: &str) -> Option<OfficialKeyword> {
         "menace" => Some(OfficialKeyword::Menace),
         "defender" => Some(OfficialKeyword::Defender),
         "reach" => Some(OfficialKeyword::Reach),
+        "changeling" => Some(OfficialKeyword::Changeling),
         "haste" => Some(OfficialKeyword::Haste),
         "vigilance" => Some(OfficialKeyword::Vigilance),
         "trample" => Some(OfficialKeyword::Trample),
@@ -1282,7 +1286,21 @@ fn bounded_static_keyword(
     keyword: OfficialKeyword,
 ) -> Option<crate::bounded_oracle_runtime::Keyword> {
     match keyword {
+        OfficialKeyword::Deathtouch => Some(crate::bounded_oracle_runtime::Keyword::Deathtouch),
         OfficialKeyword::Defender => Some(crate::bounded_oracle_runtime::Keyword::Defender),
+        OfficialKeyword::DoubleStrike => Some(crate::bounded_oracle_runtime::Keyword::DoubleStrike),
+        OfficialKeyword::FirstStrike => Some(crate::bounded_oracle_runtime::Keyword::FirstStrike),
+        OfficialKeyword::Flying => Some(crate::bounded_oracle_runtime::Keyword::Flying),
+        OfficialKeyword::Haste => Some(crate::bounded_oracle_runtime::Keyword::Haste),
+        OfficialKeyword::Hexproof => Some(crate::bounded_oracle_runtime::Keyword::Hexproof),
+        OfficialKeyword::Indestructible => {
+            Some(crate::bounded_oracle_runtime::Keyword::Indestructible)
+        }
+        OfficialKeyword::Lifelink => Some(crate::bounded_oracle_runtime::Keyword::Lifelink),
+        OfficialKeyword::Menace => Some(crate::bounded_oracle_runtime::Keyword::Menace),
+        OfficialKeyword::Reach => Some(crate::bounded_oracle_runtime::Keyword::Reach),
+        OfficialKeyword::Shroud => Some(crate::bounded_oracle_runtime::Keyword::Shroud),
+        OfficialKeyword::Trample => Some(crate::bounded_oracle_runtime::Keyword::Trample),
         OfficialKeyword::Vigilance => Some(crate::bounded_oracle_runtime::Keyword::Vigilance),
         _ => None,
     }
@@ -1293,7 +1311,9 @@ fn exact_self_describing_static_keyword(
     face_index: u16,
     keyword: OfficialKeyword,
 ) -> bool {
-    if !static_keyword_has_complete_production_contract(keyword) {
+    if keyword != OfficialKeyword::Changeling
+        && !static_keyword_has_complete_production_contract(keyword)
+    {
         return false;
     }
     let native = bounded_static_keyword(keyword).is_some_and(|bounded_keyword| {
@@ -1316,7 +1336,11 @@ fn exact_self_describing_static_keyword(
     let mut delegated = card.effects.delegated_oracle.iter().filter(|clause| {
         clause.address().face_index == face_index
             && clause.keyword_program().keyword() == keyword
-            && clause.keyword_program().has_exact_contract()
+            && if keyword == OfficialKeyword::Changeling {
+                changeling_program_has_complete_production_contract(clause.keyword_program())
+            } else {
+                clause.keyword_program().has_exact_contract()
+            }
     });
     delegated.next().is_some() && delegated.next().is_none()
 }
@@ -1327,7 +1351,10 @@ fn card_has_keyword(card: &CompiledCard, keyword: &str) -> bool {
         |official_keyword| {
             !matches!(
                 official_keyword,
-                OfficialKeyword::Fear | OfficialKeyword::Shadow | OfficialKeyword::Landwalk
+                OfficialKeyword::Fear
+                    | OfficialKeyword::Intimidate
+                    | OfficialKeyword::Shadow
+                    | OfficialKeyword::Landwalk
             ) && exact_self_describing_static_keyword(card, 0, official_keyword)
         },
     )
@@ -1395,7 +1422,8 @@ fn battlefield_card_types(
     zones: &KnownLineZoneState,
     sequence: u16,
 ) -> CardTypeProfile {
-    card.effects
+    let mut profile = card
+        .effects
         .structural_characteristics
         .battlefield_profile(battlefield_face_index(zones, sequence))
         .card_types()
@@ -1403,7 +1431,37 @@ fn battlefield_card_types(
             battlefield_face_program(card, zones, sequence)
                 .map(|face| compile_card_types(&face.type_line))
         })
-        .unwrap_or(card.effects.card_types)
+        .unwrap_or(card.effects.card_types);
+    if zones.attachments.contains_key(&sequence)
+        && has_exact_reconfigure_clause(card, zones, sequence)
+    {
+        // Reconfigure's continuous effect applies only while this exact
+        // creature Equipment is attached to a creature.
+        profile.is_creature = false;
+    }
+    profile
+}
+
+fn has_exact_reconfigure_clause(
+    card: &CompiledCard,
+    zones: &KnownLineZoneState,
+    sequence: u16,
+) -> bool {
+    let Some(face_index) =
+        battlefield_face_index(zones, sequence).and_then(|index| u16::try_from(index).ok())
+    else {
+        return false;
+    };
+    card.effects.delegated_oracle.iter().any(|clause| {
+        clause.address().face_index == face_index
+            && matches!(
+                clause.keyword_program().kind(),
+                KeywordProgramKind::Reconfigure(program)
+                    if program.source_must_be_an_equipment_creature
+                        && program.attached_source_is_not_a_creature
+                        && program.unattached_source_remains_a_creature
+            )
+    })
 }
 
 fn battlefield_face_characteristics<'a>(
@@ -1533,7 +1591,7 @@ fn keyword_card_types(card_types: CardTypeProfile) -> BTreeSet<KeywordCardType> 
 }
 
 fn keyword_type_parts(type_line: &str) -> (BTreeSet<String>, BTreeSet<String>) {
-    let mut halves = type_line.splitn(2, ['\u{2013}', '\u{2014}']);
+    let mut halves = type_line.splitn(2, |character| matches!(character, '\u{2013}' | '\u{2014}'));
     let card_type_half = halves.next().unwrap_or_default();
     let subtype_half = halves.next().unwrap_or_default();
     let supertypes = card_type_half
@@ -1615,6 +1673,62 @@ enum DelegatedStaticKeywordState {
     Absent,
     Live(StaticKeywordEvaluation),
     Invalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedStaticTargetingKeywordState {
+    Absent,
+    Live,
+    Invalid,
+}
+
+fn bounded_static_targeting_keyword_state(
+    card: &CompiledCard,
+    face_index: u16,
+    keyword: OfficialKeyword,
+) -> BoundedStaticTargetingKeywordState {
+    let Some(bounded_keyword) = bounded_static_keyword(keyword) else {
+        return BoundedStaticTargetingKeywordState::Absent;
+    };
+    let candidates = card
+        .effects
+        .bounded_oracle
+        .iter()
+        .filter(|clause| {
+            clause.address().face_index == face_index
+                && matches!(
+                    clause.effects(),
+                    [crate::bounded_oracle_runtime::Effect::GrantKeyword {
+                        objects: crate::bounded_oracle_runtime::ObjectRef::Source,
+                        keywords,
+                        duration: crate::bounded_oracle_runtime::Duration::Permanent,
+                    }] if keywords.contains(&bounded_keyword)
+                )
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return BoundedStaticTargetingKeywordState::Absent;
+    }
+    if candidates.len() != 1 {
+        return BoundedStaticTargetingKeywordState::Invalid;
+    }
+    let address = candidates[0].address();
+    let keyword_name = match keyword {
+        OfficialKeyword::Hexproof => "Hexproof",
+        OfficialKeyword::Shroud => "Shroud",
+        _ => return BoundedStaticTargetingKeywordState::Absent,
+    };
+    let matching_receipts = compile_bounded_oracle_runtime_receipts(card)
+        .into_iter()
+        .filter(|receipt| {
+            receipt.clause.address() == address && receipt.owns_exact_static_keyword(keyword_name)
+        })
+        .count();
+    if matching_receipts == 1 {
+        BoundedStaticTargetingKeywordState::Live
+    } else {
+        BoundedStaticTargetingKeywordState::Invalid
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1785,6 +1899,7 @@ fn battlefield_color_mask(
         base_battlefield_color_mask(card, zones, sequence),
     )
 }
+
 fn attraction_visits_on_roll(
     card: &CompiledCard,
     zones: &KnownLineZoneState,
@@ -1818,7 +1933,10 @@ fn battlefield_has_keyword(
         };
         if matches!(
             official_keyword,
-            OfficialKeyword::Fear | OfficialKeyword::Shadow | OfficialKeyword::Landwalk
+            OfficialKeyword::Fear
+                | OfficialKeyword::Skulk
+                | OfficialKeyword::Shadow
+                | OfficialKeyword::Landwalk
         ) {
             return false;
         }
@@ -3856,7 +3974,10 @@ fn delegated_equip_bindings(
     let mut identities = BTreeSet::new();
     for clause in card.effects.delegated_oracle.iter().filter(|clause| {
         clause.address().face_index == face_index
-            && clause.keyword_program().keyword() == OfficialKeyword::Equip
+            && matches!(
+                clause.keyword_program().keyword(),
+                OfficialKeyword::Equip | OfficialKeyword::Reconfigure
+            )
     }) {
         let Ok(binding) = BoundDelegatedEquipProgram::bind(
             source_identity,
@@ -3874,6 +3995,7 @@ fn delegated_equip_bindings(
     bindings.sort_by_key(|binding| binding.clause.clone());
     bindings
 }
+
 fn equip_object_snapshot(
     deck: &CompiledDeck,
     zones: &KnownLineZoneState,
@@ -3900,10 +4022,7 @@ fn equip_object_snapshot(
             zone: KeywordZone::Battlefield,
             characteristics,
             is_commander: deck.commanders.contains(&presence.card_index),
-            // The bounded battlefield does not yet retain an exact
-            // Reconfigure status. Current delegated snapshot Equip sources
-            // are noncreature Equipment, so creature Equipment stays closed.
-            has_reconfigure: false,
+            has_reconfigure: has_exact_reconfigure_clause(card, zones, sequence),
             targeting_status: EquipTargetingStatus::Unproven,
         });
     }
@@ -4025,6 +4144,17 @@ fn targeting_is_legal_for_sequence(
         false,
     );
     for keyword in [OfficialKeyword::Hexproof, OfficialKeyword::Shroud] {
+        match bounded_static_targeting_keyword_state(card, face_index, keyword) {
+            BoundedStaticTargetingKeywordState::Absent => {}
+            BoundedStaticTargetingKeywordState::Invalid => return false,
+            BoundedStaticTargetingKeywordState::Live => match keyword {
+                OfficialKeyword::Shroud => return false,
+                OfficialKeyword::Hexproof if source_controller != KeywordPlayerId(0) => {
+                    return false;
+                }
+                _ => {}
+            },
+        }
         match delegated_static_keyword_state(
             card,
             face_index,
@@ -4165,6 +4295,15 @@ fn equipment_targeting_is_legal_for_sequence(
     );
     let source_profile = equipment_keyword_source_profile(source);
     for keyword in [OfficialKeyword::Hexproof, OfficialKeyword::Shroud] {
+        match bounded_static_targeting_keyword_state(card, face_index, keyword) {
+            BoundedStaticTargetingKeywordState::Absent => {}
+            BoundedStaticTargetingKeywordState::Invalid => return false,
+            BoundedStaticTargetingKeywordState::Live => {
+                if keyword == OfficialKeyword::Shroud {
+                    return false;
+                }
+            }
+        }
         match delegated_static_keyword_state(
             card,
             face_index,
@@ -5938,6 +6077,7 @@ impl KnownCardZone {
     fn len(&self) -> usize {
         self.cards.len()
     }
+
     fn get(&self, position: usize) -> Option<&usize> {
         self.cards.get(position).map(|object| &object.card_index)
     }
@@ -5953,6 +6093,7 @@ impl KnownCardZone {
     fn iter_objects(&self) -> impl DoubleEndedIterator<Item = &KnownZoneCard> + ExactSizeIterator {
         self.cards.iter()
     }
+
     fn canonical_objects(&self) -> Vec<KnownZoneCard> {
         let mut objects = self.cards.clone();
         objects.sort_unstable();
@@ -7464,6 +7605,7 @@ impl KnownLineZoneState {
         let lost = (before - after).max(0.0).floor().min(u32::MAX as f32) as u32;
         self.record_controller_life_loss(lost);
     }
+
     fn remove_object_state(&mut self, sequence: u16) {
         self.turn_events.state.unregister_object(sequence);
         self.battlefield_faces.remove(&sequence);
@@ -8438,7 +8580,6 @@ fn apply_opponent_turn_activity(
     *player_life > 0.0
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn apply_table_turn_activity_with_end_steps(
     deck: &CompiledDeck,
@@ -10016,6 +10157,7 @@ fn commit_atomic_spell_initiation_with_choice(
         choice,
     })
 }
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AtomicSpellResolution {
     searched_card: Option<usize>,
@@ -11159,6 +11301,7 @@ fn execute_atomic_spell_resolution_with_choice_and_intuition_model(
     }
     resolution
 }
+
 #[allow(clippy::too_many_arguments)]
 fn execute_atomic_search_to_hand(
     tutor: &ProgramTutorEffect,
@@ -11979,7 +12122,6 @@ fn pay_graveyard_reclamation_cost(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NestedFreeCastCapability {
     Inert,
@@ -16006,6 +16148,7 @@ impl TurnPlanningDomain for CombatAwareCastPlanningDomain<'_, '_, '_> {
         self.base.conservative_next_turn_state(state)
     }
 }
+
 fn plan_hand_action_order_with_intuition_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
@@ -16057,6 +16200,7 @@ fn plan_hand_action_order_with_intuition_model(
     .unwrap_or_default();
     trim_plan_for_opponent_end_step_access(domain, initial, planned_actions, intuition_model, None)
 }
+
 fn plan_hand_action_order_with_combat_and_intuition_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
@@ -16404,6 +16548,7 @@ fn card_has_reviewed_primer_setup_mana_capability(card: &CompiledCard) -> bool {
         || compile_typed_conditional_mana_source(card)
             .is_some_and(TypedConditionalManaSource::is_receipted_artifact_family)
 }
+
 fn certified_reviewed_graveyard_storm_primer_continuation_with_model(
     domain: &CastPlanningDomain<'_>,
     initial: CastPlanningState,
@@ -16587,6 +16732,7 @@ fn reviewed_primer_window_preempts_eager_tutor(
         .is_empty()
     })
 }
+
 fn hand_plan_completes_credible_executable_route_with_model(
     domain: &CastPlanningDomain<'_>,
     hand: &[usize],
@@ -18050,6 +18196,7 @@ fn rule_of_law_blocks_next_spell(
     }
     true
 }
+
 pub fn simulate_opening_hands_with_mana(
     deck: &CompiledDeck,
     mana: &ManaModel,
@@ -19008,6 +19155,7 @@ fn early_route_library_order_sha256(deck: &CompiledDeck, draw_order: &[usize]) -
     }
     format!("{:x}", hasher.finalize())
 }
+
 pub fn simulate_win_speed_with_mana(
     deck: &CompiledDeck,
     mana: &ManaModel,
@@ -19101,6 +19249,7 @@ fn simulate_win_speed_inner_with_report_retention(
         report_progress,
     )
 }
+
 #[allow(clippy::too_many_arguments)]
 fn simulate_win_speed_inner_with_worker_count_and_report_retention(
     deck: &CompiledDeck,
@@ -22431,6 +22580,7 @@ fn resolve_typed_overrun_creature_tutor(
     );
     true
 }
+
 fn prepare_episode(
     deck: &CompiledDeck,
     mana_access: Option<&ManaAccessProfile>,
@@ -24751,6 +24901,7 @@ fn simulate_prepared_episode_condition(
                         break;
                     }
                 };
+
                 if bounded_draw_applied {
                     changes_observable_plan = true;
                 } else {
@@ -26781,6 +26932,7 @@ fn execute_reviewed_random_discard_resolution_after_mana_response(
         ..AtomicSpellResolution::default()
     })
 }
+
 fn exact_mill_storm_spell(card: &CompiledCard) -> Option<u8> {
     if !plain_executable_ability_root_is_complete(card, 2) {
         return None;
@@ -26972,7 +27124,6 @@ fn execute_graveyard_storm_under_isolated_scenario(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn execute_graveyard_storm_transaction_with_receipt(
     line: &crate::domain::KnownLine,
@@ -32366,6 +32517,7 @@ fn resolve_immediate_spell_draws(
         *next_draw_position += 1;
     }
 }
+
 fn immediate_creature_tokens(card: &CompiledCard) -> u8 {
     immediate_effect_value(card, card.effects.creature_tokens, 1).min(12)
 }
@@ -32373,6 +32525,7 @@ fn immediate_creature_tokens(card: &CompiledCard) -> u8 {
 fn immediate_extra_turns(card: &CompiledCard) -> u8 {
     immediate_effect_value(card, card.effects.extra_turns, 1).min(2)
 }
+
 /// A reviewed Oracle-style spell is deliberately conserved until every named
 /// member of at least one reviewed package is either usable this turn or in
 /// hand and the remaining printed costs are jointly payable. This is a small,
@@ -32621,6 +32774,7 @@ fn reviewed_sequence_package_is_jointly_payable(
     }
     true
 }
+
 /// Goldfish trajectories do not have legal opposing targets. Conserving a
 /// purely reactive spell prevents counters, removal, wipes, and protection
 /// from being converted into imaginary proactive board development. A broad
@@ -33644,5 +33798,3 @@ fn derive_episode_seed(master: u64, scenario: u64, simulation_index: u32) -> u64
     value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
     value ^ (value >> 31)
 }
-// Keep simulation unit tests in simulation/tests.rs. The explicit path is part
-// of the source-layout contract and prevents the test module being redirected.

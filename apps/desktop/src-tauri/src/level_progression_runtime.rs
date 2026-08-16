@@ -14,7 +14,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const LEVEL_PROGRESSION_COMPILER_VERSION: &str = "level-progression-compiler-0.2";
-pub const LEVEL_PROGRESSION_RUNTIME_VERSION: &str = "level-progression-runtime-0.2";
+pub const LEVEL_PROGRESSION_RUNTIME_VERSION: &str = "level-progression-runtime-0.9";
 pub const LEVEL_PROGRESSION_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:117.3b,117.5,602.2,608.2,613.1,613.4,613.5,704.5f,704.5g,701.27,702.87";
 
 pub const fn level_progression_production_adapter_connected() -> bool {
@@ -127,6 +127,71 @@ impl LevelProgressionProgram {
             && !self.bands.is_empty()
             && is_sha256_hex(&self.semantic_sha256)
             && self.semantic_sha256 == semantic_digest(self)
+    }
+
+    /// Production owns every canonical installed leveler whose level-up
+    /// payment is mana-only and whose typed children have exact main-runtime
+    /// projections.
+    pub fn production_adapter_connected(&self) -> bool {
+        self.has_exact_contract()
+            && self
+                .level_up
+                .cost
+                .components
+                .iter()
+                .all(|component| matches!(component, CostComponent::Mana(_)))
+            && self
+                .base_children
+                .iter()
+                .chain(self.bands.iter().flat_map(|band| &band.children))
+                .all(|child| match &child.kind {
+                    LevelChildKind::KeywordLine(keywords) => {
+                        !keywords.is_empty()
+                    }
+                    LevelChildKind::Static(
+                        StaticAbilityProgram::Unblockable
+                        | StaticAbilityProgram::BlockableOnlyByBlackCreatures
+                        | StaticAbilityProgram::OtherControlledCreaturesGet { .. }
+                        | StaticAbilityProgram::ControlledSubtypeCreaturesHaveManaAbility { .. }
+                        | StaticAbilityProgram::PreventDamageToYouOrControlledCreature { .. },
+                    ) => true,
+                    LevelChildKind::Activated(ability) => {
+                        ability.cost.components.iter().all(|component| {
+                            matches!(component, CostComponent::Mana(_) | CostComponent::TapSource)
+                        }) && match &ability.effect {
+                            ActivatedEffect::TargetCreaturePowerToughnessUntilEndOfTurn {
+                                power,
+                                toughness,
+                            } => *power <= 0 && *toughness <= 0,
+                            ActivatedEffect::CopyTargetInstantOrSorcery {
+                                copies,
+                                may_choose_new_targets,
+                            } => (1..=2).contains(copies) && *may_choose_new_targets,
+                            ActivatedEffect::AddMana { .. }
+                            | ActivatedEffect::DealDamageToAnyTarget { .. }
+                            | ActivatedEffect::DrawThenDiscard { .. }
+                            | ActivatedEffect::DrawCards(_)
+                            | ActivatedEffect::SourcePowerToughnessUntilEndOfTurn { .. }
+                            | ActivatedEffect::CreateCreatureTokens { .. }
+                            | ActivatedEffect::RegenerateSource => true,
+                        }
+                    }
+                    LevelChildKind::Triggered(ability) => matches!(
+                        ability,
+                        TriggeredAbilityProgram {
+                            event: TriggerEvent::BeginningOfEachEndStep,
+                            intervening_condition: Some(TriggerCondition::NotYourTurn),
+                            effect: TriggeredEffect::TakeExtraTurnAfterThisOne,
+                        } | TriggeredAbilityProgram {
+                            event: TriggerEvent::SourceAttacks,
+                            intervening_condition: None,
+                            effect: TriggeredEffect::DealDamageToEachCreatureDefendingPlayerControls { .. },
+                        }
+                    ),
+                    LevelChildKind::Static(
+                        StaticAbilityProgram::ActivateOpponentArtifactAbilitiesAsThoughControlled,
+                    ) => false,
+                })
     }
 }
 
@@ -991,9 +1056,10 @@ fn parse_create_token_effect(source: &str) -> Option<ActivatedEffect> {
         .or_else(|| body.strip_suffix(" creature tokens."))?;
     let (count, body) = if let Some(rest) = body.strip_prefix("a ") {
         (1, rest)
-    } else {
-        let rest = body.strip_prefix("two ")?;
+    } else if let Some(rest) = body.strip_prefix("two ") {
         (2, rest)
+    } else {
+        return None;
     };
     let mut words = body.split_whitespace();
     let pair = parse_power_toughness(words.next()?)?;
@@ -1015,9 +1081,10 @@ fn parse_copy_spell_effect(source: &str) -> Option<ActivatedEffect> {
     let (copies, suffix) =
         if let Some(suffix) = source.strip_prefix("Copy target instant or sorcery spell twice. ") {
             (2, suffix)
-        } else {
-            let suffix = source.strip_prefix("Copy target instant or sorcery spell. ")?;
+        } else if let Some(suffix) = source.strip_prefix("Copy target instant or sorcery spell. ") {
             (1, suffix)
+        } else {
+            return None;
         };
     let expected = if copies == 1 {
         "You may choose new targets for the copy."
@@ -1100,7 +1167,10 @@ fn parse_static_ability(exact: &str) -> Option<StaticAbilityProgram> {
     {
         return Some(
             StaticAbilityProgram::ControlledSubtypeCreaturesHaveManaAbility {
-                subtype: scope.to_owned(),
+                subtype: match scope {
+                    "Elves" => "Elf".to_owned(),
+                    _ => scope.strip_suffix('s').unwrap_or(scope).to_owned(),
+                },
                 produced: choices,
             },
         );

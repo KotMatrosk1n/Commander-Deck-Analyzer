@@ -14,8 +14,8 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const CAST_MODIFIER_KEYWORD_COMPILER_VERSION: &str = "cast-modifier-keyword-compiler-0.1";
-pub const CAST_MODIFIER_KEYWORD_RUNTIME_VERSION: &str = "cast-modifier-keyword-runtime-0.1";
+pub const CAST_MODIFIER_KEYWORD_COMPILER_VERSION: &str = "cast-modifier-keyword-compiler-0.4";
+pub const CAST_MODIFIER_KEYWORD_RUNTIME_VERSION: &str = "cast-modifier-keyword-runtime-0.11";
 pub const CAST_MODIFIER_KEYWORD_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:400.7,601.2b,601.2f,601.2h,608.2,608.2f,707.10,702.27,702.42,702.47,702.96,702.56,702.40";
 
 const BUYBACK_MANA_REMINDER_PREFIX: &str = "You may pay an additional ";
@@ -39,6 +39,7 @@ const STORM_TOKEN_REMINDER: &str = "When you cast this spell, copy it for each s
 const STORM_THE_TOKEN_REMINDER: &str = "When you cast this spell, copy it for each spell cast before it this turn. The copies become tokens.";
 const STORM_TARGET_TOKEN_REMINDER: &str = "When you cast this spell, copy it for each spell cast before it this turn. You may choose new targets for the copies. Copies become tokens.";
 const STORM_TARGET_ENTER_TOKEN_REMINDER: &str = "When you cast this spell, copy it for each spell cast before it this turn. You may choose new targets for the copies. The copies enter as tokens.";
+const CONSPIRE_REMINDER: &str = "As you cast this spell, you may tap two untapped creatures you control that share a color with it. When you do, copy it and you may choose a new target for the copy.";
 
 pub const fn cast_modifier_keyword_production_adapter_connected() -> bool {
     false
@@ -295,6 +296,7 @@ pub enum CastModifierKeywordKind {
         repeatable_additional_cost: CastModifierCost,
     },
     Storm,
+    Conspire,
 }
 
 impl CastModifierKeywordKind {
@@ -306,6 +308,7 @@ impl CastModifierKeywordKind {
             Self::Overload { .. } => "Overload",
             Self::Replicate { .. } => "Replicate",
             Self::Storm => "Storm",
+            Self::Conspire => "Conspire",
         }
     }
 
@@ -334,6 +337,7 @@ impl CastModifierKeywordKind {
                 repeatable_additional_cost.stable_id()
             ),
             Self::Storm => "storm/v1;cast-trigger=true;copies=spells-cast-before-this-spell-this-turn;new-targets-per-copy=true".to_owned(),
+            Self::Conspire => "conspire/v1;optional-cast-payment=tap-two-distinct-untapped-controlled-creatures-sharing-color-with-spell;cast-trigger=true;copies=one;new-targets=true".to_owned(),
         }
     }
 }
@@ -363,8 +367,46 @@ impl CastModifierKeywordProgram {
         &self.kind
     }
 
-    pub const fn production_adapter_connected(&self) -> bool {
-        cast_modifier_keyword_production_adapter_connected()
+    pub fn production_adapter_connected(&self) -> bool {
+        matches!(
+            &self.kind,
+            CastModifierKeywordKind::Buyback { .. }
+                | CastModifierKeywordKind::Entwine { .. }
+                | CastModifierKeywordKind::Replicate { .. }
+                | CastModifierKeywordKind::Storm
+        ) || matches!(
+            &self.kind,
+            CastModifierKeywordKind::Overload { .. }
+                | CastModifierKeywordKind::SpliceOntoArcane { .. }
+                | CastModifierKeywordKind::Conspire
+        )
+    }
+
+    pub fn copies_allow_new_targets(&self) -> bool {
+        match self.kind {
+            CastModifierKeywordKind::Replicate { .. } => !self
+                .exact_source
+                .ends_with(&format!("({REPLICATE_NO_TARGET_REMINDER})")),
+            CastModifierKeywordKind::Storm => {
+                !self
+                    .exact_source
+                    .ends_with(&format!("({STORM_NO_TARGET_REMINDER})"))
+                    && !self
+                        .exact_source
+                        .ends_with(&format!("({STORM_TOKEN_REMINDER})"))
+                    && !self
+                        .exact_source
+                        .ends_with(&format!("({STORM_THE_TOKEN_REMINDER})"))
+            }
+            CastModifierKeywordKind::Conspire => true,
+            _ => false,
+        }
+    }
+
+    pub fn copies_become_tokens(&self) -> bool {
+        self.exact_source.contains("Copies become tokens.")
+            || self.exact_source.contains("The copies become tokens.")
+            || self.exact_source.contains("The copies enter as tokens.")
     }
 }
 
@@ -415,6 +457,8 @@ fn snapshot_family(exact_source: &str) -> Option<&'static str> {
         Some("Replicate")
     } else if exact_source == "Storm" || exact_source.starts_with("Storm (") {
         Some("Storm")
+    } else if exact_source == "Conspire" || exact_source.starts_with("Conspire (") {
+        Some("Conspire")
     } else {
         None
     }
@@ -441,7 +485,8 @@ pub fn compile_cast_modifier_keyword_program(
         .or_else(|| parse_splice(exact_source))
         .or_else(|| parse_overload(exact_source))
         .or_else(|| parse_replicate(exact_source))
-        .or_else(|| parse_storm(exact_source))?;
+        .or_else(|| parse_storm(exact_source))
+        .or_else(|| parse_conspire(exact_source))?;
     let semantic_digest = semantic_digest(exact_source, &normalized_source, &kind);
     Some(CastModifierKeywordProgram {
         exact_source: exact_source.to_owned(),
@@ -583,11 +628,10 @@ fn parse_overload(source: &str) -> Option<CastModifierKeywordKind> {
     let (core, reminder) = split_trailing_parenthetical(source)?;
     let cost_text = core.strip_prefix("Overload ")?;
     let alternative_cost = parse_mana_cost(cost_text)?;
-    if let Some(reminder) = reminder
-        && reminder != OVERLOAD_REMINDER
-        && reminder != OVERLOAD_LONG_REMINDER
-    {
-        return None;
+    if let Some(reminder) = reminder {
+        if reminder != OVERLOAD_REMINDER && reminder != OVERLOAD_LONG_REMINDER {
+            return None;
+        }
     }
     Some(CastModifierKeywordKind::Overload { alternative_cost })
 }
@@ -595,16 +639,17 @@ fn parse_overload(source: &str) -> Option<CastModifierKeywordKind> {
 fn parse_replicate(source: &str) -> Option<CastModifierKeywordKind> {
     let (core, reminder) = split_trailing_parenthetical(source)?;
     let cost = parse_keyword_cost(core, "Replicate", parse_replicate_nonmana_cost)?;
-    if let Some(reminder) = reminder
-        && ![
+    if let Some(reminder) = reminder {
+        if ![
             REPLICATE_REMINDER,
             REPLICATE_NO_TARGET_REMINDER,
             REPLICATE_SINGULAR_TARGET_REMINDER,
             REPLICATE_TOKEN_REMINDER,
         ]
         .contains(&reminder)
-    {
-        return None;
+        {
+            return None;
+        }
     }
     Some(CastModifierKeywordKind::Replicate {
         repeatable_additional_cost: cost,
@@ -647,6 +692,12 @@ fn parse_storm(source: &str) -> Option<CastModifierKeywordKind> {
     ]
     .contains(&reminder)
     .then_some(CastModifierKeywordKind::Storm)
+}
+
+fn parse_conspire(source: &str) -> Option<CastModifierKeywordKind> {
+    let (core, reminder) = split_trailing_parenthetical(source)?;
+    (core == "Conspire" && reminder == Some(CONSPIRE_REMINDER))
+        .then_some(CastModifierKeywordKind::Conspire)
 }
 
 fn parse_keyword_cost(
@@ -1166,10 +1217,10 @@ fn resolve_printed_mana_requirements(
     for symbol in cost.symbols() {
         match symbol {
             ManaSymbol::Generic(amount) => {
-                requirements.extend(std::iter::repeat_n(ManaRequirement::Any, *amount as usize));
+                requirements.extend(std::iter::repeat(ManaRequirement::Any).take(*amount as usize));
             }
             ManaSymbol::VariableX => {
-                requirements.extend(std::iter::repeat_n(ManaRequirement::Any, chosen_x as usize))
+                requirements.extend(std::iter::repeat(ManaRequirement::Any).take(chosen_x as usize))
             }
             ManaSymbol::White => requirements.push(ManaRequirement::Colored(ManaColor::White)),
             ManaSymbol::Blue => requirements.push(ManaRequirement::Colored(ManaColor::Blue)),
@@ -1307,6 +1358,8 @@ pub struct StackSpell {
     pub owner: PlayerId,
     pub controller: PlayerId,
     pub spell_kind: SpellKind,
+    pub colors: BTreeSet<ManaColor>,
+    pub color_evidence_complete: bool,
     pub cast_event_id: Option<CastEventId>,
     pub is_copy: bool,
     pub copy_parent: Option<StackObjectId>,
@@ -1778,6 +1831,8 @@ fn validate_payload_targets(
         owner: PlayerId(0),
         controller: PlayerId(0),
         spell_kind: SpellKind::InstantOrSorcery,
+        colors: BTreeSet::new(),
+        color_evidence_complete: true,
         cast_event_id: None,
         is_copy: true,
         copy_parent: None,
@@ -2035,6 +2090,7 @@ fn record_modifier_payment(
 pub enum CopyTriggerKind {
     Replicate,
     Storm,
+    Conspire,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -2072,6 +2128,111 @@ pub struct ReplicatePaymentReceipt {
     pub program_semantic_digest: String,
     pub payment_id: PaymentId,
     pub payment_number_for_instance: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConspirePaymentEvidence {
+    pub payment_id: PaymentId,
+    pub payer: PlayerId,
+    pub ability_instance_id: AbilityInstanceId,
+    pub program_semantic_digest: String,
+    pub tapped_creatures: [PaidObjectEvidence; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConspirePaymentReceipt {
+    pub ability_instance_id: AbilityInstanceId,
+    pub program_semantic_digest: String,
+    pub payment_id: PaymentId,
+}
+
+pub fn pay_conspire(
+    program: &CastModifierKeywordProgram,
+    ability_instance_id: AbilityInstanceId,
+    spell: &mut StackSpell,
+    payment: ConspirePaymentEvidence,
+) -> Result<ConspirePaymentReceipt, CastModifierRuntimeError> {
+    if !matches!(program.kind(), CastModifierKeywordKind::Conspire) {
+        return Err(CastModifierRuntimeError::WrongProgramKind);
+    }
+    if spell.is_copy || spell.cast_event_id.is_none() {
+        return Err(CastModifierRuntimeError::ModifierRequiresCastPhysicalSpell);
+    }
+    if payment.payer != spell.controller
+        || payment.ability_instance_id != ability_instance_id
+        || payment.program_semantic_digest != program.semantic_digest()
+        || !spell.color_evidence_complete
+        || spell.colors.is_empty()
+    {
+        return Err(CastModifierRuntimeError::PaymentBindingMismatch);
+    }
+    validate_distinct_paid_objects(&payment.tapped_creatures)?;
+    for creature in &payment.tapped_creatures {
+        if creature.controller_before != payment.payer
+            || creature.from_zone != Zone::Battlefield
+            || creature.requested_to_zone != Zone::Battlefield
+            || creature.to_zone != Zone::Battlefield
+            || creature.before != creature.after
+            || creature.tapped_before
+            || !creature.tapped_after
+            || !creature.characteristics_complete
+            || !creature.has_type("creature")
+            || !creature
+                .ordered_zone_change_replacement_semantic_digests
+                .is_empty()
+            || !creature.zone_change_replacements_complete
+            || creature.colors.is_disjoint(&spell.colors)
+        {
+            return Err(CastModifierRuntimeError::InvalidTapCostEvidence);
+        }
+    }
+    record_modifier_payment(spell, ability_instance_id, payment.payment_id, false)?;
+    Ok(ConspirePaymentReceipt {
+        ability_instance_id,
+        program_semantic_digest: program.semantic_digest().to_owned(),
+        payment_id: payment.payment_id,
+    })
+}
+
+pub fn begin_conspire_cast_trigger(
+    program: &CastModifierKeywordProgram,
+    ability_instance_id: AbilityInstanceId,
+    cast: &CastEventEvidence,
+    payment: &ConspirePaymentReceipt,
+    ledger: &mut CopyTriggerLedger,
+) -> Result<PendingSpellCopyTrigger, CastModifierRuntimeError> {
+    if !matches!(program.kind(), CastModifierKeywordKind::Conspire) {
+        return Err(CastModifierRuntimeError::WrongProgramKind);
+    }
+    cast.validate()?;
+    if payment.ability_instance_id != ability_instance_id
+        || payment.program_semantic_digest != program.semantic_digest()
+        || cast
+            .spell
+            .paid_modifier_bindings
+            .get(&ability_instance_id)
+            .map(Vec::as_slice)
+            != Some(&[payment.payment_id])
+    {
+        return Err(CastModifierRuntimeError::PaymentBindingMismatch);
+    }
+    let key = CopyTriggerKey {
+        cast_event_id: cast.event_id,
+        ability_instance_id,
+        kind: CopyTriggerKind::Conspire,
+    };
+    if !ledger.observed.insert(key) {
+        return Err(CastModifierRuntimeError::TriggerAlreadyObserved);
+    }
+    Ok(PendingSpellCopyTrigger {
+        key,
+        controller: cast.caster,
+        program_semantic_digest: program.semantic_digest().to_owned(),
+        copy_count: 1,
+        original_spell: cast.spell.clone(),
+        supporting_payment_ids: vec![payment.payment_id],
+        supporting_cast_event_ids: vec![cast.event_id],
+    })
 }
 
 pub fn pay_replicate_once(

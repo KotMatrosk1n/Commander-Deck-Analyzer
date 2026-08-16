@@ -24,11 +24,11 @@ use sha2::{Digest, Sha256};
 
 pub const ORACLE_STATIC_REPLACEMENT_COMPILER_VERSION: &str =
     "oracle-static-replacement-compiler-0.8";
-pub const ORACLE_STATIC_REPLACEMENT_RUNTIME_VERSION: &str = "oracle-static-replacement-runtime-0.8";
+pub const ORACLE_STATIC_REPLACEMENT_RUNTIME_VERSION: &str = "oracle-static-replacement-runtime-0.9";
 pub const ORACLE_STATIC_REPLACEMENT_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101.1,109.5,113.6,118.9,400.3,601.2f,601.2h,602.2b,609.4,611.3,613,614-616";
 
 pub const fn oracle_static_replacement_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 pub type PlayerId = u16;
@@ -386,6 +386,9 @@ pub struct CostModification {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticEffect {
+    /// A prohibition, rather than a replacement effect: it makes prevention
+    /// effects inapplicable to every damage event while this source is live.
+    DamageCannotBePrevented,
     Characteristics {
         affected: ObjectSelector,
         condition: Condition,
@@ -586,6 +589,56 @@ pub struct OracleStaticReplacementProgram {
     kind: OracleStaticReplacementProgramKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RetainedStaticReplacementShape {
+    Static,
+    Replacement,
+}
+
+impl RetainedStaticReplacementShape {
+    const fn stable_id(self) -> &'static str {
+        match self {
+            Self::Static => "static/v1",
+            Self::Replacement => "replacement/v1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedOracleStaticReplacementProgram {
+    exact_source: String,
+    normalized_source: String,
+    semantic_context: SourceSemanticContext,
+    shape: RetainedStaticReplacementShape,
+    semantic_digest: String,
+}
+
+impl RetainedOracleStaticReplacementProgram {
+    pub fn exact_source(&self) -> &str {
+        &self.exact_source
+    }
+
+    pub fn normalized_source(&self) -> &str {
+        &self.normalized_source
+    }
+
+    pub fn semantic_context(&self) -> SourceSemanticContext {
+        self.semantic_context
+    }
+
+    pub fn shape(&self) -> RetainedStaticReplacementShape {
+        self.shape
+    }
+
+    pub fn semantic_digest(&self) -> &str {
+        &self.semantic_digest
+    }
+
+    pub const fn production_adapter_connected(&self) -> bool {
+        false
+    }
+}
+
 impl OracleStaticReplacementProgram {
     pub fn exact_source(&self) -> &str {
         &self.exact_source
@@ -728,6 +781,59 @@ pub fn compile_oracle_static_replacement_program(
     input: OracleStaticReplacementCompileInput<'_>,
 ) -> Result<OracleStaticReplacementProgram, StaticReplacementCompileError> {
     compile_program_at_depth(input, 0)
+}
+
+pub fn compile_retained_oracle_static_replacement_program(
+    input: OracleStaticReplacementCompileInput<'_>,
+) -> Result<RetainedOracleStaticReplacementProgram, StaticReplacementCompileError> {
+    let error = match compile_oracle_static_replacement_program(input) {
+        Ok(_) => return Err(StaticReplacementCompileError::NotStaticOrReplacement),
+        Err(error) => error,
+    };
+    let source = exact_static_semantic_source(input.normalized_source);
+    let shape = match &error {
+        StaticReplacementCompileError::UnsupportedReplacementFamily(_) => {
+            RetainedStaticReplacementShape::Replacement
+        }
+        StaticReplacementCompileError::UnsupportedStaticFamily(_)
+        | StaticReplacementCompileError::IncompleteNestedAbility(_) => {
+            RetainedStaticReplacementShape::Static
+        }
+        StaticReplacementCompileError::UnsupportedSubject(_)
+        | StaticReplacementCompileError::UnsupportedOperand(_)
+            if looks_like_replacement_boundary(source) =>
+        {
+            RetainedStaticReplacementShape::Replacement
+        }
+        StaticReplacementCompileError::UnsupportedSubject(_)
+        | StaticReplacementCompileError::UnsupportedOperand(_)
+            if looks_like_static_or_replacement_clause(source) =>
+        {
+            RetainedStaticReplacementShape::Static
+        }
+        _ => return Err(error),
+    };
+    let mut hasher = Sha256::new();
+    for component in [
+        "oracle-static-replacement-retained-content/v1",
+        ORACLE_STATIC_REPLACEMENT_COMPILER_VERSION,
+        ORACLE_STATIC_REPLACEMENT_RUNTIME_VERSION,
+        ORACLE_STATIC_REPLACEMENT_RULES_CONTEXT_VERSION,
+        input.semantic_context.stable_id(),
+        shape.stable_id(),
+        input.exact_source,
+        input.normalized_source,
+    ] {
+        hasher.update((component.len() as u64).to_le_bytes());
+        hasher.update(component.as_bytes());
+    }
+    Ok(RetainedOracleStaticReplacementProgram {
+        exact_source: input.exact_source.to_owned(),
+        normalized_source: input.normalized_source.to_owned(),
+        semantic_context: input.semantic_context,
+        shape,
+        semantic_digest: format!("{:x}", hasher.finalize()),
+    })
 }
 
 fn compile_program_at_depth(
@@ -902,7 +1008,7 @@ fn static_regex(pattern: &'static str) -> &'static Regex {
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
     let mut cache = cache.lock().expect("static regex cache is not poisoned");
     if let Some(regex) = cache.get(pattern) {
-        return regex;
+        return *regex;
     }
     let regex = Box::leak(Box::new(Regex::new(pattern).expect("valid static regex")));
     cache.insert(pattern, regex);
@@ -914,10 +1020,13 @@ fn parse_static(
     semantic_context: SourceSemanticContext,
     depth: usize,
 ) -> Result<Option<Vec<StaticEffect>>, StaticReplacementCompileError> {
+    if source == "Damage can't be prevented." {
+        return Ok(Some(vec![StaticEffect::DamageCannotBePrevented]));
+    }
     if let Some(effect) = parse_nested_grant(source, semantic_context, depth)? {
         return Ok(Some(vec![effect]));
     }
-    if source.replace(['’', '‘'], "'") == "You have hexproof."
+    if source.replace('’', "'").replace('‘', "'") == "You have hexproof."
         && let Some(effect) = parse_restriction_static(source)?
     {
         return Ok(Some(vec![StaticEffect::Restriction(effect)]));
@@ -995,7 +1104,7 @@ fn parse_static(
 fn parse_block_requirement_static(
     source: &str,
 ) -> Result<Option<BlockRequirement>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     if let Some(captures) =
         static_regex(r"^All creatures able to block (.+?) do so\.$").captures(&normalized)
     {
@@ -1236,7 +1345,7 @@ fn parse_characteristic_static(
 fn parse_counted_characteristic_amount(
     source: &str,
 ) -> Result<Amount, StaticReplacementCompileError> {
-    let normalized = source.trim().replace(['’', '‘'], "'");
+    let normalized = source.trim().replace('’', "'").replace('‘', "'");
     let lower = normalized.to_ascii_lowercase();
     if let Some(counter_text) = lower
         .strip_suffix(" counters on it")
@@ -1313,7 +1422,7 @@ fn split_static_condition(
 fn parse_restriction_static(
     source: &str,
 ) -> Result<Option<Restriction>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
 
     if normalized == "You have hexproof." {
         return Ok(Some(Restriction::CannotBeTargeted {
@@ -1472,7 +1581,7 @@ fn parse_restriction_static(
 fn parse_permission_static(
     source: &str,
 ) -> Result<Option<Permission>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     if normalized == "You may play lands from your graveyard." {
         return Ok(Some(Permission::PlayLandsFromGraveyard {
             player: PlayerSelector::You,
@@ -1573,7 +1682,7 @@ fn parse_permission_static(
 fn parse_cost_static(
     source: &str,
 ) -> Result<Option<CostModification>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     let pattern =
         r"^(.+?) (?:cost|costs) \{(\d+)\} (less|more) to (cast|activate)(?: for each (.+))?\.$";
     let Some(captures) = static_regex(pattern).captures(&normalized) else {
@@ -1631,7 +1740,7 @@ fn parse_cost_static(
 fn parse_skip_step_static(
     source: &str,
 ) -> Result<Option<StaticEffect>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     let Some(captures) = static_regex(
         r"^(?:You skip your|Your opponents skip their|Players skip their|Each player skips their) (untap|upkeep|draw|combat|end) steps?\.$",
     )
@@ -1662,6 +1771,7 @@ fn looks_like_replacement_boundary(source: &str) -> bool {
         || lower.contains(" enters with ")
         || lower.contains(" enters the battlefield with ")
         || lower.contains(" is prevented")
+        || lower.contains(" can't be prevented")
 }
 
 fn parse_replacement(
@@ -1688,7 +1798,7 @@ fn parse_replacement(
 fn parse_entry_replacement(
     source: &str,
 ) -> Result<Option<ReplacementEffect>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     if let Some(captures) =
         static_regex(r"^(.+?) enters(?: the battlefield)? tapped(?: unless (.+))?\.$")
             .captures(&normalized)
@@ -1899,7 +2009,7 @@ fn parse_entry_replacement_condition(
 fn parse_zone_replacement(
     source: &str,
 ) -> Result<Option<ReplacementEffect>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     if let Some(captures) =
         static_regex(r"^If (.+?) would die, exile it instead\.$").captures(&normalized)
     {
@@ -1969,7 +2079,7 @@ fn parse_zone_replacement(
 fn parse_damage_replacement(
     source: &str,
 ) -> Result<Option<ReplacementEffect>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     if let Some(captures) = static_regex(
         r"^If (.+?) would deal damage to (.+?), (prevent (?:all )?(?:the next )?(?:(\d+) of )?that damage|it deals (double|twice|half) that damage instead|it deals that much damage plus (\d+) instead)\.$",
     )
@@ -2057,7 +2167,7 @@ fn parse_damage_replacement(
 fn parse_multiplier_replacement(
     source: &str,
 ) -> Result<Option<ReplacementEffect>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     let token_patterns = [
         r"^If an effect would create one or more tokens under your control, it creates twice that many of those tokens instead\.$",
         r"^If one or more tokens would be created under your control, twice that many of those tokens are created instead\.$",
@@ -2126,7 +2236,7 @@ fn parse_multiplier_replacement(
 fn parse_skip_replacement(
     source: &str,
 ) -> Result<Option<ReplacementEffect>, StaticReplacementCompileError> {
-    let normalized = source.replace(['’', '‘'], "'");
+    let normalized = source.replace('’', "'").replace('‘', "'");
     let Some(captures) = static_regex(
         r"^If (you|an opponent|a player) would draw a card, (?:you|that player) skips? that draw instead\.$",
     )
@@ -2151,7 +2261,7 @@ fn parse_object_selector(
     source: &str,
     default_zone: Option<Zone>,
 ) -> Result<ObjectSelector, StaticReplacementCompileError> {
-    let mut text = source.trim().replace(['’', '‘'], "'");
+    let mut text = source.trim().replace('’', "'").replace('‘', "'");
     if text.is_empty() {
         return Err(StaticReplacementCompileError::UnsupportedSubject(
             source.to_owned(),
@@ -3136,7 +3246,7 @@ pub enum ReplacementStep {
     Complete,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OracleStaticReplacementRuntime {
     next_binding_id: BindingId,
     next_event_id: ReplacementEventId,
@@ -3713,6 +3823,11 @@ impl OracleStaticReplacementRuntime {
         snapshot: &RuntimeSnapshot,
         event: &PendingReplacementEvent,
     ) -> Result<Vec<BindingId>, RuntimeEvaluationError> {
+        let prevention_is_prohibited = matches!(event.current, RuntimeEvent::Damage { .. })
+            && self
+                .expanded_static_effects(snapshot)
+                .into_iter()
+                .any(|entry| matches!(entry.effect, StaticEffect::DamageCannotBePrevented));
         let mut applicable = Vec::new();
         for (binding_id, binding) in &self.bindings {
             if !binding_is_active(binding, snapshot) {
@@ -3726,6 +3841,14 @@ impl OracleStaticReplacementRuntime {
             else {
                 continue;
             };
+            if prevention_is_prohibited
+                && matches!(
+                    replacement.operation,
+                    ReplacementOperation::PreventDamage { .. }
+                )
+            {
+                continue;
+            }
             if replacement_matches(replacement, binding, &event.current, snapshot)? {
                 applicable.push(*binding_id);
             }

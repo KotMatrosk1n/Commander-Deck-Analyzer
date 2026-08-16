@@ -11,6 +11,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use crate::alternate_zone_cast_keyword_runtime::{
+    AdditionalCost as AlternateAdditionalCost, AlternateZoneKeywordKind,
+    AlternateZoneKeywordProgram, Amount as AlternateAmount,
+    FlashbackCostModifier as AlternateFlashbackCostModifier,
+    GraveyardCardFilter as AlternateGraveyardCardFilter,
+    PermanentFilter as AlternatePermanentFilter, VariableConstraint as AlternateVariableConstraint,
+};
 use crate::bounded_oracle_mana::{
     BOUNDED_ORACLE_MANA_EXPRESSION_VERSION, CalculatedValue as TypedCalculatedValue,
     CountController as TypedCountController, CountedCardType as TypedCountedCardType,
@@ -31,13 +38,175 @@ use crate::bounded_oracle_runtime::{
     CopyEffect, CopyException, Cost, CountExpression, CounterKind, DayNightDesignation, Duration,
     Effect, ExileCollectionEffect, ExtraTurnEffect, GrantedAbility, Keyword, LibraryProcedure,
     LoyaltyCost, ManaChoice, ManaCost, ManaProduction, ObjectEventKind, ObjectFilter, ObjectRef,
-    ObjectSelection, ObjectState, PaymentOrLoseEffect, PlayerActionKind, PlayerRef,
-    PowerToughnessChange, PowerToughnessOperation, ReminderSemantics, RepeatSchedule,
-    ReplacementEffect, ReplacementEvent, Restriction, RulesTextChoiceKind, SearchDestination,
-    SearchLibrary, SearchOrdinal, SelectedZoneMove, SetCharacteristics, SpecialActionTiming, Step,
-    Supertype, Target, TargetAmount, TargetFilter, TargetRelationship, Timing, TokenCreation,
-    TokenDefinition, TokenSpecification, TopLibraryExile, Trigger, TriggerSubject, TurnPlayer,
-    WardCost, Zone, ZoneMove,
+    ObjectSelection, ObjectState, OracleClauseInput, OracleCompositionChildProgram,
+    OracleFaceModalLineProgram, OracleFaceModalLineRole, PaymentOrLoseEffect, PlayerActionKind,
+    PlayerRef, PowerToughnessChange, PowerToughnessOperation, ReminderSemantics, RepeatSchedule,
+    ReplacementEffect, ReplacementEvent, Restriction, RulesTextChoiceKind,
+    SacrificedCreatureProcedureBinding, SagaEntryLoreProcedure, SagaFinalChapter,
+    SagaLoreProcedure, SearchDestination, SearchLibrary, SearchOrdinal, SelectedZoneMove,
+    SetCharacteristics, SpecialActionTiming, StandaloneRuleProgram, Step, Supertype, Target,
+    TargetAmount, TargetFilter, TargetRelationship, Timing, TokenCreation, TokenDefinition,
+    TokenSpecification, TopLibraryExile, Trigger, TriggerSubject, TurnPlayer, WardCost, Zone,
+    ZoneMove, compile_bounded_oracle_clause,
+};
+use crate::cast_choice_keyword_runtime::{CastChoiceKeywordKind, CastChoiceKeywordProgram};
+use crate::cast_modifier_keyword_runtime::{
+    CastCostAtom as CastModifierCostAtom, CastModifierKeywordKind, CastModifierKeywordProgram,
+    PermanentCostFilter as CastModifierPermanentFilter,
+};
+use crate::combat_restriction_runtime::{
+    CombatRestrictionProgram, CombatRestrictionRuntime, CombatSourceZone as RestrictionSourceZone,
+    ObjectRef as CombatRestrictionObjectRef,
+};
+use crate::combat_special_keyword_runtime::{
+    CombatSpecialKeywordKind, CombatSpecialKeywordProgram,
+};
+use crate::combat_trigger_keyword_runtime::CombatTriggerKeywordKind;
+use crate::common_action_procedure_runtime::{
+    AmassResolutionInput, CardRecord as CommonCardRecord, CardType as CommonCardType,
+    ClashResolutionInput, CommonActionKind, CommonActionProgram, CommonProcedureState,
+    CounterBearingChoice, DungeonVentureChoice, ExploreResolutionInput, LearnChoice,
+    ObjectRef as CommonObjectRef, PendingCommonAction, PermanentRecord as CommonPermanentRecord,
+    PlayerProcedureState, RingTemptationInput, SupportResolutionInput, Zone as CommonZone,
+    resolve_amass, resolve_become_monarch, resolve_clash, resolve_explore, resolve_gain_energy,
+    resolve_investigate, resolve_learn, resolve_open_attraction, resolve_pending_undercity_venture,
+    resolve_proliferate, resolve_ring_tempts_you, resolve_support, resolve_take_initiative,
+    resolve_venture_into_dungeon,
+};
+use crate::creature_counter_keyword_runtime::{
+    CardType as CreatureCounterCardType, CounterAmount, CreatureCounterKeywordKind,
+    CreatureCounterKeywordProgram, DevourQuality, EntryCounterKind,
+};
+use crate::damage_clause_compiler::{
+    CompiledDamageClause, DamageClauseBindings, DamageClauseEnvelope, DamageRecipientBinding,
+    DamageRecipientTemplate, DamageTriggerSourceState, compile_damage_resolution_leaf_program,
+};
+use crate::damage_transaction_runtime::{
+    DamageBattleState, DamageCreatureState, DamageEventMatcher, DamageKindMatcher, DamageModifier,
+    DamageModifierChoice, DamageModifierDecision, DamageModifierOperation,
+    DamageModifierPersistence, DamageModifierRequirement, DamageObjectState,
+    DamagePlaneswalkerState, DamagePlayerState, DamagePrevention, DamageRecipient,
+    DamageRecipientMatcher, DamageRuntimeState, DamageSourceCharacteristics, DamageSourceEvidence,
+    DamageSourceIdentity, DamageSourceKeyword, DamageSourceKind, DamageSourceMatcher,
+    DamageSourceSnapshot,
+};
+use crate::delayed_counter_keyword_runtime::{
+    CounterKind as DelayedCounterKind, DelayedCounterKeywordKind, DelayedCounterKeywordProgram,
+    KeywordCost as DelayedKeywordCost, ManaColor as DelayedManaColor, ManaCost as DelayedManaCost,
+    ManaSymbol as DelayedManaSymbol, PermanentKind as DelayedPermanentKind,
+    TokenDefinition as DelayedTokenDefinition,
+};
+use crate::extended_cast_zone_keyword_runtime::{ExtendedCastZoneKind, ExtendedCastZoneProgram};
+use crate::face_down_merge_keyword_runtime::{
+    CardFilter as FaceDownCardFilter, FaceDownMergeKeywordKind, FaceDownMergeKeywordProgram,
+    PermanentFilter as FaceDownPermanentFilter, TurnFaceUpCost,
+};
+use crate::graveyard_hand_library_keyword_runtime::{
+    ChannelEffect as ZoneChannelEffect, ForecastCost as ZoneForecastCost,
+    ForecastEffect as ZoneForecastEffect, GrantedKeyword as ZoneGrantedKeyword,
+    NumberValue as ZoneNumberValue, ProgramTiming as ZoneProgramTiming,
+    RecoverCost as ZoneRecoverCost, ReinforceAmount, TokenCopyException as ZoneTokenCopyException,
+    ZoneKeywordKind, ZoneKeywordProgram,
+};
+use crate::keyword_rules_runtime::{
+    CardType as RegenerationCardType, CombatKeyword as RegenerationCombatKeyword,
+    KeywordObject as RegenerationObject, KeywordPlayerState as RegenerationPlayer,
+    ManaColor as RegenerationManaColor, ManaUnit as RegenerationManaUnit,
+    ManaUnitId as RegenerationManaUnitId, ObjectCharacteristics as RegenerationCharacteristics,
+    ObjectId as RegenerationObjectId, PlayerId as RegenerationPlayerId, Zone as RegenerationZone,
+};
+use crate::level_progression_runtime::{
+    ActivatedAbilityProgram as LevelActivatedAbilityProgram,
+    ActivatedEffect as LevelActivatedEffect, CostComponent as LevelCostComponent,
+    KeywordAbility as LevelKeywordAbility, LevelChildKind, LevelProgressionProgram,
+    ManaProductionChoice as LevelManaProductionChoice,
+    StaticAbilityProgram as LevelStaticAbilityProgram, TriggerCondition as LevelTriggerCondition,
+    TriggerEvent as LevelTriggerEvent, TriggeredAbilityProgram as LevelTriggeredAbilityProgram,
+    TriggeredEffect as LevelTriggeredEffect,
+};
+use crate::library_access_runtime::{
+    LibraryAccessProgram, LibraryAccessSourceZone, LibraryAccessState, LibraryCard, LibraryCardType,
+};
+use crate::linked_cast_cost_keyword_runtime::{
+    AdditionalCastCost as LinkedAdditionalCastCost, LinkedCastCostKind, LinkedCastCostProgram,
+    ManaColor as LinkedManaColor,
+};
+use crate::object_state_clause_runtime::ObjectStateClauseProgram;
+use crate::oracle_ability_envelope_runtime::{
+    AbilityActivationPayment, AbilityEnvelopeRuntimeState,
+    AbilityManaUnit as OracleAbilityManaUnit, AbilityTriggerEvent as OracleAbilityTriggerEvent,
+    ActivationCost as OracleActivationCost, AttackDefender as OracleAttackDefender,
+    ManaResource as OracleAbilityManaResource, ManaSymbol as OracleAbilityManaSymbol,
+    OracleAbilityEnvelopeProgram, ParsedAbilityEnvelope as OracleParsedAbilityEnvelope,
+    ResolvedCombatDamageRecipient as OracleCombatDamageRecipient,
+    ResolvedDamageRecipient as OracleDamageRecipient, SpellEventMode as OracleSpellEventMode,
+    StepBoundary as OracleStepBoundary, TargetingCause as OracleTargetingCause,
+    TargetingCauseKind as OracleTargetingCauseKind, TriggerObjectSnapshot,
+    TriggerPredicate as OracleTriggerPredicate, TurnPhase as OracleTurnPhase,
+    TurnStep as OracleTurnStep, Zone as OracleAbilityZone, begin_ability_activation,
+    begin_ability_trigger, begin_typed_ability_activation, begin_typed_ability_trigger,
+    resolve_pending_ability,
+};
+use crate::oracle_action_algebra_runtime::{
+    ActionKind as OracleActionKind, ActionNode as OracleActionNode,
+    CardType as OracleActionCardType, Color as OracleActionColor,
+    ContinuousActionEffect as OracleActionContinuousEffect, Duration as OracleActionDuration,
+    GameObject as OracleActionGameObject, IncarnationId as OracleActionIncarnationId,
+    KeywordAbility as OracleActionKeyword, KeywordOperation as OracleActionKeywordOperation,
+    ObjectRef as OracleActionObjectRef, OracleActionBindings, OracleActionProgram,
+    OracleActionStateAdapter, OracleActionWorldState, PlayerActionState as OracleActionPlayerState,
+    ResolvedAnyTarget, VariableAmount as OracleActionVariableAmount, Zone as OracleActionZone,
+    execute_oracle_action_program_transactionally, expire_oracle_action_effects,
+};
+use crate::regeneration_action_runtime::{
+    IncarnationId as RegenerationIncarnationId, ObjectReference as RegenerationObjectReference,
+    RegenerationActionKind, RegenerationActionProgram, RegenerationRuntimeState,
+    compile_regeneration_resolution_leaf_program, install_static_regeneration_replacement,
+    resolve_regeneration_instruction,
+};
+use crate::residual_cost_keyword_runtime::{
+    AffinityFilter as ResidualAffinityFilter, CardType as ResidualCardType,
+    ResidualCostKeywordKind, ResidualCostKeywordProgram,
+};
+use crate::standalone_oracle_annotation::{
+    AnnotationManaSymbol, ClassLevelAnnotation, ManaNotationAnnotation, ManaPaymentAlternative,
+    ManaSymbolMeaning, StandaloneOracleAnnotationKind,
+};
+use crate::static_special_keyword_runtime::{
+    AgendaPreparationInput, AgendaPrivateState, AgendaPublicState, AttackBand,
+    AttackBandDeclarationEvidence, AttackBandMemberEvidence, BandingDamageChoiceEvidence,
+    BlockRelation, CardNameCatalogEvidence, CombatCreatureEvidence,
+    CombatDamageAssignment as BandingCombatDamageAssignment, DeclaredAttackerEvidence,
+    DigitalCardState, DigitalGameState, DigitalZone, DoubleTeamAttackEvent, DraftCardState,
+    DraftCardVisibility, DraftState, EnlistAttackDeclarationInput, EnlistHelperEvidence,
+    EnlistResolutionEvidence, EntryAttachmentTokenKind, GamePreparationPhase,
+    ObjectRef as StaticSpecialObjectRef, PendingEnlistTrigger, PhasePermanentEvidence, PhaseStatus,
+    PhasingWorld, StaticSpecialKeywordKind, StaticSpecialKeywordProgram,
+    apply_enlist_during_attack_declaration, apply_untap_phasing_plan,
+    banding_damage_assignment_player, create_double_team_trigger, declare_attack_band,
+    draft_card_face_up, expand_band_block_relations, plan_untap_phasing, prepare_agenda,
+    resolve_double_team_trigger, resolve_enlist_trigger, reveal_agenda,
+    validate_banding_combat_damage_division,
+};
+use crate::targeting_protection_runtime::{
+    AttachmentDecision as ProtectionAttachmentDecision, AttachmentKind as ProtectionAttachmentKind,
+    AttachmentSnapshot as ProtectionAttachmentSnapshot,
+    BlockingDecision as ProtectionBlockingDecision,
+    DamagePreventionDecision as ProtectionDamagePreventionDecision,
+    EffectSourceKind as ProtectionSourceKind, EffectSourceSnapshot as ProtectionSourceSnapshot,
+    InstalledTargetingProtection, ManaColor as ProtectionManaColor,
+    ObjectRef as ProtectionObjectRef, ObjectZone as ProtectionObjectZone, ProtectedEntity,
+    ProtectionChoices, ProtectionDuration, ProtectionInstallationInput, ProtectionQueryContext,
+    SourceCharacteristics as ProtectionSourceCharacteristics,
+    TargetingDecision as ProtectionTargetingDecision, TargetingProtectionProgram,
+    attachment_decision as protection_attachment_decision,
+    blocking_decision as protection_blocking_decision, compile_targeting_protection_program,
+    damage_prevention_decision as protection_damage_prevention_decision,
+    install_targeting_protection, targeting_decision as protection_targeting_decision,
+};
+use crate::typed_oracle_production_bridge::{
+    DamageProductionState, OracleOccurrenceProvenance, OracleSemanticEvidence,
+    TypedOracleExecutionBinding, execute_damage_clause_transaction,
 };
 
 #[path = "bounded_oracle_action_stack.rs"]
@@ -50,7 +219,7 @@ pub use bounded_oracle_action_stack::{
     counter_pending_action, pending_action_clause_has_live_contract, resolve_pending_action,
 };
 
-pub const BOUNDED_ORACLE_CONSUMER_VERSION: &str = "bounded-oracle-consumer-0.16";
+pub const BOUNDED_ORACLE_CONSUMER_VERSION: &str = "bounded-oracle-consumer-0.132";
 
 pub type ObjectId = u64;
 pub type PlayerId = u8;
@@ -92,6 +261,11 @@ pub enum TriggerEvent {
     ObjectEvent {
         object: ObjectId,
         event: ObjectEventKind,
+    },
+    CountersPlaced {
+        object: ObjectId,
+        counter: CounterKind,
+        amount: u32,
     },
     LifeGained {
         player: PlayerId,
@@ -156,6 +330,329 @@ pub enum ActionWindow {
     SpecialAction(SpecialActionTiming),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelProgressionAction {
+    Activate { pending_id: u64 },
+    Resolve { pending_id: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SagaLoreAction {
+    Entry,
+    AfterControllerDrawStep,
+    StateBasedCheck {
+        source_chapter_abilities_on_stack: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnearthAction {
+    Activate,
+    BeginningOfNextEndStep,
+    WouldLeaveBattlefield { requested_destination: Zone },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MadnessAction {
+    DiscardReplacement,
+    ResolveTriggerCast,
+    ResolveTriggerDecline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashbackAction {
+    Cast,
+    StackExit { requested_destination: Zone },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendedGraveyardCastAction {
+    Cast { discarded_card: ObjectId },
+    StackExit { requested_destination: Zone },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendedExileCastAction {
+    Prepare,
+    Cast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarpAction {
+    CastForWarp,
+    ResolveAsPermanent,
+    BeginningOfNextEndStep,
+    CastFromExile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuspendAction {
+    ExileFromHand,
+    ResolveUpkeepCounterTrigger,
+    ResolveLastCounterCastTrigger,
+    ResolveCreatureToBattlefield,
+    ControlLost,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuybackAction {
+    PayAdditionalCost,
+    ResolveToHandInsteadOfGraveyard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicateAction {
+    PayAdditionalCosts { times: u32 },
+    ResolveCastTrigger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverloadAction {
+    PayAlternativeCost,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpliceAction {
+    AddToArcaneSpell { spell: ObjectId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConspireAction {
+    PayByTapping { creatures: [ObjectId; 2] },
+    ResolveCastTrigger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastChoiceAction {
+    CastCleave,
+    CastOffering {
+        sacrificed_permanent: ObjectId,
+    },
+    PayAssist {
+        assisting_player: PlayerId,
+        generic: u32,
+    },
+    CastImpending,
+    ResolveImpendingEntry,
+    ResolveImpendingCounterTrigger,
+    CastMoreThanMeetsTheEye,
+    PayOffspring {
+        pay: bool,
+    },
+    PaySquad {
+        times: u32,
+    },
+    PayStrive,
+    PayEscalate,
+    PayCasualty {
+        sacrificed_creature: Option<ObjectId>,
+    },
+    ResolveCastTrigger,
+    CastEmerge {
+        sacrificed_permanent: ObjectId,
+    },
+    CastWebSlinging {
+        returned_creature: ObjectId,
+    },
+    CastAwaken {
+        target_land: ObjectId,
+    },
+    ResolveAwaken,
+    CastPrototype,
+    PrototypeZoneChange {
+        destination: Zone,
+    },
+    CastMiracle,
+    RecordMayhemDiscard,
+    CastMayhem,
+    RecordFreerunningCombatDamage,
+    CastFreerunning {
+        returned_blue_creature: Option<ObjectId>,
+    },
+    ResolveEntry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceDownMergeAction {
+    CastFaceDown,
+    ResolveFaceDown,
+    TurnFaceUp,
+    CastMutate { target: ObjectId },
+    ResolveMutate { source_on_top: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkedCastCostAction {
+    PayAlternativeCost,
+    ResolvePermanentEntry,
+    ResolveEvokeSacrifice,
+    ResolveBlitzEndStepSacrifice,
+    ResolveBlitzDeathDraw,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedProwlDamageReceipt {
+    pub turn: u64,
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub source_controller: PlayerId,
+    pub source_creature_types: BTreeSet<String>,
+    pub damaged_player: PlayerId,
+    pub amount: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BattleLifecycleAction {
+    EnterSiege,
+    DefeatSiege,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelayedCounterAction {
+    Enter,
+    Upkeep,
+    ResolveEcho { pay: bool },
+    ResolveCumulativeUpkeep { pay: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombatSpecialAction {
+    ActivateSaddle,
+    ActivateNinjutsu { returned_attacker: ObjectId },
+    ResolveNinjutsu,
+    ActivateEncore,
+    ResolveEncore,
+    ResolveEncoreEndStep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticSpecialAction {
+    PrepareAgenda,
+    RevealAgenda,
+    DraftFaceUp,
+    DeclareEnlist,
+    ResolveEnlist,
+    ResolveDoubleTeam,
+    InstallPhasing,
+    ResolvePhasingUntap,
+    InstallBanding,
+    DeclareBand,
+    ExpandBandBlocks,
+    ValidateBandingDamage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgendaStateRecord {
+    pub program_sha256: String,
+    pub private: AgendaPrivateState,
+    pub public: AgendaPublicState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FaceUpDraftRecord {
+    pub card: ObjectId,
+    pub drafted_by: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPhasingProgram {
+    pub source_incarnation: u64,
+    pub controller: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledBandingProgram {
+    pub source_incarnation: u64,
+    pub controller: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedBandingDamageRecord {
+    pub combat_id: u64,
+    pub damage_source: ObjectId,
+    pub assigning_player: PlayerId,
+    pub assignments: Vec<(ObjectId, u32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NinjutsuActivationRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub actor: PlayerId,
+    pub returned_attacker: ObjectId,
+    pub returned_attacker_owner: PlayerId,
+    pub attack_target: SelectedTarget,
+    pub combat_id: u64,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncoreActivationRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub actor: PlayerId,
+    pub program_sha256: String,
+    pub token_targets: BTreeMap<ObjectId, (PlayerId, u64)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverloadCastRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub payer: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpliceCastRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub spell: ObjectId,
+    pub spell_incarnation: u64,
+    pub payer: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConspirePaymentRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub payer: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CastChoicePaymentRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub payer: PlayerId,
+    pub offspring_paid: bool,
+    pub squad_times_paid: u32,
+    pub casualty_paid: bool,
+    pub awaken_target: Option<(ObjectId, u64)>,
+    pub cleave_paid: bool,
+    pub impending_time_counters: Option<u32>,
+    pub converted_cast: bool,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedCastCostRecord {
+    pub source: ObjectId,
+    pub stack_incarnation: u64,
+    pub permanent_incarnation: Option<u64>,
+    pub caster: PlayerId,
+    pub cast_turn: u64,
+    pub grants_haste: bool,
+    pub evoke_sacrifice: bool,
+    pub blitz_death_draw: bool,
+    pub blitz_end_step_sacrifice: bool,
+    pub program_sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SelectedTarget {
     Player(PlayerId),
@@ -182,15 +679,35 @@ pub struct ReplacementOccurrence {
     pub object: Option<ObjectId>,
 }
 
+/// Exact choices and variable evidence consumed by one common game procedure.
+/// Unused fields are ignored; required fields fail closed before state commits.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommonActionExecutionChoices {
+    pub dynamic_amount: Option<u32>,
+    pub explore: Option<ExploreResolutionInput>,
+    pub learn: Option<LearnChoice>,
+    pub support: Option<SupportResolutionInput>,
+    pub ring_temptation: Option<RingTemptationInput>,
+    pub dungeon_venture: Option<DungeonVentureChoice>,
+    pub proliferate: Option<Vec<CounterBearingChoice>>,
+    pub amass: Option<AmassResolutionInput>,
+    pub clash: Option<ClashResolutionInput>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionContext {
     pub actor: PlayerId,
     pub source: ObjectId,
     pub window: ActionWindow,
+    /// Set by `execute_clause`; callers cannot use it to select semantics.
+    pub executing_clause_address: Option<ClauseAddress>,
     pub active_player: PlayerId,
     pub defending_player: Option<PlayerId>,
     pub current_step: Option<Step>,
     pub combat_step: Option<CombatStep>,
+    /// Stable identity of the current combat when combat-scoped effects or
+    /// requirements are created or queried.
+    pub combat_id: Option<u64>,
     pub attackers_declared: bool,
     pub blockers_declared: bool,
     pub sorcery_timing: bool,
@@ -210,6 +727,10 @@ pub struct ExecutionContext {
     pub previously_selected_modes: BTreeSet<u16>,
     pub selected_mode_chooser: Option<PlayerId>,
     pub object_choices: BTreeMap<u8, Vec<ObjectId>>,
+    /// Exact per-planeswalker loyalty amounts used by costs that remove one
+    /// chosen X from among multiple controlled planeswalkers.
+    pub loyalty_counter_payments: BTreeMap<ObjectId, u32>,
+    pub cost_alternative_choices: BTreeMap<u8, u8>,
     pub player_choices: BTreeMap<u8, Vec<PlayerId>>,
     pub per_player_object_choices: BTreeMap<PlayerId, Vec<ObjectId>>,
     pub library_end_choices: BTreeMap<u8, LibraryEndSelection>,
@@ -217,10 +738,13 @@ pub struct ExecutionContext {
     pub card_was_cast_with_alternative_cost: bool,
     pub card_was_cast_using_escape: bool,
     pub card_was_kicked: bool,
+    pub card_was_bargained: bool,
     pub card_was_cast_using_teamwork: bool,
     pub you_attacked_this_turn: bool,
+    pub actor_was_attacked_this_step: bool,
     pub opponent_lost_life_this_turn: bool,
     pub first_resolution_of_named_spell: bool,
+    pub you_won_previous_clash: Option<bool>,
     pub payment_declined: bool,
     pub optional_effect_declined: bool,
     pub ability_occurrence_this_turn: u32,
@@ -234,20 +758,162 @@ pub struct ExecutionContext {
     pub cast_from_zone: Option<Zone>,
     pub source_attacking_alone: bool,
     pub creatures_attacked_this_turn: u32,
+    /// Complete trigger-time set of distinct opponents attacked by the source
+    /// controller in the current combat. `None` means the combat declaration
+    /// evidence is unavailable, not that the set is empty.
+    pub opponents_attacked_this_combat: Option<BTreeSet<PlayerId>>,
+    /// Complete resolution-time blocker group for `source`. `None` means the
+    /// simultaneous block-group evidence is unavailable.
+    pub source_blockers: Option<Vec<ObjectId>>,
+    /// Target locked when a retained combat-keyword trigger is created. This
+    /// is separate from bounded-clause target groups because the keyword owns
+    /// its target schema and revalidation lifecycle.
+    pub combat_keyword_target: Option<ObjectId>,
     pub attack_tax_generic_paid: BTreeMap<ObjectId, u32>,
     pub mana_spent_to_cast_triggering_spell: u32,
+    /// Complete distinct-color evidence for mana spent to cast `source`.
+    /// `None` means the payment boundary is unavailable and cast-color entry
+    /// replacements must fail closed.
+    pub mana_colors_spent_to_cast_source: Option<Vec<Color>>,
+    /// Complete set of other objects entering during the same event as
+    /// `source`. `None` means the simultaneous-entry boundary is unavailable.
+    pub simultaneously_entering_objects: Option<BTreeSet<ObjectId>>,
     /// Optional concrete mana composition for a typed production effect.
     /// When absent, the reference consumer chooses the first deterministic
     /// legal composition.
     pub mana_production_choice: Option<Vec<Color>>,
     pub accepted_library_card: Option<ObjectId>,
+    /// Exact Transmute search decision. `Some(None)` deliberately fails to
+    /// find; `None` means the hidden-zone choice receipt is unavailable.
+    pub transmute_library_choice: Option<Option<ObjectId>>,
+    /// Exact creature target selected while activating a connected hand-zone
+    /// keyword such as Reinforce.
+    pub zone_keyword_target: Option<ObjectId>,
+    pub zone_keyword_targets: Vec<ObjectId>,
+    pub zone_keyword_additional_discard: Option<ObjectId>,
+    pub zone_keyword_tap_costs: Vec<ObjectId>,
+    pub zone_keyword_chosen_colors: Vec<Color>,
+    pub zone_keyword_recover_pay: Option<bool>,
+    pub dredge_draw_choices: BTreeMap<PlayerId, Vec<Option<ObjectId>>>,
     pub commander_controlled: bool,
     pub opponents_dealt_combat_damage_this_turn: u32,
     pub devotion_by_color: [u32; 6],
     pub countered: bool,
     pub replacement_event: Option<ReplacementOccurrence>,
+    /// Ordered decisions for every currently applicable damage replacement or
+    /// prevention effect. The damage transaction rejects missing, duplicate,
+    /// stale, and wrong-chooser decisions before committing any mutation.
+    pub damage_modifier_choices: Vec<DamageModifierChoice>,
+    /// Exact physical Oracle line-count evidence for source qualities such as
+    /// protection from wordy. Absence fails closed only when that quality is queried.
+    pub protection_rules_text_line_counts: BTreeMap<ObjectId, u32>,
+    /// Exact rules-action evidence for protection qualities involving die rolls.
+    pub protection_causes_die_roll: BTreeMap<ObjectId, bool>,
+    pub common_action_choices: CommonActionExecutionChoices,
     pub replay_seed: u64,
     pub last_known_source: Option<Box<PhysicalObject>>,
+    pub level_progression_action: Option<LevelProgressionAction>,
+    pub saga_lore_action: Option<SagaLoreAction>,
+    /// Exact lifecycle boundary for an Unearth activation or one of the two
+    /// exile events created by that activation.
+    pub unearth_action: Option<UnearthAction>,
+    pub madness_action: Option<MadnessAction>,
+    pub flashback_action: Option<FlashbackAction>,
+    pub extended_graveyard_cast_action: Option<ExtendedGraveyardCastAction>,
+    pub extended_exile_cast_action: Option<ExtendedExileCastAction>,
+    /// Monotonic game-turn identity used to prove "a later turn" cast permissions.
+    pub turn_sequence: Option<u64>,
+    pub warp_action: Option<WarpAction>,
+    /// Complete proof that a normal cast transaction paid its printed and
+    /// externally imposed costs. Used only where this keyword grants a zone
+    /// permission but does not define the later cast's cost.
+    pub normal_cast_all_costs_paid: bool,
+    pub suspend_action: Option<SuspendAction>,
+    /// Complete legality result for the mandatory last-counter play trigger.
+    pub suspend_play_is_legal: Option<bool>,
+    pub suspend_hand_cast_timing_legal: bool,
+    pub mayhem_cast_timing_legal: bool,
+    pub freerunning_cast_timing_legal: bool,
+    pub buyback_action: Option<BuybackAction>,
+    /// Complete number of modes printed by the modal spell whose Entwine cost
+    /// is being paid. The selected modes must enumerate this entire domain.
+    pub entwine_mode_count: Option<u16>,
+    pub replicate_action: Option<ReplicateAction>,
+    /// Exact cast boundary at which Overload's alternative cost and text
+    /// transformation are selected together.
+    pub overload_action: Option<OverloadAction>,
+    pub splice_action: Option<SpliceAction>,
+    pub conspire_action: Option<ConspireAction>,
+    /// Physical cards selected by the complete random-cost procedure. This is
+    /// distinct from player choices and requires a nonzero replay seed.
+    pub random_cost_card_choices: Vec<ObjectId>,
+    /// One complete target map per stack copy, in creation order. Empty maps
+    /// mean retain the copied assignments; the completeness bit distinguishes
+    /// that decision from unavailable evidence.
+    pub copy_target_choices: Vec<BTreeMap<u8, Vec<SelectedTarget>>>,
+    pub copy_target_choices_complete: bool,
+    pub cast_choice_action: Option<CastChoiceAction>,
+    /// Ordered physical objects paid to a cast-choice keyword's nonmana costs.
+    /// The order repeats the printed cost expression once per paid repetition.
+    pub cast_choice_nonmana_payments: Vec<ObjectId>,
+    pub face_down_merge_action: Option<FaceDownMergeAction>,
+    /// Ordered physical objects used by a Morph-family reveal or nonmana cost.
+    pub face_down_merge_cost_objects: Vec<ObjectId>,
+    /// Complete public reveal receipt for a reveal-from-hand Morph cost.
+    pub face_down_merge_reveal_complete: bool,
+    /// Exact final mana cost after applying an Offering reduction.
+    pub offering_final_mana_cost: Option<ManaCost>,
+    pub linked_cast_cost_action: Option<LinkedCastCostAction>,
+    /// Physical hand card used by a linked alternative cost that discards or exiles a card.
+    pub linked_cast_additional_card: Option<ObjectId>,
+    /// Complete external condition receipt for Surge, including teammate casts.
+    pub linked_surge_condition_met: Option<bool>,
+    /// Complete combat-damage LKI receipts used to establish Prowl.
+    pub linked_prowl_damage_receipts: Vec<LinkedProwlDamageReceipt>,
+    pub battle_lifecycle_action: Option<BattleLifecycleAction>,
+    pub delayed_counter_action: Option<DelayedCounterAction>,
+    /// Complete evaluation of Echo's intervening-if control-history condition
+    /// at trigger resolution. `None` fails closed.
+    pub echo_control_history_condition_holds: Option<bool>,
+    /// One complete outcome per required cumulative-upkeep coin flip.
+    pub cumulative_upkeep_coin_results: Vec<bool>,
+    /// Exact phrases spoken for the Un-set cumulative-upkeep cost. This is
+    /// accepted only with the separate no-pause/no-fumble receipt.
+    pub cumulative_upkeep_spoken_phrases: Vec<String>,
+    pub cumulative_upkeep_speech_complete: bool,
+    pub combat_special_action: Option<CombatSpecialAction>,
+    pub static_special_action: Option<StaticSpecialAction>,
+    /// Exact private card-name selection made for Hidden or Double agenda.
+    pub agenda_chosen_names: Vec<String>,
+    /// Complete legal card-name catalog for the current game rules/data set.
+    pub agenda_legal_card_names: Option<BTreeSet<String>>,
+    /// Private nonce used to bind the hidden selection to its public digest.
+    pub agenda_private_commitment_nonce: Option<String>,
+    /// Complete set of cards legally available for the current draft pick.
+    pub draft_available_pick_ids: Option<BTreeSet<ObjectId>>,
+    pub draft_in_progress: bool,
+    /// Optional helper chosen while declaring an Enlist attacker.
+    pub enlist_helper: Option<ObjectId>,
+    /// Complete summoning-sickness evidence for the chosen helper.
+    pub enlist_helper_controlled_since_turn_began: Option<bool>,
+    /// Complete LKI receipt when the enlisted helper is absent at resolution.
+    pub enlist_helper_lki_available: bool,
+    pub digital_service_available: bool,
+    pub stable_card_identity_complete: bool,
+    pub phasing_state_complete: bool,
+    pub banding_members: Vec<ObjectId>,
+    pub banding_members_individually_legal: Option<BTreeSet<ObjectId>>,
+    pub banding_block_relations: Option<Vec<(ObjectId, ObjectId)>>,
+    pub banding_damage_source: Option<ObjectId>,
+    pub banding_damage_assigning_player: Option<PlayerId>,
+    pub banding_damage_assignments: Vec<(ObjectId, u32)>,
+    pub banding_total_combat_damage: Option<u32>,
+    pub banding_evidence_complete: bool,
+    pub ninjutsu_returned_attacker_unblocked: Option<bool>,
+    pub ninjutsu_attack_target: Option<SelectedTarget>,
+    /// Complete proof that every non-Escape cost imposed on the cast was paid
+    /// by the enclosing cast transaction.
+    pub alternate_cast_other_costs_paid: bool,
 }
 
 impl ExecutionContext {
@@ -256,10 +922,12 @@ impl ExecutionContext {
             actor,
             source,
             window,
+            executing_clause_address: None,
             active_player: actor,
             defending_player: None,
             current_step: None,
             combat_step: None,
+            combat_id: None,
             attackers_declared: false,
             blockers_declared: false,
             sorcery_timing: true,
@@ -279,6 +947,8 @@ impl ExecutionContext {
             previously_selected_modes: BTreeSet::new(),
             selected_mode_chooser: None,
             object_choices: BTreeMap::new(),
+            loyalty_counter_payments: BTreeMap::new(),
+            cost_alternative_choices: BTreeMap::new(),
             player_choices: BTreeMap::new(),
             per_player_object_choices: BTreeMap::new(),
             library_end_choices: BTreeMap::new(),
@@ -286,10 +956,13 @@ impl ExecutionContext {
             card_was_cast_with_alternative_cost: false,
             card_was_cast_using_escape: false,
             card_was_kicked: false,
+            card_was_bargained: false,
             card_was_cast_using_teamwork: false,
             you_attacked_this_turn: false,
+            actor_was_attacked_this_step: false,
             opponent_lost_life_this_turn: false,
             first_resolution_of_named_spell: false,
+            you_won_previous_clash: None,
             payment_declined: true,
             optional_effect_declined: false,
             ability_occurrence_this_turn: 1,
@@ -303,19 +976,257 @@ impl ExecutionContext {
             cast_from_zone: None,
             source_attacking_alone: false,
             creatures_attacked_this_turn: 0,
+            opponents_attacked_this_combat: None,
+            source_blockers: None,
+            combat_keyword_target: None,
             attack_tax_generic_paid: BTreeMap::new(),
             mana_spent_to_cast_triggering_spell: 0,
+            mana_colors_spent_to_cast_source: None,
+            simultaneously_entering_objects: None,
             mana_production_choice: None,
             accepted_library_card: None,
+            transmute_library_choice: None,
+            zone_keyword_target: None,
+            zone_keyword_targets: Vec::new(),
+            zone_keyword_additional_discard: None,
+            zone_keyword_tap_costs: Vec::new(),
+            zone_keyword_chosen_colors: Vec::new(),
+            zone_keyword_recover_pay: None,
+            dredge_draw_choices: BTreeMap::new(),
             commander_controlled: false,
             opponents_dealt_combat_damage_this_turn: 0,
             devotion_by_color: [0; 6],
             countered: false,
             replacement_event: None,
+            damage_modifier_choices: Vec::new(),
+            protection_rules_text_line_counts: BTreeMap::new(),
+            protection_causes_die_roll: BTreeMap::new(),
+            common_action_choices: CommonActionExecutionChoices::default(),
             replay_seed: 0,
             last_known_source: None,
+            level_progression_action: None,
+            saga_lore_action: None,
+            unearth_action: None,
+            madness_action: None,
+            flashback_action: None,
+            extended_graveyard_cast_action: None,
+            extended_exile_cast_action: None,
+            turn_sequence: None,
+            warp_action: None,
+            normal_cast_all_costs_paid: false,
+            suspend_action: None,
+            suspend_play_is_legal: None,
+            suspend_hand_cast_timing_legal: false,
+            mayhem_cast_timing_legal: false,
+            freerunning_cast_timing_legal: false,
+            buyback_action: None,
+            entwine_mode_count: None,
+            replicate_action: None,
+            overload_action: None,
+            splice_action: None,
+            conspire_action: None,
+            random_cost_card_choices: Vec::new(),
+            copy_target_choices: Vec::new(),
+            copy_target_choices_complete: false,
+            cast_choice_action: None,
+            cast_choice_nonmana_payments: Vec::new(),
+            face_down_merge_action: None,
+            face_down_merge_cost_objects: Vec::new(),
+            face_down_merge_reveal_complete: false,
+            offering_final_mana_cost: None,
+            linked_cast_cost_action: None,
+            linked_cast_additional_card: None,
+            linked_surge_condition_met: None,
+            linked_prowl_damage_receipts: Vec::new(),
+            battle_lifecycle_action: None,
+            delayed_counter_action: None,
+            echo_control_history_condition_holds: None,
+            cumulative_upkeep_coin_results: Vec::new(),
+            cumulative_upkeep_spoken_phrases: Vec::new(),
+            cumulative_upkeep_speech_complete: false,
+            combat_special_action: None,
+            static_special_action: None,
+            agenda_chosen_names: Vec::new(),
+            agenda_legal_card_names: None,
+            agenda_private_commitment_nonce: None,
+            draft_available_pick_ids: None,
+            draft_in_progress: false,
+            enlist_helper: None,
+            enlist_helper_controlled_since_turn_began: None,
+            enlist_helper_lki_available: false,
+            digital_service_available: false,
+            stable_card_identity_complete: false,
+            phasing_state_complete: false,
+            banding_members: Vec::new(),
+            banding_members_individually_legal: None,
+            banding_block_relations: None,
+            banding_damage_source: None,
+            banding_damage_assigning_player: None,
+            banding_damage_assignments: Vec::new(),
+            banding_total_combat_damage: None,
+            banding_evidence_complete: false,
+            ninjutsu_returned_attacker_unblocked: None,
+            ninjutsu_attack_target: None,
+            alternate_cast_other_costs_paid: false,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingLevelProgressionAction {
+    pub pending_id: u64,
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub controller: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledLevelProgressionProgram {
+    pub order: u64,
+    pub source_incarnation: u64,
+    pub address: ClauseAddress,
+    pub program: LevelProgressionProgram,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSagaChapterTrigger {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub chapter: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnearthedPermanentRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub controller_at_return: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MadnessExileRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub owner: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlashbackStackRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub caster: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpStartStackRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub caster: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendedExileCastPermissionRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub holder: PlayerId,
+    pub prepared_turn: u64,
+    pub face_down: bool,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarpDelayedExileRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub holder: PlayerId,
+    pub cast_turn: u64,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarpExileCastPermissionRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub holder: PlayerId,
+    pub exile_turn: u64,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuspendedCardRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub owner: PlayerId,
+    pub time_counters: u32,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuspendHasteRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub controller: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuybackPaymentRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub payer: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicatePaymentRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub payer: PlayerId,
+    pub times: u32,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrototypeCastRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub caster: PlayerId,
+    pub original_front: ObjectCharacteristics,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FaceDownCastRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub controller: PlayerId,
+    pub original_front: ObjectCharacteristics,
+    pub original_back: Option<ObjectCharacteristics>,
+    pub disguise_ward: bool,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutateCastRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub target: ObjectId,
+    pub target_incarnation: u64,
+    pub caster: PlayerId,
+    pub program_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedPermanentRecord {
+    pub object: ObjectId,
+    pub component_objects: Vec<ObjectId>,
+    pub top_component: ObjectId,
+    pub component_characteristics: BTreeMap<ObjectId, ObjectCharacteristics>,
+    pub program_sha256s: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -367,6 +1278,14 @@ pub struct AttachmentRecord {
     pub kind: AttachmentKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledTargetingProtectionRecord {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub installed_turn: Option<u64>,
+    pub protection: InstalledTargetingProtection,
+}
+
 impl PhysicalObject {
     pub fn characteristics(&self) -> &ObjectCharacteristics {
         if self.active_face == 1 {
@@ -392,6 +1311,14 @@ pub struct ManaPool {
     pub unrestricted: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpiringManaUnit {
+    pub id: u64,
+    pub color: Color,
+    pub expires_after_combat: u64,
+    pub source_identity: ObjectId,
+}
+
 impl ManaPool {
     pub fn total(&self) -> u32 {
         self.colored
@@ -410,11 +1337,14 @@ pub struct PlayerState {
     pub id: PlayerId,
     pub life: i64,
     pub mana: ManaPool,
+    pub expiring_mana: Vec<ExpiringManaUnit>,
     pub commander_identity: Vec<Color>,
     pub library: Vec<ObjectId>,
     pub counters: BTreeMap<String, u32>,
     pub chosen_creature_type: Option<String>,
     pub maximum_hand_size: Option<u32>,
+    /// Remaining normal land plays in the current turn.
+    pub land_plays_remaining: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -579,9 +1509,159 @@ pub trait OracleStateAdapter {
 
     fn object_ids(&self) -> Vec<ObjectId>;
     fn object(&self, id: ObjectId) -> Option<PhysicalObject>;
+    fn is_commander(&self, id: ObjectId) -> bool;
     fn put_object(&mut self, object: PhysicalObject) -> Result<(), String>;
     fn insert_physical_object(&mut self, object: PhysicalObject) -> Result<(), String>;
     fn move_object(&mut self, id: ObjectId, zone: Zone) -> Result<(), String>;
+    fn object_incarnation(&self, id: ObjectId) -> Option<u64>;
+    fn is_monstrous(&self, id: ObjectId, incarnation: u64) -> bool;
+    fn mark_monstrous(&mut self, id: ObjectId, incarnation: u64);
+    fn is_renowned(&self, id: ObjectId, incarnation: u64) -> bool;
+    fn mark_renowned(&mut self, id: ObjectId, incarnation: u64);
+    fn is_saddled(&self, id: ObjectId, incarnation: u64) -> bool;
+    fn mark_saddled(&mut self, id: ObjectId, incarnation: u64);
+    fn ninjutsu_activation(&self, source: ObjectId) -> Option<NinjutsuActivationRecord>;
+    fn register_ninjutsu_activation(&mut self, record: NinjutsuActivationRecord);
+    fn consume_ninjutsu_activation(&mut self, source: ObjectId)
+    -> Option<NinjutsuActivationRecord>;
+    fn encore_activation(&self, source: ObjectId) -> Option<EncoreActivationRecord>;
+    fn register_encore_activation(&mut self, record: EncoreActivationRecord);
+    fn consume_encore_activation(&mut self, source: ObjectId) -> Option<EncoreActivationRecord>;
+    fn attack_target(&self, object: ObjectId) -> Option<SelectedTarget>;
+    fn set_attack_target(&mut self, object: ObjectId, target: SelectedTarget);
+    fn record_tribute_paid(&mut self, id: ObjectId, paid: bool);
+    fn tribute_was_paid(&self, id: ObjectId) -> Option<bool>;
+    fn register_saga_chapter_trigger(&mut self, trigger: PendingSagaChapterTrigger);
+    fn unearthed_permanent(&self, source: ObjectId) -> Option<UnearthedPermanentRecord>;
+    fn register_unearthed_permanent(&mut self, record: UnearthedPermanentRecord);
+    fn consume_unearthed_permanent(&mut self, source: ObjectId)
+    -> Option<UnearthedPermanentRecord>;
+    fn madness_exile(&self, source: ObjectId) -> Option<MadnessExileRecord>;
+    fn register_madness_exile(&mut self, record: MadnessExileRecord);
+    fn consume_madness_exile(&mut self, source: ObjectId) -> Option<MadnessExileRecord>;
+    fn flashback_stack(&self, source: ObjectId) -> Option<FlashbackStackRecord>;
+    fn register_flashback_stack(&mut self, record: FlashbackStackRecord);
+    fn consume_flashback_stack(&mut self, source: ObjectId) -> Option<FlashbackStackRecord>;
+    fn jump_start_stack(&self, source: ObjectId) -> Option<JumpStartStackRecord>;
+    fn register_jump_start_stack(&mut self, record: JumpStartStackRecord);
+    fn consume_jump_start_stack(&mut self, source: ObjectId) -> Option<JumpStartStackRecord>;
+    fn extended_exile_cast_permission(
+        &self,
+        source: ObjectId,
+    ) -> Option<ExtendedExileCastPermissionRecord>;
+    fn register_extended_exile_cast_permission(
+        &mut self,
+        record: ExtendedExileCastPermissionRecord,
+    );
+    fn consume_extended_exile_cast_permission(
+        &mut self,
+        source: ObjectId,
+    ) -> Option<ExtendedExileCastPermissionRecord>;
+    fn warp_delayed_exile(&self, source: ObjectId) -> Option<WarpDelayedExileRecord>;
+    fn register_warp_delayed_exile(&mut self, record: WarpDelayedExileRecord);
+    fn consume_warp_delayed_exile(&mut self, source: ObjectId) -> Option<WarpDelayedExileRecord>;
+    fn warp_exile_cast_permission(&self, source: ObjectId)
+    -> Option<WarpExileCastPermissionRecord>;
+    fn register_warp_exile_cast_permission(&mut self, record: WarpExileCastPermissionRecord);
+    fn consume_warp_exile_cast_permission(
+        &mut self,
+        source: ObjectId,
+    ) -> Option<WarpExileCastPermissionRecord>;
+    fn suspended_card(&self, source: ObjectId) -> Option<SuspendedCardRecord>;
+    fn register_suspended_card(&mut self, record: SuspendedCardRecord);
+    fn consume_suspended_card(&mut self, source: ObjectId) -> Option<SuspendedCardRecord>;
+    fn suspend_haste(&self, source: ObjectId) -> Option<SuspendHasteRecord>;
+    fn register_suspend_haste(&mut self, record: SuspendHasteRecord);
+    fn consume_suspend_haste(&mut self, source: ObjectId) -> Option<SuspendHasteRecord>;
+    fn buyback_payment(&self, source: ObjectId) -> Option<BuybackPaymentRecord>;
+    fn register_buyback_payment(&mut self, record: BuybackPaymentRecord);
+    fn consume_buyback_payment(&mut self, source: ObjectId) -> Option<BuybackPaymentRecord>;
+    fn replicate_payment(&self, source: ObjectId) -> Option<ReplicatePaymentRecord>;
+    fn register_replicate_payment(&mut self, record: ReplicatePaymentRecord);
+    fn consume_replicate_payment(&mut self, source: ObjectId) -> Option<ReplicatePaymentRecord>;
+    fn overload_cast(&self, source: ObjectId) -> Option<OverloadCastRecord>;
+    fn register_overload_cast(&mut self, record: OverloadCastRecord);
+    fn splice_cast(&self, spell: ObjectId, source: ObjectId) -> Option<SpliceCastRecord>;
+    fn register_splice_cast(&mut self, record: SpliceCastRecord);
+    fn conspire_payment(&self, source: ObjectId) -> Option<ConspirePaymentRecord>;
+    fn register_conspire_payment(&mut self, record: ConspirePaymentRecord);
+    fn consume_conspire_payment(&mut self, source: ObjectId) -> Option<ConspirePaymentRecord>;
+    fn linked_cast_cost(&self, source: ObjectId) -> Option<LinkedCastCostRecord>;
+    fn register_linked_cast_cost(&mut self, record: LinkedCastCostRecord);
+    fn consume_linked_cast_cost(&mut self, source: ObjectId) -> Option<LinkedCastCostRecord>;
+    fn face_down_cast(&self, source: ObjectId) -> Option<FaceDownCastRecord>;
+    fn register_face_down_cast(&mut self, record: FaceDownCastRecord);
+    fn consume_face_down_cast(&mut self, source: ObjectId) -> Option<FaceDownCastRecord>;
+    fn mutate_cast(&self, source: ObjectId) -> Option<MutateCastRecord>;
+    fn register_mutate_cast(&mut self, record: MutateCastRecord);
+    fn consume_mutate_cast(&mut self, source: ObjectId) -> Option<MutateCastRecord>;
+    fn merged_permanent(&self, object: ObjectId) -> Option<MergedPermanentRecord>;
+    fn register_merged_permanent(&mut self, record: MergedPermanentRecord);
+    fn agenda_state(&self, source: ObjectId) -> Option<AgendaStateRecord>;
+    fn register_agenda_state(&mut self, source: ObjectId, record: AgendaStateRecord);
+    fn face_up_draft(&self, card: ObjectId) -> Option<FaceUpDraftRecord>;
+    fn register_face_up_draft(&mut self, record: FaceUpDraftRecord);
+    fn pending_enlist(&self, source: ObjectId) -> Option<PendingEnlistTrigger>;
+    fn register_pending_enlist(&mut self, source: ObjectId, trigger: PendingEnlistTrigger);
+    fn consume_pending_enlist(&mut self, source: ObjectId) -> Option<PendingEnlistTrigger>;
+    fn double_team_was_perpetually_removed(&self, card: ObjectId) -> bool;
+    fn mark_double_team_perpetually_removed(&mut self, card: ObjectId);
+    fn phasing_objects(&self) -> Vec<PhysicalObject>;
+    fn phasing_attachments(&self) -> Vec<AttachmentRecord>;
+    fn phase_status(&self, object: ObjectId) -> PhaseStatus;
+    fn set_phase_status(&mut self, object: ObjectId, status: PhaseStatus);
+    fn installed_phasing(&self, source: ObjectId) -> Option<InstalledPhasingProgram>;
+    fn install_phasing(&mut self, source: ObjectId, program: InstalledPhasingProgram);
+    fn phasing_boundary_was_processed(&self, active_player: PlayerId, turn: u64) -> bool;
+    fn mark_phasing_boundary_processed(&mut self, active_player: PlayerId, turn: u64);
+    fn installed_banding(&self, source: ObjectId) -> Option<InstalledBandingProgram>;
+    fn install_banding(&mut self, source: ObjectId, program: InstalledBandingProgram);
+    fn attack_bands(&self, combat: u64) -> Vec<AttackBand>;
+    fn register_attack_band(&mut self, source: ObjectId, band: AttackBand);
+    fn banding_blocks(&self, combat: u64) -> Option<BTreeSet<BlockRelation>>;
+    fn set_banding_blocks(&mut self, combat: u64, relations: BTreeSet<BlockRelation>);
+    fn register_validated_banding_damage(&mut self, record: ValidatedBandingDamageRecord);
+    fn installed_targeting_protections(&self) -> Vec<InstalledTargetingProtectionRecord>;
+    fn install_targeting_protection(&mut self, record: InstalledTargetingProtectionRecord);
+    fn stack_copy_targets(&self, copy: ObjectId) -> Option<BTreeMap<u8, Vec<SelectedTarget>>>;
+    fn set_stack_copy_targets(
+        &mut self,
+        copy: ObjectId,
+        targets: BTreeMap<u8, Vec<SelectedTarget>>,
+    );
+    fn prototype_cast(&self, source: ObjectId) -> Option<PrototypeCastRecord>;
+    fn register_prototype_cast(&mut self, record: PrototypeCastRecord);
+    fn consume_prototype_cast(&mut self, source: ObjectId) -> Option<PrototypeCastRecord>;
+    fn mayhem_discard_incarnation(&self, source: ObjectId) -> Option<u64>;
+    fn record_mayhem_discard(&mut self, source: ObjectId, incarnation: u64);
+    fn consume_mayhem_discard(&mut self, source: ObjectId) -> Option<u64>;
+    fn freerunning_eligible(&self, player: PlayerId) -> bool;
+    fn record_freerunning_eligibility(&mut self, player: PlayerId);
+    fn install_ongoing_scheme(&mut self, source: ObjectId, until_abandoned: bool);
+    fn abandon_ongoing_scheme(&mut self, source: ObjectId) -> bool;
+    fn battle_protector(&self, source: ObjectId) -> Option<PlayerId>;
+    fn set_battle_protector(&mut self, source: ObjectId, protector: PlayerId);
+    fn clear_battle_protector(&mut self, source: ObjectId) -> Option<PlayerId>;
+    fn cast_choice_payment(&self, source: ObjectId) -> Option<CastChoicePaymentRecord>;
+    fn register_cast_choice_payment(&mut self, record: CastChoicePaymentRecord);
+    fn consume_cast_choice_payment(&mut self, source: ObjectId) -> Option<CastChoicePaymentRecord>;
+    fn install_level_progression_program(
+        &mut self,
+        source: ObjectId,
+        program: InstalledLevelProgressionProgram,
+    );
+    fn level_progression_program(
+        &self,
+        source: ObjectId,
+    ) -> Option<InstalledLevelProgressionProgram>;
+    fn register_pending_level_progression(
+        &mut self,
+        pending: PendingLevelProgressionAction,
+    ) -> Result<(), String>;
+    fn consume_pending_level_progression(
+        &mut self,
+        pending_id: u64,
+    ) -> Option<PendingLevelProgressionAction>;
     fn allocate_object_id(&mut self) -> ObjectId;
     fn attachment(&self, source: ObjectId) -> Option<AttachmentRecord>;
     fn set_attachment(&mut self, attachment: AttachmentRecord) -> Result<(), String>;
@@ -589,7 +1669,23 @@ pub trait OracleStateAdapter {
 
     fn pay_mana(&mut self, player: PlayerId, cost: &ManaCost, x_value: u32) -> Result<(), String>;
     fn can_pay_mana(&self, player: PlayerId, cost: &ManaCost, x_value: u32) -> bool;
+    fn pay_generic_with_snow(
+        &mut self,
+        player: PlayerId,
+        generic: u32,
+        snow: u32,
+    ) -> Result<(), String>;
+    fn can_pay_generic_with_snow(&self, player: PlayerId, generic: u32, snow: u32) -> bool;
+    fn add_snow_mana(&mut self, player: PlayerId, color: Color, amount: u32) -> Result<(), String>;
     fn add_mana(&mut self, player: PlayerId, colors: &[Color], amount: u32) -> Result<(), String>;
+    fn add_expiring_combat_mana(
+        &mut self,
+        player: PlayerId,
+        color: Color,
+        amount: u32,
+        combat_id: u64,
+        source_identity: ObjectId,
+    ) -> Result<Vec<u64>, String>;
 
     fn next_order(&mut self) -> u64;
     fn continuous_effects(&self) -> Vec<ContinuousEffectRecord>;
@@ -617,6 +1713,39 @@ pub trait OracleStateAdapter {
     fn next_untap_preventions(&self) -> Vec<NextUntapPreventionRecord>;
     fn register_next_untap_prevention(&mut self, record: NextUntapPreventionRecord);
     fn consume_next_untap_prevention(&mut self, order: u64);
+    fn damage_modifiers(&self) -> BTreeMap<u64, DamageModifier>;
+    fn damage_source_keyword_overrides(&self, _object: ObjectId) -> BTreeSet<DamageSourceKeyword> {
+        BTreeSet::new()
+    }
+    fn object_has_affinity(&self, _object: ObjectId) -> bool {
+        false
+    }
+    fn put_damage_modifiers(
+        &mut self,
+        modifiers: BTreeMap<u64, DamageModifier>,
+    ) -> Result<(), String>;
+    fn library_access_state(&self) -> LibraryAccessState;
+    fn put_library_access_state(&mut self, access: LibraryAccessState) -> Result<(), String>;
+    fn common_procedure_state(&self) -> CommonProcedureState;
+    fn put_common_procedure_state(
+        &mut self,
+        procedures: CommonProcedureState,
+    ) -> Result<(), String>;
+    fn combat_restriction_runtime(&self) -> CombatRestrictionRuntime;
+    fn put_combat_restriction_runtime(
+        &mut self,
+        runtime: CombatRestrictionRuntime,
+    ) -> Result<(), String>;
+    fn regeneration_runtime_state(&self) -> RegenerationRuntimeState;
+    fn put_regeneration_runtime_state(
+        &mut self,
+        runtime: RegenerationRuntimeState,
+    ) -> Result<(), String>;
+    fn oracle_action_world_state(&self) -> OracleActionWorldState;
+    fn put_oracle_action_world_state(
+        &mut self,
+        world: OracleActionWorldState,
+    ) -> Result<(), String>;
     fn looked_at(&self, player: PlayerId) -> Vec<ObjectId>;
     fn put_looked_at(&mut self, player: PlayerId, objects: Vec<ObjectId>);
     fn loyalty_ability_activated_this_turn(&self, source: ObjectId) -> bool;
@@ -648,6 +1777,8 @@ pub trait OracleStateAdapter {
         source: ObjectId,
         ability_key: String,
     ) -> Result<(), String>;
+    fn install_dredge_program(&mut self, source: ObjectId, program: ZoneKeywordProgram);
+    fn dredge_program(&self, source: ObjectId) -> Option<ZoneKeywordProgram>;
     fn record_mutation(&mut self, description: String);
 }
 
@@ -655,6 +1786,8 @@ pub trait OracleStateAdapter {
 pub struct InMemoryOracleState {
     pub players: BTreeMap<PlayerId, PlayerState>,
     pub objects: BTreeMap<ObjectId, PhysicalObject>,
+    /// Physical identities designated as commanders for this game.
+    pub commander_objects: BTreeSet<ObjectId>,
     pub attachments: BTreeMap<ObjectId, AttachmentRecord>,
     pub continuous_effects: Vec<ContinuousEffectRecord>,
     pub delayed_triggers: Vec<DelayedTriggerRecord>,
@@ -673,6 +1806,15 @@ pub struct InMemoryOracleState {
     pub revealed_cards: Vec<RevealedCardRecord>,
     pub skipped_steps: Vec<SkippedStepRecord>,
     pub next_untap_preventions: Vec<NextUntapPreventionRecord>,
+    pub damage_modifiers: BTreeMap<u64, DamageModifier>,
+    pub damage_source_keywords: BTreeMap<(ObjectId, u8), BTreeSet<DamageSourceKeyword>>,
+    pub snow_mana: BTreeMap<PlayerId, Vec<Color>>,
+    pub affinity_objects: BTreeSet<(ObjectId, u8)>,
+    pub library_access: LibraryAccessState,
+    pub common_procedures: CommonProcedureState,
+    pub combat_restrictions: CombatRestrictionRuntime,
+    pub regeneration: RegenerationRuntimeState,
+    pub oracle_actions: OracleActionWorldState,
     pub looked_at: BTreeMap<PlayerId, Vec<ObjectId>>,
     pub loyalty_activations_this_turn: BTreeSet<ObjectId>,
     pub chosen_card_names: BTreeMap<ObjectId, String>,
@@ -684,9 +1826,60 @@ pub struct InMemoryOracleState {
     pub chosen_rules_text: BTreeMap<ObjectId, (RulesTextChoiceKind, String)>,
     pub day_night_designation: Option<DayNightDesignation>,
     pub exhaust_activations: BTreeSet<(ObjectId, String)>,
+    pub dredge_programs: BTreeMap<ObjectId, ZoneKeywordProgram>,
+    pub object_incarnations: BTreeMap<ObjectId, u64>,
+    pub monstrous_incarnations: BTreeSet<(ObjectId, u64)>,
+    pub renowned_incarnations: BTreeSet<(ObjectId, u64)>,
+    pub saddled_incarnations: BTreeSet<(ObjectId, u64)>,
+    pub ninjutsu_activations: BTreeMap<ObjectId, NinjutsuActivationRecord>,
+    pub encore_activations: BTreeMap<ObjectId, EncoreActivationRecord>,
+    pub attack_targets: BTreeMap<ObjectId, SelectedTarget>,
+    pub tribute_paid: BTreeMap<ObjectId, bool>,
+    pub level_progression_programs: BTreeMap<ObjectId, InstalledLevelProgressionProgram>,
+    pub pending_level_progression: BTreeMap<u64, PendingLevelProgressionAction>,
+    pub seen_level_progression_pending: BTreeSet<u64>,
+    pub pending_saga_chapter_triggers: Vec<PendingSagaChapterTrigger>,
+    pub unearthed_permanents: BTreeMap<ObjectId, UnearthedPermanentRecord>,
+    pub madness_exiles: BTreeMap<ObjectId, MadnessExileRecord>,
+    pub flashback_stack_records: BTreeMap<ObjectId, FlashbackStackRecord>,
+    pub jump_start_stack_records: BTreeMap<ObjectId, JumpStartStackRecord>,
+    pub extended_exile_cast_permissions: BTreeMap<ObjectId, ExtendedExileCastPermissionRecord>,
+    pub warp_delayed_exiles: BTreeMap<ObjectId, WarpDelayedExileRecord>,
+    pub warp_exile_cast_permissions: BTreeMap<ObjectId, WarpExileCastPermissionRecord>,
+    pub suspended_cards: BTreeMap<ObjectId, SuspendedCardRecord>,
+    pub suspend_haste_records: BTreeMap<ObjectId, SuspendHasteRecord>,
+    pub buyback_payments: BTreeMap<ObjectId, BuybackPaymentRecord>,
+    pub replicate_payments: BTreeMap<ObjectId, ReplicatePaymentRecord>,
+    pub overload_casts: BTreeMap<ObjectId, OverloadCastRecord>,
+    pub splice_casts: BTreeMap<(ObjectId, ObjectId), SpliceCastRecord>,
+    pub conspire_payments: BTreeMap<ObjectId, ConspirePaymentRecord>,
+    pub linked_cast_costs: BTreeMap<ObjectId, LinkedCastCostRecord>,
+    pub face_down_casts: BTreeMap<ObjectId, FaceDownCastRecord>,
+    pub mutate_casts: BTreeMap<ObjectId, MutateCastRecord>,
+    pub merged_permanents: BTreeMap<ObjectId, MergedPermanentRecord>,
+    pub agenda_states: BTreeMap<ObjectId, AgendaStateRecord>,
+    pub face_up_drafts: BTreeMap<ObjectId, FaceUpDraftRecord>,
+    pub pending_enlist_triggers: BTreeMap<ObjectId, PendingEnlistTrigger>,
+    pub double_team_perpetual_removals: BTreeSet<ObjectId>,
+    pub phase_statuses: BTreeMap<ObjectId, PhaseStatus>,
+    pub installed_phasing_programs: BTreeMap<ObjectId, InstalledPhasingProgram>,
+    pub processed_phasing_boundaries: BTreeSet<(PlayerId, u64)>,
+    pub installed_banding_programs: BTreeMap<ObjectId, InstalledBandingProgram>,
+    pub attack_band_records: BTreeMap<(u64, ObjectId), AttackBand>,
+    pub banding_block_records: BTreeMap<u64, BTreeSet<BlockRelation>>,
+    pub validated_banding_damage: BTreeMap<(u64, ObjectId), ValidatedBandingDamageRecord>,
+    pub installed_targeting_protection_records: Vec<InstalledTargetingProtectionRecord>,
+    pub stack_copy_target_assignments: BTreeMap<ObjectId, BTreeMap<u8, Vec<SelectedTarget>>>,
+    pub prototype_casts: BTreeMap<ObjectId, PrototypeCastRecord>,
+    pub mayhem_discard_incarnations: BTreeMap<ObjectId, u64>,
+    pub freerunning_eligible_players: BTreeSet<PlayerId>,
+    pub ongoing_schemes: BTreeMap<ObjectId, bool>,
+    pub battle_protectors: BTreeMap<ObjectId, PlayerId>,
+    pub cast_choice_payments: BTreeMap<ObjectId, CastChoicePaymentRecord>,
     pub mutation_log: Vec<String>,
     next_object_id: ObjectId,
     next_order: u64,
+    next_mana_unit_id: u64,
 }
 
 impl Default for InMemoryOracleState {
@@ -694,6 +1887,7 @@ impl Default for InMemoryOracleState {
         Self {
             players: BTreeMap::new(),
             objects: BTreeMap::new(),
+            commander_objects: BTreeSet::new(),
             attachments: BTreeMap::new(),
             continuous_effects: Vec::new(),
             delayed_triggers: Vec::new(),
@@ -712,6 +1906,15 @@ impl Default for InMemoryOracleState {
             revealed_cards: Vec::new(),
             skipped_steps: Vec::new(),
             next_untap_preventions: Vec::new(),
+            damage_modifiers: BTreeMap::new(),
+            damage_source_keywords: BTreeMap::new(),
+            snow_mana: BTreeMap::new(),
+            affinity_objects: BTreeSet::new(),
+            library_access: LibraryAccessState::default(),
+            common_procedures: CommonProcedureState::default(),
+            combat_restrictions: CombatRestrictionRuntime::new(),
+            regeneration: RegenerationRuntimeState::default(),
+            oracle_actions: OracleActionWorldState::default(),
             looked_at: BTreeMap::new(),
             loyalty_activations_this_turn: BTreeSet::new(),
             chosen_card_names: BTreeMap::new(),
@@ -723,9 +1926,60 @@ impl Default for InMemoryOracleState {
             chosen_rules_text: BTreeMap::new(),
             day_night_designation: None,
             exhaust_activations: BTreeSet::new(),
+            dredge_programs: BTreeMap::new(),
+            object_incarnations: BTreeMap::new(),
+            monstrous_incarnations: BTreeSet::new(),
+            renowned_incarnations: BTreeSet::new(),
+            saddled_incarnations: BTreeSet::new(),
+            ninjutsu_activations: BTreeMap::new(),
+            encore_activations: BTreeMap::new(),
+            attack_targets: BTreeMap::new(),
+            tribute_paid: BTreeMap::new(),
+            level_progression_programs: BTreeMap::new(),
+            pending_level_progression: BTreeMap::new(),
+            seen_level_progression_pending: BTreeSet::new(),
+            pending_saga_chapter_triggers: Vec::new(),
+            unearthed_permanents: BTreeMap::new(),
+            madness_exiles: BTreeMap::new(),
+            flashback_stack_records: BTreeMap::new(),
+            jump_start_stack_records: BTreeMap::new(),
+            extended_exile_cast_permissions: BTreeMap::new(),
+            warp_delayed_exiles: BTreeMap::new(),
+            warp_exile_cast_permissions: BTreeMap::new(),
+            suspended_cards: BTreeMap::new(),
+            suspend_haste_records: BTreeMap::new(),
+            buyback_payments: BTreeMap::new(),
+            replicate_payments: BTreeMap::new(),
+            overload_casts: BTreeMap::new(),
+            splice_casts: BTreeMap::new(),
+            conspire_payments: BTreeMap::new(),
+            linked_cast_costs: BTreeMap::new(),
+            face_down_casts: BTreeMap::new(),
+            mutate_casts: BTreeMap::new(),
+            merged_permanents: BTreeMap::new(),
+            agenda_states: BTreeMap::new(),
+            face_up_drafts: BTreeMap::new(),
+            pending_enlist_triggers: BTreeMap::new(),
+            double_team_perpetual_removals: BTreeSet::new(),
+            phase_statuses: BTreeMap::new(),
+            installed_phasing_programs: BTreeMap::new(),
+            processed_phasing_boundaries: BTreeSet::new(),
+            installed_banding_programs: BTreeMap::new(),
+            attack_band_records: BTreeMap::new(),
+            banding_block_records: BTreeMap::new(),
+            validated_banding_damage: BTreeMap::new(),
+            installed_targeting_protection_records: Vec::new(),
+            stack_copy_target_assignments: BTreeMap::new(),
+            prototype_casts: BTreeMap::new(),
+            mayhem_discard_incarnations: BTreeMap::new(),
+            freerunning_eligible_players: BTreeSet::new(),
+            ongoing_schemes: BTreeMap::new(),
+            battle_protectors: BTreeMap::new(),
+            cast_choice_payments: BTreeMap::new(),
             mutation_log: Vec::new(),
             next_object_id: 1,
             next_order: 1,
+            next_mana_unit_id: 1,
         }
     }
 }
@@ -747,6 +2001,7 @@ impl InMemoryOracleState {
                 .ok_or_else(|| format!("missing owner {}", object.owner))?;
             player.library.push(object.id);
         }
+        self.object_incarnations.entry(object.id).or_insert(1);
         self.objects.insert(object.id, object);
         Ok(())
     }
@@ -761,6 +2016,18 @@ impl InMemoryOracleState {
 
     pub fn begin_turn(&mut self) {
         self.loyalty_activations_this_turn.clear();
+        self.mayhem_discard_incarnations.clear();
+        self.freerunning_eligible_players.clear();
+        self.saddled_incarnations.clear();
+        self.attack_targets.clear();
+        expire_oracle_action_effects(OracleActionDuration::ThisTurn, &mut self.oracle_actions);
+        expire_oracle_action_effects(
+            OracleActionDuration::UntilEndOfTurn,
+            &mut self.oracle_actions,
+        );
+        for object in self.objects.values_mut() {
+            object.counters.remove("dealt-damage-this-turn");
+        }
         self.continuous_effects.retain(|record| {
             !matches!(
                 record.duration,
@@ -776,6 +2043,45 @@ impl InMemoryOracleState {
                 }
             )
         });
+    }
+
+    pub fn end_combat(&mut self, combat_id: u64) -> Result<(), String> {
+        for player in self.players.values_mut() {
+            let mut expired_by_color = [0u32; 6];
+            player.expiring_mana.retain(|unit| {
+                if unit.expires_after_combat == combat_id {
+                    let index = color_index(unit.color);
+                    expired_by_color[index] = expired_by_color[index].saturating_add(1);
+                    false
+                } else {
+                    true
+                }
+            });
+            for (index, expired) in expired_by_color.into_iter().enumerate() {
+                player.mana.colored[index] = player.mana.colored[index]
+                    .checked_sub(expired)
+                    .ok_or_else(|| {
+                        "expiring mana provenance exceeds the physical pool".to_owned()
+                    })?;
+            }
+        }
+        self.restriction_effects.retain(|record| {
+            !matches!(
+                &record.restriction,
+                Restriction::MustBlockIfAble {
+                    duration: Duration::UntilEndOfCombat(id),
+                    ..
+                } if *id == combat_id
+            )
+        });
+        self.mutation_log.push(format!("end_combat:{combat_id}"));
+        self.attack_targets.clear();
+        self.attack_band_records
+            .retain(|(record_combat, _), _| *record_combat != combat_id);
+        self.banding_block_records.remove(&combat_id);
+        self.validated_banding_damage
+            .retain(|(record_combat, _), _| *record_combat != combat_id);
+        Ok(())
     }
 }
 
@@ -807,11 +2113,28 @@ impl OracleStateAdapter for InMemoryOracleState {
     }
 
     fn object_ids(&self) -> Vec<ObjectId> {
-        self.objects.keys().copied().collect()
+        self.objects
+            .iter()
+            .filter_map(|(id, object)| (object.zone != Zone::Merged).then_some(*id))
+            .filter(|id| self.phase_status(*id) == PhaseStatus::PhasedIn)
+            .collect()
     }
 
     fn object(&self, id: ObjectId) -> Option<PhysicalObject> {
-        self.objects.get(&id).cloned()
+        (self.phase_status(id) == PhaseStatus::PhasedIn)
+            .then(|| self.objects.get(&id).cloned())
+            .flatten()
+            .filter(|object| object.zone != Zone::Merged)
+    }
+
+    fn is_commander(&self, id: ObjectId) -> bool {
+        self.commander_objects.contains(&id)
+            || self.merged_permanents.get(&id).is_some_and(|record| {
+                record
+                    .component_objects
+                    .iter()
+                    .any(|component| self.commander_objects.contains(component))
+            })
     }
 
     fn put_object(&mut self, object: PhysicalObject) -> Result<(), String> {
@@ -833,6 +2156,14 @@ impl OracleStateAdapter for InMemoryOracleState {
             .cloned()
             .ok_or_else(|| format!("missing object {id}"))?;
         let previous_zone = object.zone;
+        let departing_merge = (previous_zone == Zone::Battlefield && zone != Zone::Battlefield)
+            .then(|| self.merged_permanents.remove(&id))
+            .flatten();
+        if let Some(record) = &departing_merge
+            && let Some(characteristics) = record.component_characteristics.get(&id)
+        {
+            object.front = characteristics.clone();
+        }
         if object.zone == Zone::Library {
             let owner = self
                 .players
@@ -841,6 +2172,18 @@ impl OracleStateAdapter for InMemoryOracleState {
             owner.library.retain(|candidate| *candidate != id);
         }
         object.zone = zone;
+        if previous_zone != zone {
+            self.phase_statuses.remove(&id);
+            self.installed_phasing_programs.remove(&id);
+            self.installed_banding_programs.remove(&id);
+            let incarnation = self.object_incarnations.entry(id).or_insert(1);
+            *incarnation = incarnation
+                .checked_add(1)
+                .ok_or_else(|| "object incarnation overflow".to_owned())?;
+        }
+        if previous_zone == Zone::Stack && zone != Zone::Stack {
+            self.stack_copy_target_assignments.remove(&id);
+        }
         let is_class = object
             .characteristics()
             .subtypes
@@ -852,6 +2195,12 @@ impl OracleStateAdapter for InMemoryOracleState {
             object.class_level = 0;
         }
         if previous_zone == Zone::Battlefield && zone != Zone::Battlefield {
+            self.library_access.deactivate(id);
+            self.combat_restrictions
+                .unbind_source(CombatRestrictionObjectRef {
+                    object_id: id,
+                    incarnation_id: id,
+                });
             self.exhaust_activations.retain(|(source, _)| *source != id);
             object.counters.clear();
             object.prepared = false;
@@ -862,6 +2211,7 @@ impl OracleStateAdapter for InMemoryOracleState {
         if zone != Zone::Battlefield {
             object.attacking = false;
             object.blocking = false;
+            self.attack_targets.remove(&id);
         }
         if zone == Zone::Library {
             let owner = self
@@ -885,7 +2235,552 @@ impl OracleStateAdapter for InMemoryOracleState {
         }
         self.objects.insert(id, object);
         self.mutation_log.push(format!("move:{id}:{zone:?}"));
+        if let Some(record) = departing_merge {
+            for component in record.component_objects {
+                if component != id {
+                    self.move_object(component, zone)?;
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn object_incarnation(&self, id: ObjectId) -> Option<u64> {
+        self.objects
+            .contains_key(&id)
+            .then(|| self.object_incarnations.get(&id).copied().unwrap_or(1))
+    }
+
+    fn is_monstrous(&self, id: ObjectId, incarnation: u64) -> bool {
+        self.monstrous_incarnations.contains(&(id, incarnation))
+    }
+
+    fn mark_monstrous(&mut self, id: ObjectId, incarnation: u64) {
+        self.monstrous_incarnations.insert((id, incarnation));
+    }
+
+    fn is_renowned(&self, id: ObjectId, incarnation: u64) -> bool {
+        self.renowned_incarnations.contains(&(id, incarnation))
+    }
+
+    fn mark_renowned(&mut self, id: ObjectId, incarnation: u64) {
+        self.renowned_incarnations.insert((id, incarnation));
+    }
+
+    fn is_saddled(&self, id: ObjectId, incarnation: u64) -> bool {
+        self.saddled_incarnations.contains(&(id, incarnation))
+    }
+
+    fn mark_saddled(&mut self, id: ObjectId, incarnation: u64) {
+        self.saddled_incarnations.insert((id, incarnation));
+    }
+
+    fn ninjutsu_activation(&self, source: ObjectId) -> Option<NinjutsuActivationRecord> {
+        self.ninjutsu_activations.get(&source).cloned()
+    }
+
+    fn register_ninjutsu_activation(&mut self, record: NinjutsuActivationRecord) {
+        self.ninjutsu_activations.insert(record.source, record);
+    }
+
+    fn consume_ninjutsu_activation(
+        &mut self,
+        source: ObjectId,
+    ) -> Option<NinjutsuActivationRecord> {
+        self.ninjutsu_activations.remove(&source)
+    }
+
+    fn encore_activation(&self, source: ObjectId) -> Option<EncoreActivationRecord> {
+        self.encore_activations.get(&source).cloned()
+    }
+
+    fn register_encore_activation(&mut self, record: EncoreActivationRecord) {
+        self.encore_activations.insert(record.source, record);
+    }
+
+    fn consume_encore_activation(&mut self, source: ObjectId) -> Option<EncoreActivationRecord> {
+        self.encore_activations.remove(&source)
+    }
+
+    fn attack_target(&self, object: ObjectId) -> Option<SelectedTarget> {
+        self.attack_targets.get(&object).copied()
+    }
+
+    fn set_attack_target(&mut self, object: ObjectId, target: SelectedTarget) {
+        self.attack_targets.insert(object, target);
+    }
+
+    fn record_tribute_paid(&mut self, id: ObjectId, paid: bool) {
+        self.tribute_paid.insert(id, paid);
+    }
+
+    fn tribute_was_paid(&self, id: ObjectId) -> Option<bool> {
+        self.tribute_paid.get(&id).copied()
+    }
+
+    fn register_saga_chapter_trigger(&mut self, trigger: PendingSagaChapterTrigger) {
+        self.pending_saga_chapter_triggers.push(trigger);
+    }
+
+    fn unearthed_permanent(&self, source: ObjectId) -> Option<UnearthedPermanentRecord> {
+        self.unearthed_permanents.get(&source).cloned()
+    }
+
+    fn register_unearthed_permanent(&mut self, record: UnearthedPermanentRecord) {
+        self.unearthed_permanents.insert(record.source, record);
+    }
+
+    fn consume_unearthed_permanent(
+        &mut self,
+        source: ObjectId,
+    ) -> Option<UnearthedPermanentRecord> {
+        self.unearthed_permanents.remove(&source)
+    }
+
+    fn madness_exile(&self, source: ObjectId) -> Option<MadnessExileRecord> {
+        self.madness_exiles.get(&source).cloned()
+    }
+
+    fn register_madness_exile(&mut self, record: MadnessExileRecord) {
+        self.madness_exiles.insert(record.source, record);
+    }
+
+    fn consume_madness_exile(&mut self, source: ObjectId) -> Option<MadnessExileRecord> {
+        self.madness_exiles.remove(&source)
+    }
+
+    fn flashback_stack(&self, source: ObjectId) -> Option<FlashbackStackRecord> {
+        self.flashback_stack_records.get(&source).cloned()
+    }
+
+    fn register_flashback_stack(&mut self, record: FlashbackStackRecord) {
+        self.flashback_stack_records.insert(record.source, record);
+    }
+
+    fn consume_flashback_stack(&mut self, source: ObjectId) -> Option<FlashbackStackRecord> {
+        self.flashback_stack_records.remove(&source)
+    }
+
+    fn jump_start_stack(&self, source: ObjectId) -> Option<JumpStartStackRecord> {
+        self.jump_start_stack_records.get(&source).cloned()
+    }
+
+    fn register_jump_start_stack(&mut self, record: JumpStartStackRecord) {
+        self.jump_start_stack_records.insert(record.source, record);
+    }
+
+    fn consume_jump_start_stack(&mut self, source: ObjectId) -> Option<JumpStartStackRecord> {
+        self.jump_start_stack_records.remove(&source)
+    }
+
+    fn extended_exile_cast_permission(
+        &self,
+        source: ObjectId,
+    ) -> Option<ExtendedExileCastPermissionRecord> {
+        self.extended_exile_cast_permissions.get(&source).cloned()
+    }
+
+    fn register_extended_exile_cast_permission(
+        &mut self,
+        record: ExtendedExileCastPermissionRecord,
+    ) {
+        self.extended_exile_cast_permissions
+            .insert(record.source, record);
+    }
+
+    fn consume_extended_exile_cast_permission(
+        &mut self,
+        source: ObjectId,
+    ) -> Option<ExtendedExileCastPermissionRecord> {
+        self.extended_exile_cast_permissions.remove(&source)
+    }
+
+    fn warp_delayed_exile(&self, source: ObjectId) -> Option<WarpDelayedExileRecord> {
+        self.warp_delayed_exiles.get(&source).cloned()
+    }
+
+    fn register_warp_delayed_exile(&mut self, record: WarpDelayedExileRecord) {
+        self.warp_delayed_exiles.insert(record.source, record);
+    }
+
+    fn consume_warp_delayed_exile(&mut self, source: ObjectId) -> Option<WarpDelayedExileRecord> {
+        self.warp_delayed_exiles.remove(&source)
+    }
+
+    fn warp_exile_cast_permission(
+        &self,
+        source: ObjectId,
+    ) -> Option<WarpExileCastPermissionRecord> {
+        self.warp_exile_cast_permissions.get(&source).cloned()
+    }
+
+    fn register_warp_exile_cast_permission(&mut self, record: WarpExileCastPermissionRecord) {
+        self.warp_exile_cast_permissions
+            .insert(record.source, record);
+    }
+
+    fn consume_warp_exile_cast_permission(
+        &mut self,
+        source: ObjectId,
+    ) -> Option<WarpExileCastPermissionRecord> {
+        self.warp_exile_cast_permissions.remove(&source)
+    }
+
+    fn suspended_card(&self, source: ObjectId) -> Option<SuspendedCardRecord> {
+        self.suspended_cards.get(&source).cloned()
+    }
+
+    fn register_suspended_card(&mut self, record: SuspendedCardRecord) {
+        self.suspended_cards.insert(record.source, record);
+    }
+
+    fn consume_suspended_card(&mut self, source: ObjectId) -> Option<SuspendedCardRecord> {
+        self.suspended_cards.remove(&source)
+    }
+
+    fn suspend_haste(&self, source: ObjectId) -> Option<SuspendHasteRecord> {
+        self.suspend_haste_records.get(&source).cloned()
+    }
+
+    fn register_suspend_haste(&mut self, record: SuspendHasteRecord) {
+        self.suspend_haste_records.insert(record.source, record);
+    }
+
+    fn consume_suspend_haste(&mut self, source: ObjectId) -> Option<SuspendHasteRecord> {
+        self.suspend_haste_records.remove(&source)
+    }
+
+    fn buyback_payment(&self, source: ObjectId) -> Option<BuybackPaymentRecord> {
+        self.buyback_payments.get(&source).cloned()
+    }
+
+    fn register_buyback_payment(&mut self, record: BuybackPaymentRecord) {
+        self.buyback_payments.insert(record.source, record);
+    }
+
+    fn consume_buyback_payment(&mut self, source: ObjectId) -> Option<BuybackPaymentRecord> {
+        self.buyback_payments.remove(&source)
+    }
+
+    fn replicate_payment(&self, source: ObjectId) -> Option<ReplicatePaymentRecord> {
+        self.replicate_payments.get(&source).cloned()
+    }
+
+    fn register_replicate_payment(&mut self, record: ReplicatePaymentRecord) {
+        self.replicate_payments.insert(record.source, record);
+    }
+
+    fn consume_replicate_payment(&mut self, source: ObjectId) -> Option<ReplicatePaymentRecord> {
+        self.replicate_payments.remove(&source)
+    }
+
+    fn overload_cast(&self, source: ObjectId) -> Option<OverloadCastRecord> {
+        self.overload_casts.get(&source).cloned()
+    }
+
+    fn register_overload_cast(&mut self, record: OverloadCastRecord) {
+        self.overload_casts.insert(record.source, record);
+    }
+
+    fn splice_cast(&self, spell: ObjectId, source: ObjectId) -> Option<SpliceCastRecord> {
+        self.splice_casts.get(&(spell, source)).cloned()
+    }
+
+    fn register_splice_cast(&mut self, record: SpliceCastRecord) {
+        self.splice_casts
+            .insert((record.spell, record.source), record);
+    }
+
+    fn conspire_payment(&self, source: ObjectId) -> Option<ConspirePaymentRecord> {
+        self.conspire_payments.get(&source).cloned()
+    }
+
+    fn register_conspire_payment(&mut self, record: ConspirePaymentRecord) {
+        self.conspire_payments.insert(record.source, record);
+    }
+
+    fn consume_conspire_payment(&mut self, source: ObjectId) -> Option<ConspirePaymentRecord> {
+        self.conspire_payments.remove(&source)
+    }
+
+    fn linked_cast_cost(&self, source: ObjectId) -> Option<LinkedCastCostRecord> {
+        self.linked_cast_costs.get(&source).cloned()
+    }
+
+    fn register_linked_cast_cost(&mut self, record: LinkedCastCostRecord) {
+        self.linked_cast_costs.insert(record.source, record);
+    }
+
+    fn consume_linked_cast_cost(&mut self, source: ObjectId) -> Option<LinkedCastCostRecord> {
+        self.linked_cast_costs.remove(&source)
+    }
+
+    fn agenda_state(&self, source: ObjectId) -> Option<AgendaStateRecord> {
+        self.agenda_states.get(&source).cloned()
+    }
+
+    fn register_agenda_state(&mut self, source: ObjectId, record: AgendaStateRecord) {
+        self.agenda_states.insert(source, record);
+    }
+
+    fn face_up_draft(&self, card: ObjectId) -> Option<FaceUpDraftRecord> {
+        self.face_up_drafts.get(&card).cloned()
+    }
+
+    fn register_face_up_draft(&mut self, record: FaceUpDraftRecord) {
+        self.face_up_drafts.insert(record.card, record);
+    }
+
+    fn pending_enlist(&self, source: ObjectId) -> Option<PendingEnlistTrigger> {
+        self.pending_enlist_triggers.get(&source).cloned()
+    }
+
+    fn register_pending_enlist(&mut self, source: ObjectId, trigger: PendingEnlistTrigger) {
+        self.pending_enlist_triggers.insert(source, trigger);
+    }
+
+    fn consume_pending_enlist(&mut self, source: ObjectId) -> Option<PendingEnlistTrigger> {
+        self.pending_enlist_triggers.remove(&source)
+    }
+
+    fn double_team_was_perpetually_removed(&self, card: ObjectId) -> bool {
+        self.double_team_perpetual_removals.contains(&card)
+    }
+
+    fn mark_double_team_perpetually_removed(&mut self, card: ObjectId) {
+        self.double_team_perpetual_removals.insert(card);
+    }
+
+    fn phasing_objects(&self) -> Vec<PhysicalObject> {
+        self.objects.values().cloned().collect()
+    }
+
+    fn phasing_attachments(&self) -> Vec<AttachmentRecord> {
+        self.attachments.values().cloned().collect()
+    }
+
+    fn phase_status(&self, object: ObjectId) -> PhaseStatus {
+        self.phase_statuses
+            .get(&object)
+            .copied()
+            .unwrap_or(PhaseStatus::PhasedIn)
+    }
+
+    fn set_phase_status(&mut self, object: ObjectId, status: PhaseStatus) {
+        if status == PhaseStatus::PhasedIn {
+            self.phase_statuses.remove(&object);
+        } else {
+            self.phase_statuses.insert(object, status);
+        }
+    }
+
+    fn installed_phasing(&self, source: ObjectId) -> Option<InstalledPhasingProgram> {
+        self.installed_phasing_programs.get(&source).cloned()
+    }
+
+    fn install_phasing(&mut self, source: ObjectId, program: InstalledPhasingProgram) {
+        self.installed_phasing_programs.insert(source, program);
+    }
+
+    fn phasing_boundary_was_processed(&self, active_player: PlayerId, turn: u64) -> bool {
+        self.processed_phasing_boundaries
+            .contains(&(active_player, turn))
+    }
+
+    fn mark_phasing_boundary_processed(&mut self, active_player: PlayerId, turn: u64) {
+        self.processed_phasing_boundaries
+            .insert((active_player, turn));
+    }
+
+    fn installed_banding(&self, source: ObjectId) -> Option<InstalledBandingProgram> {
+        self.installed_banding_programs.get(&source).cloned()
+    }
+
+    fn install_banding(&mut self, source: ObjectId, program: InstalledBandingProgram) {
+        self.installed_banding_programs.insert(source, program);
+    }
+
+    fn attack_bands(&self, combat: u64) -> Vec<AttackBand> {
+        self.attack_band_records
+            .iter()
+            .filter_map(|((record_combat, _), band)| {
+                (*record_combat == combat).then(|| band.clone())
+            })
+            .collect()
+    }
+
+    fn register_attack_band(&mut self, source: ObjectId, band: AttackBand) {
+        self.attack_band_records
+            .insert((band.combat_id, source), band);
+    }
+
+    fn banding_blocks(&self, combat: u64) -> Option<BTreeSet<BlockRelation>> {
+        self.banding_block_records.get(&combat).cloned()
+    }
+
+    fn set_banding_blocks(&mut self, combat: u64, relations: BTreeSet<BlockRelation>) {
+        self.banding_block_records.insert(combat, relations);
+    }
+
+    fn register_validated_banding_damage(&mut self, record: ValidatedBandingDamageRecord) {
+        self.validated_banding_damage
+            .insert((record.combat_id, record.damage_source), record);
+    }
+
+    fn installed_targeting_protections(&self) -> Vec<InstalledTargetingProtectionRecord> {
+        self.installed_targeting_protection_records.clone()
+    }
+
+    fn install_targeting_protection(&mut self, record: InstalledTargetingProtectionRecord) {
+        self.installed_targeting_protection_records.push(record);
+    }
+
+    fn stack_copy_targets(&self, copy: ObjectId) -> Option<BTreeMap<u8, Vec<SelectedTarget>>> {
+        self.stack_copy_target_assignments.get(&copy).cloned()
+    }
+
+    fn set_stack_copy_targets(
+        &mut self,
+        copy: ObjectId,
+        targets: BTreeMap<u8, Vec<SelectedTarget>>,
+    ) {
+        self.stack_copy_target_assignments.insert(copy, targets);
+    }
+
+    fn prototype_cast(&self, source: ObjectId) -> Option<PrototypeCastRecord> {
+        self.prototype_casts.get(&source).cloned()
+    }
+
+    fn register_prototype_cast(&mut self, record: PrototypeCastRecord) {
+        self.prototype_casts.insert(record.source, record);
+    }
+
+    fn consume_prototype_cast(&mut self, source: ObjectId) -> Option<PrototypeCastRecord> {
+        self.prototype_casts.remove(&source)
+    }
+
+    fn mayhem_discard_incarnation(&self, source: ObjectId) -> Option<u64> {
+        self.mayhem_discard_incarnations.get(&source).copied()
+    }
+
+    fn record_mayhem_discard(&mut self, source: ObjectId, incarnation: u64) {
+        self.mayhem_discard_incarnations.insert(source, incarnation);
+    }
+
+    fn consume_mayhem_discard(&mut self, source: ObjectId) -> Option<u64> {
+        self.mayhem_discard_incarnations.remove(&source)
+    }
+
+    fn freerunning_eligible(&self, player: PlayerId) -> bool {
+        self.freerunning_eligible_players.contains(&player)
+    }
+
+    fn record_freerunning_eligibility(&mut self, player: PlayerId) {
+        self.freerunning_eligible_players.insert(player);
+    }
+
+    fn install_ongoing_scheme(&mut self, source: ObjectId, until_abandoned: bool) {
+        self.ongoing_schemes.insert(source, until_abandoned);
+    }
+
+    fn abandon_ongoing_scheme(&mut self, source: ObjectId) -> bool {
+        self.ongoing_schemes.remove(&source).is_some()
+    }
+
+    fn battle_protector(&self, source: ObjectId) -> Option<PlayerId> {
+        self.battle_protectors.get(&source).copied()
+    }
+
+    fn set_battle_protector(&mut self, source: ObjectId, protector: PlayerId) {
+        self.battle_protectors.insert(source, protector);
+    }
+
+    fn clear_battle_protector(&mut self, source: ObjectId) -> Option<PlayerId> {
+        self.battle_protectors.remove(&source)
+    }
+
+    fn cast_choice_payment(&self, source: ObjectId) -> Option<CastChoicePaymentRecord> {
+        self.cast_choice_payments.get(&source).cloned()
+    }
+
+    fn register_cast_choice_payment(&mut self, record: CastChoicePaymentRecord) {
+        self.cast_choice_payments.insert(record.source, record);
+    }
+
+    fn consume_cast_choice_payment(&mut self, source: ObjectId) -> Option<CastChoicePaymentRecord> {
+        self.cast_choice_payments.remove(&source)
+    }
+
+    fn face_down_cast(&self, source: ObjectId) -> Option<FaceDownCastRecord> {
+        self.face_down_casts.get(&source).cloned()
+    }
+
+    fn register_face_down_cast(&mut self, record: FaceDownCastRecord) {
+        self.face_down_casts.insert(record.source, record);
+    }
+
+    fn consume_face_down_cast(&mut self, source: ObjectId) -> Option<FaceDownCastRecord> {
+        self.face_down_casts.remove(&source)
+    }
+
+    fn mutate_cast(&self, source: ObjectId) -> Option<MutateCastRecord> {
+        self.mutate_casts.get(&source).cloned()
+    }
+
+    fn register_mutate_cast(&mut self, record: MutateCastRecord) {
+        self.mutate_casts.insert(record.source, record);
+    }
+
+    fn consume_mutate_cast(&mut self, source: ObjectId) -> Option<MutateCastRecord> {
+        self.mutate_casts.remove(&source)
+    }
+
+    fn merged_permanent(&self, object: ObjectId) -> Option<MergedPermanentRecord> {
+        self.merged_permanents.get(&object).cloned()
+    }
+
+    fn register_merged_permanent(&mut self, record: MergedPermanentRecord) {
+        self.merged_permanents.insert(record.object, record);
+    }
+
+    fn install_level_progression_program(
+        &mut self,
+        source: ObjectId,
+        program: InstalledLevelProgressionProgram,
+    ) {
+        self.level_progression_programs.insert(source, program);
+    }
+
+    fn level_progression_program(
+        &self,
+        source: ObjectId,
+    ) -> Option<InstalledLevelProgressionProgram> {
+        self.level_progression_programs.get(&source).cloned()
+    }
+
+    fn register_pending_level_progression(
+        &mut self,
+        pending: PendingLevelProgressionAction,
+    ) -> Result<(), String> {
+        if !self
+            .seen_level_progression_pending
+            .insert(pending.pending_id)
+        {
+            return Err(format!(
+                "level progression pending identity {} was already used",
+                pending.pending_id
+            ));
+        }
+        self.pending_level_progression
+            .insert(pending.pending_id, pending);
+        Ok(())
+    }
+
+    fn consume_pending_level_progression(
+        &mut self,
+        pending_id: u64,
+    ) -> Option<PendingLevelProgressionAction> {
+        self.pending_level_progression.remove(&pending_id)
     }
 
     fn allocate_object_id(&mut self) -> ObjectId {
@@ -895,7 +2790,10 @@ impl OracleStateAdapter for InMemoryOracleState {
     }
 
     fn attachment(&self, source: ObjectId) -> Option<AttachmentRecord> {
-        self.attachments.get(&source).copied()
+        self.attachments.get(&source).copied().filter(|attachment| {
+            self.phase_status(attachment.source) == PhaseStatus::PhasedIn
+                && self.phase_status(attachment.target) == PhaseStatus::PhasedIn
+        })
     }
 
     fn set_attachment(&mut self, attachment: AttachmentRecord) -> Result<(), String> {
@@ -1002,6 +2900,54 @@ impl OracleStateAdapter for InMemoryOracleState {
         pay_mana_from_player(&mut player, cost, x_value).is_ok()
     }
 
+    fn pay_generic_with_snow(
+        &mut self,
+        player: PlayerId,
+        generic: u32,
+        snow: u32,
+    ) -> Result<(), String> {
+        let mut player_state = self
+            .players
+            .get(&player)
+            .cloned()
+            .ok_or_else(|| format!("missing player {player}"))?;
+        let mut snow_units = self.snow_mana.get(&player).cloned().unwrap_or_default();
+        spend_tracked_snow(&mut player_state, &mut snow_units, snow)?;
+        spend_generic(&mut player_state, generic)?;
+        self.players.insert(player, player_state);
+        self.snow_mana.insert(player, snow_units);
+        self.mutation_log
+            .push(format!("pay_snow_mana:{player}:{generic}:{snow}"));
+        Ok(())
+    }
+
+    fn can_pay_generic_with_snow(&self, player: PlayerId, generic: u32, snow: u32) -> bool {
+        let Some(mut player_state) = self.players.get(&player).cloned() else {
+            return false;
+        };
+        let mut snow_units = self.snow_mana.get(&player).cloned().unwrap_or_default();
+        spend_tracked_snow(&mut player_state, &mut snow_units, snow).is_ok()
+            && spend_generic(&mut player_state, generic).is_ok()
+    }
+
+    fn add_snow_mana(&mut self, player: PlayerId, color: Color, amount: u32) -> Result<(), String> {
+        let player_state = self
+            .players
+            .get_mut(&player)
+            .ok_or_else(|| format!("missing player {player}"))?;
+        let index = color_index(color);
+        player_state.mana.colored[index] = player_state.mana.colored[index]
+            .checked_add(amount)
+            .ok_or_else(|| "mana pool overflow".to_owned())?;
+        let amount = usize::try_from(amount)
+            .map_err(|_| "snow mana amount exceeds runtime range".to_owned())?;
+        self.snow_mana
+            .entry(player)
+            .or_default()
+            .extend(std::iter::repeat_n(color, amount));
+        Ok(())
+    }
+
     fn add_mana(&mut self, player: PlayerId, colors: &[Color], amount: u32) -> Result<(), String> {
         let player_state = self
             .players
@@ -1030,6 +2976,45 @@ impl OracleStateAdapter for InMemoryOracleState {
         self.mutation_log
             .push(format!("add_mana:{player}:{selected:?}"));
         Ok(())
+    }
+
+    fn add_expiring_combat_mana(
+        &mut self,
+        player: PlayerId,
+        color: Color,
+        amount: u32,
+        combat_id: u64,
+        source_identity: ObjectId,
+    ) -> Result<Vec<u64>, String> {
+        let player_state = self
+            .players
+            .get_mut(&player)
+            .ok_or_else(|| format!("missing player {player}"))?;
+        let next_amount = player_state.mana.colored[color_index(color)]
+            .checked_add(amount)
+            .ok_or_else(|| "mana pool overflow".to_owned())?;
+        let mut ids = Vec::with_capacity(
+            usize::try_from(amount).map_err(|_| "mana amount overflow".to_owned())?,
+        );
+        for _ in 0..amount {
+            let id = self.next_mana_unit_id;
+            self.next_mana_unit_id = self
+                .next_mana_unit_id
+                .checked_add(1)
+                .ok_or_else(|| "mana unit identity overflow".to_owned())?;
+            ids.push(id);
+            player_state.expiring_mana.push(ExpiringManaUnit {
+                id,
+                color,
+                expires_after_combat: combat_id,
+                source_identity,
+            });
+        }
+        player_state.mana.colored[color_index(color)] = next_amount;
+        self.mutation_log.push(format!(
+            "add_expiring_combat_mana:{player}:{color:?}:{amount}:{combat_id}:{source_identity}"
+        ));
+        Ok(ids)
     }
 
     fn next_order(&mut self) -> u64 {
@@ -1171,6 +3156,94 @@ impl OracleStateAdapter for InMemoryOracleState {
     fn consume_next_untap_prevention(&mut self, order: u64) {
         self.next_untap_preventions
             .retain(|record| record.order != order);
+    }
+
+    fn damage_modifiers(&self) -> BTreeMap<u64, DamageModifier> {
+        self.damage_modifiers.clone()
+    }
+
+    fn damage_source_keyword_overrides(&self, object: ObjectId) -> BTreeSet<DamageSourceKeyword> {
+        let active_face = self
+            .objects
+            .get(&object)
+            .map(|object| object.active_face)
+            .unwrap_or_default();
+        self.damage_source_keywords
+            .get(&(object, active_face))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn object_has_affinity(&self, object: ObjectId) -> bool {
+        self.objects.get(&object).is_some_and(|object| {
+            self.affinity_objects
+                .contains(&(object.id, object.active_face))
+        })
+    }
+
+    fn put_damage_modifiers(
+        &mut self,
+        modifiers: BTreeMap<u64, DamageModifier>,
+    ) -> Result<(), String> {
+        self.damage_modifiers = modifiers;
+        Ok(())
+    }
+
+    fn library_access_state(&self) -> LibraryAccessState {
+        self.library_access.clone()
+    }
+
+    fn put_library_access_state(&mut self, access: LibraryAccessState) -> Result<(), String> {
+        self.library_access = access;
+        Ok(())
+    }
+
+    fn common_procedure_state(&self) -> CommonProcedureState {
+        self.common_procedures.clone()
+    }
+
+    fn put_common_procedure_state(
+        &mut self,
+        procedures: CommonProcedureState,
+    ) -> Result<(), String> {
+        self.common_procedures = procedures;
+        Ok(())
+    }
+
+    fn combat_restriction_runtime(&self) -> CombatRestrictionRuntime {
+        self.combat_restrictions.clone()
+    }
+
+    fn put_combat_restriction_runtime(
+        &mut self,
+        runtime: CombatRestrictionRuntime,
+    ) -> Result<(), String> {
+        self.combat_restrictions = runtime;
+        Ok(())
+    }
+
+    fn regeneration_runtime_state(&self) -> RegenerationRuntimeState {
+        self.regeneration.clone()
+    }
+
+    fn put_regeneration_runtime_state(
+        &mut self,
+        runtime: RegenerationRuntimeState,
+    ) -> Result<(), String> {
+        self.regeneration = runtime;
+        Ok(())
+    }
+
+    fn oracle_action_world_state(&self) -> OracleActionWorldState {
+        self.oracle_actions.clone()
+    }
+
+    fn put_oracle_action_world_state(
+        &mut self,
+        world: OracleActionWorldState,
+    ) -> Result<(), String> {
+        self.oracle_actions = world;
+        Ok(())
     }
 
     fn looked_at(&self, player: PlayerId) -> Vec<ObjectId> {
@@ -1325,6 +3398,14 @@ impl OracleStateAdapter for InMemoryOracleState {
         Ok(())
     }
 
+    fn install_dredge_program(&mut self, source: ObjectId, program: ZoneKeywordProgram) {
+        self.dredge_programs.insert(source, program);
+    }
+
+    fn dredge_program(&self, source: ObjectId) -> Option<ZoneKeywordProgram> {
+        self.dredge_programs.get(&source).cloned()
+    }
+
     fn record_mutation(&mut self, description: String) {
         self.mutation_log.push(description);
     }
@@ -1447,7 +3528,6 @@ pub struct ActionDefinition<'a> {
 thread_local! {
     static CONTRACT_DECLARED_TARGETS: RefCell<Option<BTreeSet<u8>>> = const { RefCell::new(None) };
 
-
 }
 
 struct ContractTargetScope {
@@ -1480,19 +3560,64 @@ fn target_id_has_contract(id: u8) -> bool {
 
 pub fn clause_has_executable_contract(clause: &BoundedOracleClause) -> bool {
     with_contract_declared_targets(clause.targets(), || {
-        !clause.requires_saga_lore_consumer()
-            && clause.runtime_version() == BOUNDED_ORACLE_RUNTIME_VERSION
-            && timing_has_contract(clause.timing())
+        let effects_have_contract = clause.effects().iter().all(effect_has_contract);
+        clause.runtime_version() == BOUNDED_ORACLE_RUNTIME_VERSION
+            && (clause
+                .saga_lore_procedure()
+                .is_some_and(saga_lore_procedure_has_contract)
+                || !clause.requires_saga_lore_consumer())
+            && (timing_has_contract(clause.timing())
+                || (matches!(clause.timing(), Timing::TypedStandaloneProgram)
+                    && effects_have_contract))
             && clause.conditions().iter().all(condition_has_contract)
             && clause.costs().iter().all(cost_has_contract)
             && targets_have_contract(clause.targets())
-            && clause.effects().iter().all(effect_has_contract)
+            && effects_have_contract
             && clause
                 .activation_restriction()
                 .is_none_or(activation_restriction_has_contract)
             && clause.reminder().is_none_or(reminder_has_contract)
     })
 }
+
+fn saga_final_chapter(procedure: &SagaLoreProcedure) -> Option<u16> {
+    match procedure.final_chapter {
+        SagaFinalChapter::PrintedUnvalidated(chapter)
+        | SagaFinalChapter::BoundHighestPrintedChapter(chapter) => Some(chapter),
+        SagaFinalChapter::HighestPrintedChapterOnFace => None,
+    }
+}
+
+fn saga_lore_procedure_has_contract(procedure: &SagaLoreProcedure) -> bool {
+    matches!(procedure.object, ObjectRef::Source)
+        && matches!(&procedure.lore_counter, CounterKind::Named(name) if name == "lore")
+        && matches!(procedure.after_controller_draw_step, Amount::Constant(1))
+        && saga_final_chapter(procedure).is_some_and(|chapter| chapter > 0)
+        && match &procedure.entry_lore {
+            SagaEntryLoreProcedure::Fixed(Amount::Constant(1)) => true,
+            SagaEntryLoreProcedure::ReadAhead {
+                first_chapter,
+                final_chapter,
+                skipped_chapters_do_not_trigger,
+            } => {
+                let entry_final = match final_chapter {
+                    SagaFinalChapter::PrintedUnvalidated(chapter)
+                    | SagaFinalChapter::BoundHighestPrintedChapter(chapter) => Some(*chapter),
+                    SagaFinalChapter::HighestPrintedChapterOnFace => None,
+                };
+                *first_chapter == 1
+                    && *skipped_chapters_do_not_trigger
+                    && entry_final == saga_final_chapter(procedure)
+            }
+            _ => false,
+        }
+        && procedure.state_based_sacrifice.sacrifice_source
+        && procedure.state_based_sacrifice.lore_at_least_final_chapter
+        && procedure
+            .state_based_sacrifice
+            .no_source_chapter_ability_on_stack
+}
+
 fn unbridged_damage_contract_enabled() -> bool {
     false
 }
@@ -1506,8 +3631,18 @@ fn timing_has_contract(timing: &Timing) -> bool {
         | Timing::Replacement
         | Timing::SpecialAction(
             SpecialActionTiming::Pregame
+            | SpecialActionTiming::RevealAgenda
+            | SpecialActionTiming::DraftPick
+            | SpecialActionTiming::PhasingUntap
+            | SpecialActionTiming::BandingAttackDeclaration
+            | SpecialActionTiming::BandingBlockDeclaration
+            | SpecialActionTiming::BandingDamageAssignment
             | SpecialActionTiming::EntersPrepared
-            | SpecialActionTiming::TransformBackFaceAnnotation,
+            | SpecialActionTiming::TransformBackFaceAnnotation
+            | SpecialActionTiming::Foretell
+            | SpecialActionTiming::Plot
+            | SpecialActionTiming::Suspend
+            | SpecialActionTiming::TurnFaceUp,
         ) => true,
         Timing::Triggered(trigger) => trigger_has_contract(trigger),
         Timing::TriggeredModalHeader { trigger, choices } => {
@@ -1559,6 +3694,10 @@ fn trigger_has_contract(trigger: &Trigger) -> bool {
                 && occurrence_this_turn.is_none_or(|occurrence| occurrence > 0)
         }
         Trigger::ObjectEvent { subject, .. } => match subject {
+            TriggerSubject::Source => true,
+            TriggerSubject::Matching(filter) => filter_has_contract(filter),
+        },
+        Trigger::CountersPlaced { subject, .. } => match subject {
             TriggerSubject::Source => true,
             TriggerSubject::Matching(filter) => filter_has_contract(filter),
         },
@@ -1619,6 +3758,7 @@ fn activation_restriction_has_contract(restriction: &ActivationRestriction) -> b
             | Zone::Stack
             | Zone::Command,
         ) => true,
+        ActivationRestriction::SourceZone(Zone::Merged) => false,
         ActivationRestriction::TimesEachTurn(0) => false,
     }
 }
@@ -1630,6 +3770,15 @@ fn choice_count_has_contract(count: &ChoiceCount) -> bool {
         ChoiceCount::UpTo(amount) => *amount > 0,
         ChoiceCount::Between { minimum, maximum } => *minimum > 0 && minimum <= maximum,
         ChoiceCount::OneOrMore | ChoiceCount::OneOrBothIfTeamwork => true,
+        ChoiceCount::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            condition_has_contract(condition)
+                && choice_count_has_contract(when_true)
+                && choice_count_has_contract(when_false)
+        }
     }
 }
 
@@ -1641,7 +3790,11 @@ fn targets_have_contract(targets: &[Target]) -> bool {
             && target_filter_has_contract(&target.filter)
             && match target.amount {
                 TargetAmount::Exactly(amount) => amount > 0,
-                TargetAmount::UpTo(_) | TargetAmount::AnyNumber | TargetAmount::All => true,
+                TargetAmount::ExactlyX
+                | TargetAmount::UpToX
+                | TargetAmount::UpTo(_)
+                | TargetAmount::AnyNumber
+                | TargetAmount::All => true,
             }
             && match &target.relationship {
                 TargetRelationship::Independent
@@ -1673,6 +3826,9 @@ fn target_filter_has_contract(filter: &TargetFilter) -> bool {
 
 fn condition_has_contract(condition: &Condition) -> bool {
     match condition {
+        Condition::All(conditions) => {
+            !conditions.is_empty() && conditions.iter().all(condition_has_contract)
+        }
         Condition::ControlCount {
             player,
             filter,
@@ -1708,26 +3864,38 @@ fn condition_has_contract(condition: &Condition) -> bool {
         Condition::CardWasCastWithAlternativeCost
         | Condition::CardWasCastUsingEscape
         | Condition::CardWasKicked
+        | Condition::CardWasBargained
         | Condition::CardWasCastUsingTeamwork
         | Condition::YouAttackedThisTurn
         | Condition::OpponentLostLifeThisTurn
+        | Condition::YourTurn
         | Condition::NotYourTurn
         | Condition::NotThatPlayersTurn
         | Condition::GiftPromised
         | Condition::SourceInOpeningHand
+        | Condition::PlayingFirst
         | Condition::NotPlayingFirst
         | Condition::ModeSelected(_)
         | Condition::AnotherSpellCastThisTurn
         | Condition::SourceAttackingAlone
+        | Condition::SpellCastFromHand
         | Condition::SpellCastFromNonHand
         | Condition::ManaSpentGreaterThanSourcePowerOrToughness
         | Condition::CastOnlyDuringCombat
         | Condition::CastOnlyDuringCombatBeforeBlockers
         | Condition::CastOnlyDuringDeclareBlockers
         | Condition::CastOnlyDuringCombatAfterBlockers
+        | Condition::CastOnlyDuringYourEndStep
+        | Condition::CastOnlyDuringDeclareAttackersIfActorWasAttackedThisStep
         | Condition::SourceWasCounteredByThisEffect
-        | Condition::FirstResolutionOfNamedSpell => true,
-        Condition::SpellsCastByActorThisTurn { amount, .. } => *amount > 0,
+        | Condition::FirstResolutionOfNamedSpell
+        | Condition::SourceIsAttached
+        | Condition::YouWonPreviousClash => true,
+        Condition::BoundRevealedOrControlledSubtype { subtype, .. } => !subtype.trim().is_empty(),
+        Condition::RevealedOrControlledSubtype { .. } => false,
+        Condition::SpellsCastByActorThisTurn { comparison, amount } => {
+            *amount > 0 || (*comparison == Comparison::Exactly && *amount == 0)
+        }
         Condition::GraveyardCardCount { player, amount, .. }
         | Condition::HandCardCount { player, amount, .. }
         | Condition::CardTypesInGraveyard { player, amount, .. } => {
@@ -1748,6 +3916,7 @@ fn condition_has_contract(condition: &Condition) -> bool {
                 && (*amount > 0 || (*comparison == Comparison::Exactly && *amount == 0))
         }
         Condition::CommanderControlled { player } => player_ref_has_contract(player),
+        Condition::PlayerIsNotMonarch { player } => player_ref_has_contract(player),
         Condition::ObjectIsCardType { object, .. } => object_ref_has_contract(object),
         Condition::UnlessPaid { player, cost } => {
             player_ref_has_contract(player) && cost_has_contract(cost)
@@ -1758,8 +3927,13 @@ fn condition_has_contract(condition: &Condition) -> bool {
 fn cost_has_contract(cost: &Cost) -> bool {
     match cost {
         Cost::Optional(cost) => cost_has_contract(cost),
+        Cost::Alternative { options, .. } => {
+            options.len() >= 2 && options.iter().all(cost_has_contract)
+        }
         Cost::Mana(cost) => mana_cost_has_contract(cost),
-        Cost::AtomicResource(cost) => atomic_energy_cost_amount(cost).is_some(),
+        Cost::AtomicResource(cost) => {
+            atomic_energy_cost_amount(cost).is_some() || atomic_snow_cost_amount(cost).is_some()
+        }
         Cost::Loyalty(LoyaltyCost::Add(_)) | Cost::Loyalty(LoyaltyCost::Zero) => true,
         Cost::Loyalty(LoyaltyCost::Remove(amount)) => amount_has_contract(amount),
         Cost::Tap(object)
@@ -1773,10 +3947,21 @@ fn cost_has_contract(cost: &Cost) -> bool {
         | Cost::SacrificeSelection(selection)
         | Cost::DiscardSelection(selection)
         | Cost::ExileSelection(selection) => selection_has_contract(selection),
+        Cost::TapSelectionForSpellReduction {
+            selection,
+            reduction_per_object,
+        } => selection_has_contract(selection) && mana_cost_has_contract(reduction_per_object),
+        Cost::DiscardSelectionAmount { selection, amount }
+        | Cost::ExileSelectionAmount { selection, amount } => {
+            selection_has_contract(selection) && amount_has_contract(amount)
+        }
         Cost::ExileSelectionWithTotalManaValue { selection, minimum } => {
             selection_has_contract(selection) && amount_has_contract(minimum)
         }
         Cost::DiscardHand { player } => player_ref_has_contract(player),
+        Cost::Mill { player, amount } => {
+            player_ref_has_contract(player) && amount_has_contract(amount)
+        }
         Cost::DiscardRandom { player } => player_ref_has_contract(player),
         Cost::ReturnSelectionToHand(selection) => selection_has_contract(selection),
         Cost::RevealSelection { selection, .. } => selection_has_contract(selection),
@@ -1819,6 +4004,29 @@ fn atomic_energy_cost_amount(cost: &AtomicResourceCost) -> Option<u32> {
     (total > 0).then_some(total)
 }
 
+fn atomic_snow_cost_amount(cost: &AtomicResourceCost) -> Option<(u32, u32)> {
+    if cost.special().exact_oracle() != "{S}" {
+        return None;
+    }
+    let [
+        TypedResourceCostComponent::Mana(mana),
+        TypedResourceCostComponent::TapSource,
+    ] = cost.expression().components.as_slice()
+    else {
+        return None;
+    };
+    let mut generic = 0u32;
+    let mut snow = 0u32;
+    for symbol in &mana.symbols {
+        match symbol {
+            TypedManaSymbol::Generic(amount) => generic = generic.checked_add(*amount)?,
+            TypedManaSymbol::Snow => snow = snow.checked_add(1)?,
+            _ => return None,
+        }
+    }
+    (snow > 0).then_some((generic, snow))
+}
+
 fn amount_has_contract(amount: &Amount) -> bool {
     match amount {
         Amount::Constant(_) | Amount::X | Amount::OneOrMore | Amount::Any => true,
@@ -1850,6 +4058,7 @@ fn count_has_contract(count: &CountExpression) -> bool {
         CountExpression::CardsInZone { player, filter, .. } => {
             player_ref_has_contract(player) && filter_has_contract(filter)
         }
+        CountExpression::HalfLibrary { player } => player_ref_has_contract(player),
         CountExpression::OpponentsDealtCombatDamage { player }
         | CountExpression::Devotion { player, .. } => player_ref_has_contract(player),
         CountExpression::ManaValueOf { object } => object_ref_has_contract(object),
@@ -1867,7 +4076,10 @@ fn selection_has_contract(selection: &ObjectSelection) -> bool {
         && filter_has_contract(&selection.filter)
         && match selection.amount {
             TargetAmount::Exactly(amount) | TargetAmount::UpTo(amount) => amount > 0,
-            TargetAmount::AnyNumber | TargetAmount::All => true,
+            TargetAmount::ExactlyX
+            | TargetAmount::UpToX
+            | TargetAmount::AnyNumber
+            | TargetAmount::All => true,
         }
 }
 
@@ -1987,7 +4199,10 @@ fn typed_mana_quantity_has_contract(quantity: &TypedManaQuantity) -> bool {
 fn typed_mana_calculation_has_contract(calculation: &TypedQuantityCalculation) -> bool {
     match calculation {
         TypedQuantityCalculation::Value(TypedCalculatedValue::Constant(_))
-        | TypedQuantityCalculation::Value(TypedCalculatedValue::SourcePower) => true,
+        | TypedQuantityCalculation::Value(TypedCalculatedValue::SourcePower)
+        | TypedQuantityCalculation::Value(
+            TypedCalculatedValue::BoundSacrificedCreatureManaValue { .. },
+        ) => true,
         TypedQuantityCalculation::Value(TypedCalculatedValue::Count(objects)) => {
             typed_mana_count_has_contract(objects)
         }
@@ -2046,6 +4261,7 @@ fn duration_has_contract(duration: &Duration) -> bool {
         Duration::Permanent
         | Duration::ThisTurn
         | Duration::UntilEndOfTurn
+        | Duration::UntilEndOfCombat(_)
         | Duration::UntilEndOfNextTurn
         | Duration::WhileSourceOnBattlefield
         | Duration::BeginningOfNextEndStep
@@ -2072,6 +4288,7 @@ fn keyword_has_contract(keyword: &Keyword) -> bool {
         Keyword::Lifelink => Some(crate::keyword_rules_runtime::OfficialKeyword::Lifelink),
         Keyword::Menace => Some(crate::keyword_rules_runtime::OfficialKeyword::Menace),
         Keyword::Reach => Some(crate::keyword_rules_runtime::OfficialKeyword::Reach),
+        Keyword::Shadow => Some(crate::keyword_rules_runtime::OfficialKeyword::Shadow),
         Keyword::Shroud => Some(crate::keyword_rules_runtime::OfficialKeyword::Shroud),
         Keyword::Trample => Some(crate::keyword_rules_runtime::OfficialKeyword::Trample),
         Keyword::Vigilance => Some(crate::keyword_rules_runtime::OfficialKeyword::Vigilance),
@@ -2105,6 +4322,7 @@ fn token_definition_has_contract(definition: &TokenDefinition) -> bool {
 fn token_specification_has_contract(specification: &TokenSpecification) -> bool {
     match specification {
         TokenSpecification::Defined(definition) => token_definition_has_contract(definition),
+        TokenSpecification::CopyOf(ObjectRef::AttachmentTarget { .. }) => true,
         TokenSpecification::CopyOf(object) | TokenSpecification::ManifestedCard(object) => {
             object_ref_has_contract(object)
         }
@@ -2164,6 +4382,11 @@ fn restriction_has_contract(restriction: &Restriction) -> bool {
             object: ObjectRef::AttachmentTarget { .. },
             duration: Duration::WhileSourceOnBattlefield,
         } => true,
+        Restriction::MustBlockIfAble {
+            blockers,
+            attacker: Some(ObjectRef::AttachmentTarget { .. }),
+            duration: Duration::WhileSourceOnBattlefield,
+        } => object_ref_has_contract(blockers),
         Restriction::SpellCannotBeCountered { object }
         | Restriction::SpellCannotBeCopied { object }
         | Restriction::ActivatedAbilitiesCannotBeActivated { object, .. }
@@ -2198,6 +4421,11 @@ fn restriction_has_contract(restriction: &Restriction) -> bool {
             object: ObjectRef::AttachmentTarget { .. },
             step: Step::UntapStep,
         } => true,
+        Restriction::DoesNotUntapDuringIf {
+            object: ObjectRef::AttachmentTarget { .. },
+            step: Step::UntapStep,
+            condition,
+        } => condition_has_contract(condition),
         Restriction::DoesNotUntapDuring { object, .. } => object_ref_has_contract(object),
         Restriction::DoesNotUntapDuringIf {
             object, condition, ..
@@ -2206,6 +4434,11 @@ fn restriction_has_contract(restriction: &Restriction) -> bool {
         | Restriction::CannotBeBlocked { object, duration } => {
             object_ref_has_contract(object) && duration_has_contract(duration)
         }
+        Restriction::CannotBeBlockedWhen {
+            object: ObjectRef::AttachmentTarget { .. },
+            condition,
+            duration: Duration::WhileSourceOnBattlefield,
+        } => condition_has_contract(condition),
         Restriction::CannotBeBlockedWhen {
             object,
             condition,
@@ -2393,6 +4626,7 @@ fn cast_permission_has_contract(permission: &CastPermission) -> bool {
 
 fn replacement_has_contract(replacement: &ReplacementEffect) -> bool {
     match replacement {
+        ReplacementEffect::PreventCounters { object } => object_ref_has_contract(object),
         ReplacementEffect::MultiplyEvent { event, multiplier } => {
             *multiplier > 0 && replacement_event_has_contract(event)
         }
@@ -2473,6 +4707,7 @@ fn effect_has_contract(effect: &Effect) -> bool {
         | Effect::CounterToZone { object, .. }
         | Effect::Destroy { object }
         | Effect::DestroyWithoutRegeneration { object }
+        | Effect::ExileIfWouldDieThisTurn { objects: object }
         | Effect::Tap { object }
         | Effect::Untap { object }
         | Effect::RemoveFromCombat { object }
@@ -2490,6 +4725,10 @@ fn effect_has_contract(effect: &Effect) -> bool {
             position_from_top,
         } => object_ref_has_contract(object) && *position_from_top > 0,
         Effect::CopyStackObject { object, .. } => object_ref_has_contract(object),
+        Effect::ChangeControl {
+            object: ObjectRef::AttachmentTarget { .. },
+            controller: PlayerRef::You,
+        } => true,
         Effect::ChangeControl { object, controller } => {
             object_ref_has_contract(object) && player_ref_has_contract(controller)
         }
@@ -2595,6 +4834,37 @@ fn effect_has_contract(effect: &Effect) -> bool {
             LibraryProcedure::RevealTopToHandLoseManaValue { player, repeat } => {
                 player_ref_has_contract(player) && amount_has_contract(repeat)
             }
+            LibraryProcedure::DrawSacrificedCreaturePower {
+                player, binding, ..
+            } => {
+                player_ref_has_contract(player)
+                    && matches!(binding, SacrificedCreatureProcedureBinding::FaceCost { .. })
+            }
+            LibraryProcedure::SacrificedPermanentManaValue {
+                player,
+                binding,
+                draw_equal_mana_value,
+                gain_life_equal_mana_value,
+                fixed_draw,
+            } => {
+                player_ref_has_contract(player)
+                    && matches!(binding, SacrificedCreatureProcedureBinding::FaceCost { .. })
+                    && (*draw_equal_mana_value || *gain_life_equal_mana_value || *fixed_draw > 0)
+            }
+            LibraryProcedure::DrawIfSacrificedPermanentWasVehicle { player, binding } => {
+                player_ref_has_contract(player)
+                    && matches!(binding, SacrificedCreatureProcedureBinding::FaceCost { .. })
+            }
+            LibraryProcedure::ScryIfSearchedCardCheaperThanSacrificedPermanent {
+                player,
+                binding,
+                amount,
+                ..
+            } => {
+                player_ref_has_contract(player)
+                    && *amount > 0
+                    && matches!(binding, SacrificedCreatureProcedureBinding::FaceCost { .. })
+            }
             LibraryProcedure::ExileUntilNamedCard { player, .. }
             | LibraryProcedure::ExileUntilAcceptedOrDuplicate { player }
             | LibraryProcedure::DevotionLookAndWin { player, .. } => {
@@ -2620,6 +4890,15 @@ fn effect_has_contract(effect: &Effect) -> bool {
         }
         Effect::ReorderLookedAtOnLibraryTop { player } => player_ref_has_contract(player),
         Effect::CreateToken(creation) => token_creation_has_contract(creation),
+        Effect::CreateTokensSacrificedCreaturePower { creation, binding } => {
+            player_ref_has_contract(&creation.player)
+                && token_specification_has_contract(&creation.specification)
+                && matches!(binding, SacrificedCreatureProcedureBinding::FaceCost { .. })
+        }
+        Effect::Populate { selection } => selection_has_contract(selection),
+        Effect::Blight { selection, amount } => {
+            selection_has_contract(selection) && amount_has_contract(amount)
+        }
         Effect::CreateTokenAttached {
             creation, target, ..
         } => token_creation_has_contract(creation) && object_ref_has_contract(target),
@@ -2682,6 +4961,16 @@ fn effect_has_contract(effect: &Effect) -> bool {
             filter,
             amount,
         } => player_ref_has_contract(players) && filter_has_contract(filter) && *amount > 0,
+        Effect::PlayersDiscard { players, amount } => {
+            player_ref_has_contract(players) && *amount > 0
+        }
+        Effect::PlayersDiscardAmount { players, amount } => {
+            player_ref_has_contract(players) && amount_has_contract(amount)
+        }
+        Effect::PlayersDiscardSacrificedCreaturePower { players, binding } => {
+            player_ref_has_contract(players)
+                && matches!(binding, SacrificedCreatureProcedureBinding::FaceCost { .. })
+        }
         Effect::RevealHand { player } => player_ref_has_contract(player),
         Effect::LookAtHand { viewer, player } => {
             player_ref_has_contract(viewer) && player_ref_has_contract(player)
@@ -2771,8 +5060,14 @@ fn effect_has_contract(effect: &Effect) -> bool {
             objects,
             keywords,
             duration,
+        }
+        | Effect::RemoveKeyword {
+            objects,
+            keywords,
+            duration,
         } => {
-            object_ref_has_contract(objects)
+            (matches!(objects, ObjectRef::AttachmentTarget { .. })
+                || object_ref_has_contract(objects))
                 && !keywords.is_empty()
                 && keywords.iter().all(keyword_has_contract)
                 && duration_has_contract(duration)
@@ -2903,6 +5198,93 @@ fn effect_has_contract(effect: &Effect) -> bool {
             count,
             option_count,
         } => choice_count_has_contract(count) && *option_count > 0,
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program)) => {
+            program.has_live_bridge()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::LibraryAccess(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CommonActionProcedure(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CombatRestriction(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::RegenerationAction(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::ObjectState(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::ResidualCostKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleAction(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleAbilityEnvelope(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::LinkedOracleAbilityEnvelope(
+            program,
+        )) => program.production_adapter_connected(),
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CombatTriggerKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleStaticReplacement(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleFaceModalLine(program)) => {
+            oracle_face_modal_line_has_contract(program)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleComposition(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::StaticSpecialKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::TargetingProtection(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CreatureCounterKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::LevelProgression(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::AlternateZoneCastKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CastModifierKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CastChoiceKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::FaceDownMergeKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::LinkedCastCostKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::DelayedCounterKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CombatSpecialKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::ExtendedCastZoneKeyword(program)) => {
+            program.production_adapter_connected()
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::GraveyardHandLibraryKeyword(
+            program,
+        )) => program.production_adapter_connected(),
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::RetainedOracleComposition(
+            program,
+        )) => retained_bullet_child(program).is_some_and(|clause| {
+            !matches!(clause.timing(), Timing::ModalHeader { .. })
+                && clause_has_executable_contract(&clause)
+        }),
         Effect::StandaloneRuleProgram(_) => false,
         Effect::Conditional {
             condition,
@@ -2921,9 +5303,43 @@ fn reminder_has_contract(reminder: &ReminderSemantics) -> bool {
         ReminderSemantics::Composite(reminders) => {
             !reminders.is_empty() && reminders.iter().all(reminder_has_contract)
         }
-        ReminderSemantics::SpecialResourceExplanation(_)
-        | ReminderSemantics::ManaNotationExplanation(_)
-        | ReminderSemantics::StandaloneAnnotation(_) => false,
+        ReminderSemantics::SpecialResourceExplanation(cost) => {
+            matches!(cost.exact_oracle(), "{E}" | "{S}")
+        }
+        ReminderSemantics::ManaNotationExplanation(_) => true,
+        ReminderSemantics::StandaloneAnnotation(annotation) => match annotation.kind() {
+            StandaloneOracleAnnotationKind::ManaNotation(notation) => {
+                standalone_mana_notation_has_contract(notation)
+            }
+            StandaloneOracleAnnotationKind::ClassLevelLifecycle(program) => {
+                standalone_class_level_lifecycle_has_contract(program)
+            }
+            StandaloneOracleAnnotationKind::LegendarySpellRestriction(program) => {
+                program.requires_controlled_legendary_creature_or_planeswalker
+            }
+            StandaloneOracleAnnotationKind::ConspiracySetup(program) => {
+                program.starts_face_up_in_command_zone
+                    && !program.excluded_from_minimum_deck_size
+                    && !program.secret_mission
+            }
+            StandaloneOracleAnnotationKind::OngoingSchemeLifecycle(program) => {
+                program.remains_face_up && program.until_abandoned
+            }
+            StandaloneOracleAnnotationKind::BattleLifecycle(
+                crate::standalone_oracle_annotation::BattleLifecycleAnnotation::Siege {
+                    protector_chosen_from_opponents,
+                    controller_and_other_players_may_attack,
+                    defeated_destination_is_exile,
+                    defeated_back_face_is_cast,
+                },
+            ) => {
+                *protector_chosen_from_opponents
+                    && *controller_and_other_players_may_attack
+                    && *defeated_destination_is_exile
+                    && *defeated_back_face_is_cast
+            }
+            _ => false,
+        },
         ReminderSemantics::KeywordExplanation(keyword) => keyword_has_contract(keyword),
         ReminderSemantics::KeywordExplanations(keywords) => {
             !keywords.is_empty() && keywords.iter().all(keyword_has_contract)
@@ -2938,6 +5354,13 @@ fn reminder_has_contract(reminder: &ReminderSemantics) -> bool {
         }
         ReminderSemantics::TrampleExplanation
         | ReminderSemantics::HexproofExplanation
+        | ReminderSemantics::ProtectionExplanation
+        | ReminderSemantics::DungeonVentureProcedure
+        | ReminderSemantics::AttractionOpenProcedure
+        | ReminderSemantics::ManaAbilityTargetingExclusion
+        | ReminderSemantics::PowerstoneDefinition
+        | ReminderSemantics::ClashProcedure
+        | ReminderSemantics::FightProcedure
         | ReminderSemantics::PlayerShroudProcedure
         | ReminderSemantics::IndestructibleExplanation
         | ReminderSemantics::ProwessProcedure
@@ -2959,11 +5382,13 @@ fn reminder_has_contract(reminder: &ReminderSemantics) -> bool {
         | ReminderSemantics::ExhaustProcedure
         | ReminderSemantics::HistoricDefinition
         | ReminderSemantics::ProliferateProcedure
+        | ReminderSemantics::PopulateProcedure
         | ReminderSemantics::AdventureProcedure
         | ReminderSemantics::OmenProcedure
         | ReminderSemantics::TransformOrigin { .. }
         | ReminderSemantics::CharacteristicLossExplanation => true,
         ReminderSemantics::ZoneQualification { object, .. } => object_ref_has_contract(object),
+        ReminderSemantics::LandwalkExplanation { subtype } => !subtype.trim().is_empty(),
         ReminderSemantics::TeamworkProcedure { minimum_power } => {
             amount_has_contract(minimum_power)
         }
@@ -2975,6 +5400,7 @@ fn reminder_has_contract(reminder: &ReminderSemantics) -> bool {
         | ReminderSemantics::EnergyCounterExplanation { amount: minimum } => {
             amount_has_contract(minimum)
         }
+        ReminderSemantics::ForageProcedure => true,
         ReminderSemantics::BeholdProcedure { subtype } => !subtype.trim().is_empty(),
         ReminderSemantics::WaterbendProcedure { amount } => amount_has_contract(amount),
         ReminderSemantics::IncrementProcedure => true,
@@ -3006,6 +5432,58 @@ fn reminder_has_contract(reminder: &ReminderSemantics) -> bool {
     }
 }
 
+fn standalone_mana_notation_has_contract(notation: &ManaNotationAnnotation) -> bool {
+    fn ordinary_symbol(symbol: &AnnotationManaSymbol) -> bool {
+        match symbol {
+            AnnotationManaSymbol::White
+            | AnnotationManaSymbol::Blue
+            | AnnotationManaSymbol::Black
+            | AnnotationManaSymbol::Red
+            | AnnotationManaSymbol::Green
+            | AnnotationManaSymbol::Colorless => true,
+            AnnotationManaSymbol::Hybrid(left, right) => {
+                ordinary_symbol(left) && ordinary_symbol(right)
+            }
+            AnnotationManaSymbol::GenericHybrid { color, .. }
+            | AnnotationManaSymbol::Phyrexian(color) => ordinary_symbol(color),
+            AnnotationManaSymbol::Snow
+            | AnnotationManaSymbol::Legendary
+            | AnnotationManaSymbol::LandDrop => false,
+        }
+    }
+
+    match notation {
+        ManaNotationAnnotation::Represents { symbol, meaning } => matches!(
+            (symbol, meaning),
+            (
+                AnnotationManaSymbol::Colorless,
+                ManaSymbolMeaning::ColorlessMana
+            )
+        ),
+        ManaNotationAnnotation::PaymentAlternatives {
+            symbol,
+            alternatives,
+            ..
+        } => {
+            ordinary_symbol(symbol)
+                && !alternatives.is_empty()
+                && alternatives.iter().all(|alternative| match alternative {
+                    ManaPaymentAlternative::Mana(symbol) => ordinary_symbol(symbol),
+                    ManaPaymentAlternative::AnyMana(amount) => *amount > 0,
+                    ManaPaymentAlternative::Life(2) => true,
+                    ManaPaymentAlternative::Life(_)
+                    | ManaPaymentAlternative::ManaFromSnowSource(_)
+                    | ManaPaymentAlternative::ManaFromLegendarySource(_)
+                    | ManaPaymentAlternative::GiveUpLandDrops(_) => false,
+                })
+        }
+    }
+}
+
+fn standalone_class_level_lifecycle_has_contract(program: &ClassLevelAnnotation) -> bool {
+    program.next_level_only && program.timing_is_sorcery && program.installs_level_ability
+}
+
 pub fn execute_clause<S: OracleStateAdapter>(
     state: &mut S,
     clause: &BoundedOracleClause,
@@ -3022,6 +5500,24 @@ pub fn execute_clause<S: OracleStateAdapter>(
             "compiled clause has no complete bounded execution contract".to_owned(),
         ));
     }
+    if let Some(ReminderSemantics::StandaloneAnnotation(annotation)) = clause.reminder()
+        && let StandaloneOracleAnnotationKind::ConspiracySetup(program) = annotation.kind()
+    {
+        return execute_conspiracy_setup(state, clause, program, context);
+    }
+    if let Some(ReminderSemantics::StandaloneAnnotation(annotation)) = clause.reminder()
+        && let StandaloneOracleAnnotationKind::OngoingSchemeLifecycle(program) = annotation.kind()
+    {
+        return execute_ongoing_scheme_setup(state, clause, program, context);
+    }
+    if let Some(ReminderSemantics::StandaloneAnnotation(annotation)) = clause.reminder()
+        && let StandaloneOracleAnnotationKind::BattleLifecycle(program) = annotation.kind()
+    {
+        return execute_battle_lifecycle(state, clause, program, context);
+    }
+    if let Some(procedure) = clause.saga_lore_procedure() {
+        return execute_saga_lore_procedure(state, clause, procedure, context);
+    }
     let exhaust_key = matches!(
         clause.activation_restriction(),
         Some(ActivationRestriction::Exhaust { .. })
@@ -3034,6 +5530,8 @@ pub fn execute_clause<S: OracleStateAdapter>(
         return Err(ExecutionError::ActivationRestrictionFailed);
     }
     let checkpoint = exhaust_key.as_ref().map(|_| state.checkpoint());
+    let mut bound_context = context.clone();
+    bound_context.executing_clause_address = Some(clause.address());
     let receipt = execute_action(
         state,
         ActionDefinition {
@@ -3044,7 +5542,7 @@ pub fn execute_clause<S: OracleStateAdapter>(
             effects: clause.effects(),
             activation_restriction: clause.activation_restriction(),
         },
-        context,
+        &bound_context,
     )?;
     if let Some(key) = exhaust_key {
         if let Err(error) = state.mark_exhaust_ability_activated(context.source, key) {
@@ -3054,6 +5552,374 @@ pub fn execute_clause<S: OracleStateAdapter>(
         state.record_mutation(format!("exhaust_activated:{}", context.source));
     }
     Ok(receipt)
+}
+
+fn execute_conspiracy_setup<S: OracleStateAdapter>(
+    state: &mut S,
+    clause: &BoundedOracleClause,
+    program: &crate::standalone_oracle_annotation::ConspiracySetupAnnotation,
+    context: &ExecutionContext,
+) -> Result<ExecutionReceipt, ExecutionError> {
+    if !program.starts_face_up_in_command_zone
+        || program.excluded_from_minimum_deck_size
+        || program.secret_mission
+        || !matches!(context.window, ActionWindow::Static)
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    let checkpoint = state.checkpoint();
+    let result = (|| {
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if source.owner != context.actor || source.token {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        if source.zone != Zone::Command {
+            state
+                .move_object(context.source, Zone::Command)
+                .map_err(ExecutionError::Adapter)?;
+        }
+        let mut source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        source.controller = context.actor;
+        source.face_down = false;
+        state.put_object(source).map_err(ExecutionError::Adapter)?;
+        state.record_mutation(format!(
+            "conspiracy_setup:{}:{}",
+            context.source,
+            clause.semantic_digest()
+        ));
+        Ok(ExecutionReceipt {
+            status: ExecutionStatus::Committed,
+            costs_paid: 0,
+            effects_applied: 1,
+            selected_targets: BTreeMap::new(),
+        })
+    })();
+    if result.is_err() {
+        state.restore(checkpoint);
+    }
+    result
+}
+
+fn execute_ongoing_scheme_setup<S: OracleStateAdapter>(
+    state: &mut S,
+    clause: &BoundedOracleClause,
+    program: &crate::standalone_oracle_annotation::OngoingSchemeAnnotation,
+    context: &ExecutionContext,
+) -> Result<ExecutionReceipt, ExecutionError> {
+    if !program.remains_face_up || !program.until_abandoned {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    let checkpoint = state.checkpoint();
+    let result = (|| {
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if !matches!(
+            context.window,
+            ActionWindow::Triggered(TriggerEvent::SchemeSetInMotion { object })
+                if object == context.source
+        ) || source.zone != Zone::Command
+            || source.controller != context.actor
+        {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        let mut source = source;
+        source.face_down = false;
+        state.put_object(source).map_err(ExecutionError::Adapter)?;
+        state.install_ongoing_scheme(context.source, true);
+        state.record_mutation(format!(
+            "ongoing_scheme_set_in_motion:{}:{}",
+            context.source,
+            clause.semantic_digest()
+        ));
+        Ok(ExecutionReceipt {
+            status: ExecutionStatus::Committed,
+            costs_paid: 0,
+            effects_applied: 1,
+            selected_targets: BTreeMap::new(),
+        })
+    })();
+    if result.is_err() {
+        state.restore(checkpoint);
+    }
+    result
+}
+
+pub fn player_can_attack_battle<S: OracleStateAdapter>(
+    state: &S,
+    battle: ObjectId,
+    attacker: PlayerId,
+) -> Result<bool, ExecutionError> {
+    let source = state
+        .object(battle)
+        .ok_or(ExecutionError::MissingObject(battle))?;
+    if source.zone != Zone::Battlefield || state.player(attacker).is_none() {
+        return Ok(false);
+    }
+    Ok(state
+        .battle_protector(battle)
+        .is_some_and(|protector| protector != attacker))
+}
+
+fn execute_battle_lifecycle<S: OracleStateAdapter>(
+    state: &mut S,
+    clause: &BoundedOracleClause,
+    program: &crate::standalone_oracle_annotation::BattleLifecycleAnnotation,
+    context: &ExecutionContext,
+) -> Result<ExecutionReceipt, ExecutionError> {
+    let crate::standalone_oracle_annotation::BattleLifecycleAnnotation::Siege {
+        protector_chosen_from_opponents: true,
+        controller_and_other_players_may_attack: true,
+        defeated_destination_is_exile: true,
+        defeated_back_face_is_cast: true,
+    } = program
+    else {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    };
+    let action = context
+        .battle_lifecycle_action
+        .ok_or_else(|| ExecutionError::Adapter("Battle lifecycle action is missing".into()))?;
+    let checkpoint = state.checkpoint();
+    let result = (|| {
+        let mut source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if !matches!(context.window, ActionWindow::Replacement)
+            || source.zone != Zone::Battlefield
+            || source.controller != context.actor
+        {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        match action {
+            BattleLifecycleAction::EnterSiege => {
+                let [protector] = context
+                    .player_choices
+                    .get(&0)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                else {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                };
+                if *protector == context.actor
+                    || state.player(*protector).is_none()
+                    || state.battle_protector(context.source).is_some()
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                state.set_battle_protector(context.source, *protector);
+                state.record_mutation(format!(
+                    "siege_protector:{}:{protector}:{}",
+                    context.source,
+                    clause.semantic_digest()
+                ));
+            }
+            BattleLifecycleAction::DefeatSiege => {
+                if state.battle_protector(context.source).is_none()
+                    || source.counters.get("defense").copied().unwrap_or_default() != 0
+                    || source.back.is_none()
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                state
+                    .move_object(context.source, Zone::Exile)
+                    .map_err(ExecutionError::Adapter)?;
+                source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                source.active_face = 1;
+                source.controller = context.actor;
+                state.put_object(source).map_err(ExecutionError::Adapter)?;
+                state
+                    .move_object(context.source, Zone::Stack)
+                    .map_err(ExecutionError::Adapter)?;
+                state.clear_battle_protector(context.source);
+                state.record_mutation(format!(
+                    "siege_defeated_cast_transformed:{}:{}",
+                    context.source,
+                    clause.semantic_digest()
+                ));
+            }
+        }
+        Ok(ExecutionReceipt {
+            status: ExecutionStatus::Committed,
+            costs_paid: 0,
+            effects_applied: 1,
+            selected_targets: BTreeMap::new(),
+        })
+    })();
+    if result.is_err() {
+        state.restore(checkpoint);
+    }
+    result
+}
+
+fn execute_saga_lore_procedure<S: OracleStateAdapter>(
+    state: &mut S,
+    clause: &BoundedOracleClause,
+    procedure: &SagaLoreProcedure,
+    context: &ExecutionContext,
+) -> Result<ExecutionReceipt, ExecutionError> {
+    let action = context.saga_lore_action.ok_or_else(|| {
+        ExecutionError::Adapter("Saga lore procedure requires an explicit lifecycle action".into())
+    })?;
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if source.controller != context.actor
+        || !source
+            .characteristics()
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Saga"))
+    {
+        return Err(ExecutionError::Adapter(
+            "Saga lore source is not the actor's Saga".into(),
+        ));
+    }
+    let checkpoint = state.checkpoint();
+    let result = (|| {
+        let before = source.counters.get("lore").copied().unwrap_or_default();
+        let final_chapter = saga_final_chapter(procedure)
+            .ok_or_else(|| ExecutionError::Adapter("Saga final chapter is unbound".into()))?;
+        match action {
+            SagaLoreAction::Entry => {
+                if !matches!(context.window, ActionWindow::Replacement)
+                    || source.zone != Zone::Stack
+                {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                let (requested, read_ahead) = match &procedure.entry_lore {
+                    SagaEntryLoreProcedure::Fixed(Amount::Constant(amount)) => (*amount, false),
+                    SagaEntryLoreProcedure::ReadAhead {
+                        first_chapter,
+                        skipped_chapters_do_not_trigger: true,
+                        ..
+                    } => {
+                        let chosen = context.chosen_amount.ok_or_else(|| {
+                            ExecutionError::Adapter(
+                                "Read Ahead requires the chosen starting chapter".into(),
+                            )
+                        })?;
+                        if chosen < u32::from(*first_chapter) || chosen > u32::from(final_chapter) {
+                            return Err(ExecutionError::Adapter(
+                                "Read Ahead chose a chapter outside the source range".into(),
+                            ));
+                        }
+                        (chosen, true)
+                    }
+                    _ => {
+                        return Err(ExecutionError::Adapter(
+                            "Saga entry lore amount is not executable".into(),
+                        ));
+                    }
+                };
+                apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &CounterKind::Named("lore".into()),
+                    &Amount::Constant(requested),
+                    context,
+                )?;
+                let after = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?
+                    .counters
+                    .get("lore")
+                    .copied()
+                    .unwrap_or_default();
+                register_saga_chapters(
+                    state,
+                    context.source,
+                    before,
+                    after,
+                    read_ahead,
+                    final_chapter,
+                )?;
+            }
+            SagaLoreAction::AfterControllerDrawStep => {
+                if source.zone != Zone::Battlefield {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &CounterKind::Named("lore".into()),
+                    &Amount::Constant(1),
+                    context,
+                )?;
+                let after = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?
+                    .counters
+                    .get("lore")
+                    .copied()
+                    .unwrap_or_default();
+                register_saga_chapters(state, context.source, before, after, false, final_chapter)?;
+            }
+            SagaLoreAction::StateBasedCheck {
+                source_chapter_abilities_on_stack,
+            } => {
+                if source.zone != Zone::Battlefield {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                if before >= u32::from(final_chapter) && source_chapter_abilities_on_stack == 0 {
+                    state
+                        .move_object(context.source, Zone::Graveyard)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+            }
+        }
+        state.record_mutation(format!(
+            "saga_lore:{}:{:?}:{}",
+            context.source,
+            action,
+            clause.semantic_digest()
+        ));
+        Ok(ExecutionReceipt {
+            status: ExecutionStatus::Committed,
+            costs_paid: 0,
+            effects_applied: 1,
+            selected_targets: BTreeMap::new(),
+        })
+    })();
+    if result.is_err() {
+        state.restore(checkpoint);
+    }
+    result
+}
+
+fn register_saga_chapters<S: OracleStateAdapter>(
+    state: &mut S,
+    source: ObjectId,
+    before: u32,
+    after: u32,
+    read_ahead: bool,
+    final_chapter: u16,
+) -> Result<(), ExecutionError> {
+    let incarnation = state
+        .object_incarnation(source)
+        .ok_or(ExecutionError::MissingObject(source))?;
+    let chapters = if read_ahead {
+        (after > before && after <= u32::from(final_chapter))
+            .then_some(after)
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        ((before.saturating_add(1))..=after.min(u32::from(final_chapter))).collect::<Vec<_>>()
+    };
+    for chapter in chapters {
+        state.register_saga_chapter_trigger(PendingSagaChapterTrigger {
+            source,
+            source_incarnation: incarnation,
+            chapter: u16::try_from(chapter)
+                .map_err(|_| ExecutionError::InvalidAmount("Saga chapter overflow"))?,
+        });
+    }
+    Ok(())
 }
 
 pub fn execute_granted_ability<S: OracleStateAdapter>(
@@ -3081,16 +5947,22 @@ pub fn execute_granted_ability<S: OracleStateAdapter>(
         ));
     }
     let timing = Timing::Activated;
+    let targets = granted_ability_targets(&ability);
     let mut activation_context = context.clone();
     activation_context.source = source;
     activation_context.window = ActionWindow::Activated;
+    if activation_context.executing_clause_address.is_none() {
+        activation_context.executing_clause_address = state
+            .level_progression_program(source)
+            .map(|installed| installed.address);
+    }
     execute_action(
         state,
         ActionDefinition {
             timing: &timing,
             conditions: &[],
             costs: &ability.costs,
-            targets: &[],
+            targets: &targets,
             effects: &ability.effects,
             activation_restriction: None,
         },
@@ -3098,15 +5970,104 @@ pub fn execute_granted_ability<S: OracleStateAdapter>(
     )
 }
 
+fn granted_ability_targets(ability: &GrantedAbility) -> Vec<Target> {
+    let copy_target_ids = ability
+        .effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::CopyStackObject {
+                object: ObjectRef::Target(id),
+                ..
+            } => Some(*id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !copy_target_ids.is_empty()
+        && copy_target_ids.len() == ability.effects.len()
+        && copy_target_ids.iter().all(|id| *id == copy_target_ids[0])
+    {
+        return vec![Target {
+            id: copy_target_ids[0],
+            chooser: PlayerRef::You,
+            filter: TargetFilter::Any(
+                [CardType::Instant, CardType::Sorcery]
+                    .into_iter()
+                    .map(|card_type| {
+                        TargetFilter::Spell(ObjectFilter {
+                            zones: vec![Zone::Stack],
+                            card_types: vec![card_type],
+                            ..ObjectFilter::default()
+                        })
+                    })
+                    .collect(),
+            ),
+            amount: TargetAmount::Exactly(1),
+            relationship: TargetRelationship::Independent,
+        }];
+    }
+    if let [Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program))] =
+        ability.effects.as_slice()
+        && matches!(
+            program.recipient(),
+            DamageRecipientTemplate::AnyTarget | DamageRecipientTemplate::SelectedTargets
+        )
+    {
+        return vec![Target {
+            id: program.recipient_target_id(),
+            chooser: PlayerRef::You,
+            filter: TargetFilter::Any(vec![
+                TargetFilter::Player,
+                TargetFilter::Object(ObjectFilter {
+                    zones: vec![Zone::Battlefield],
+                    card_types: vec![CardType::Creature, CardType::Planeswalker, CardType::Battle],
+                    ..ObjectFilter::default()
+                }),
+            ]),
+            amount: TargetAmount::Exactly(1),
+            relationship: TargetRelationship::Independent,
+        }];
+    }
+    let [
+        Effect::ModifyPowerToughness(PowerToughnessChange {
+            objects: ObjectRef::Target(id),
+            ..
+        }),
+    ] = ability.effects.as_slice()
+    else {
+        return Vec::new();
+    };
+    vec![Target {
+        id: *id,
+        chooser: PlayerRef::You,
+        filter: TargetFilter::Object(ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            card_types: vec![CardType::Creature],
+            ..ObjectFilter::default()
+        }),
+        amount: TargetAmount::Exactly(1),
+        relationship: TargetRelationship::Independent,
+    }]
+}
+
 pub fn execute_action<S: OracleStateAdapter>(
     state: &mut S,
     action: ActionDefinition<'_>,
     context: &ExecutionContext,
 ) -> Result<ExecutionReceipt, ExecutionError> {
-    if !timing_matches(state, action.timing, context)? {
+    let combat_special_owns_timing = matches!(
+        action.effects,
+        [Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::CombatSpecialKeyword(_)
+        )]
+    ) && matches!(
+        context.combat_special_action,
+        Some(CombatSpecialAction::ResolveEncoreEndStep)
+    );
+    if !combat_special_owns_timing && !timing_matches(state, action.timing, context)? {
         return Err(ExecutionError::TimingMismatch);
     }
-    if matches!(action.timing, Timing::Activated)
+    if !combat_special_owns_timing
+        && matches!(action.timing, Timing::Activated)
         && !matches!(
             action.activation_restriction,
             Some(ActivationRestriction::AnyPlayerMayActivate)
@@ -3123,7 +6084,20 @@ pub fn execute_action<S: OracleStateAdapter>(
     if stack_restriction_blocks(state, context)? {
         return Err(ExecutionError::StackRestriction);
     }
-    validate_targets(state, action.targets, context)?;
+    let targets_owned_by_typed_program = action.targets.is_empty()
+        && matches!(
+            action.effects,
+            [Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::OracleAction(_)
+                    | StandaloneRuleProgram::OracleAbilityEnvelope(_)
+                    | StandaloneRuleProgram::LinkedOracleAbilityEnvelope(_)
+                    | StandaloneRuleProgram::DamageClause(_)
+                    | StandaloneRuleProgram::CastChoiceKeyword(_)
+            )]
+        );
+    if !targets_owned_by_typed_program {
+        validate_targets(state, action.targets, context)?;
+    }
     for (index, condition) in action.conditions.iter().enumerate() {
         if !condition_holds(state, condition, context)? {
             return Err(ExecutionError::ConditionFailed { index });
@@ -3187,10 +6161,10 @@ fn timing_matches<S: OracleStateAdapter>(
         (Timing::TriggeredModalHeader { trigger, choices }, ActionWindow::Triggered(event)) => {
             trigger_matches(state, trigger, event, context)?
                 && !entering_creature_trigger_is_suppressed(state, event, context)?
-                && choice_count_matches(choices, &context.selected_modes, context)
+                && choice_count_matches(state, choices, &context.selected_modes, context)?
         }
         (Timing::ModalHeader { choices }, ActionWindow::ModalHeader) => {
-            choice_count_matches(choices, &context.selected_modes, context)
+            choice_count_matches(state, choices, &context.selected_modes, context)?
         }
         (
             Timing::ModalBranch {
@@ -3205,6 +6179,7 @@ fn timing_matches<S: OracleStateAdapter>(
         (Timing::SpecialAction(expected), ActionWindow::SpecialAction(actual)) => {
             expected == actual
         }
+        (Timing::TypedStandaloneProgram, _) => true,
         _ => false,
     })
 }
@@ -3241,12 +6216,17 @@ fn entering_creature_trigger_is_suppressed<S: OracleStateAdapter>(
     Ok(false)
 }
 
-fn choice_count_matches(count: &ChoiceCount, selected: &[u16], context: &ExecutionContext) -> bool {
+fn choice_count_matches<S: OracleStateAdapter>(
+    state: &S,
+    count: &ChoiceCount,
+    selected: &[u16],
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
     let unique = selected.iter().copied().collect::<BTreeSet<_>>();
     if !matches!(count, ChoiceCount::ExactlyWithRepeats(_)) && unique.len() != selected.len() {
-        return false;
+        return Ok(false);
     }
-    match count {
+    Ok(match count {
         ChoiceCount::Exactly(amount) => selected.len() == usize::from(*amount),
         ChoiceCount::ExactlyWithRepeats(amount) => selected.len() == usize::from(*amount),
         ChoiceCount::UpTo(amount) => selected.len() <= usize::from(*amount),
@@ -3262,7 +6242,19 @@ fn choice_count_matches(count: &ChoiceCount, selected: &[u16], context: &Executi
                     1
                 }
         }
-    }
+        ChoiceCount::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            let active = if condition_holds(state, condition, context)? {
+                when_true
+            } else {
+                when_false
+            };
+            return choice_count_matches(state, active, selected, context);
+        }
+    })
 }
 
 pub(crate) fn trigger_matches<S: OracleStateAdapter>(
@@ -3404,6 +6396,39 @@ pub(crate) fn trigger_matches<S: OracleStateAdapter>(
                     object_matches_filter(state, *object, filter, context)?
                 }
             },
+            _ => false,
+        },
+        Trigger::CountersPlaced {
+            subject,
+            counter,
+            one_or_more,
+            resulting_total,
+        } => match event {
+            TriggerEvent::CountersPlaced {
+                object,
+                counter: actual_counter,
+                amount,
+            } if counter == actual_counter
+                && *amount > 0
+                && (*one_or_more || *amount == 1)
+                && resulting_total.is_none_or(|expected| {
+                    state.object(*object).is_some_and(|object| {
+                        object
+                            .counters
+                            .get(&counter_key(counter))
+                            .copied()
+                            .unwrap_or_default()
+                            == expected
+                    })
+                }) =>
+            {
+                match subject {
+                    TriggerSubject::Source => *object == context.source,
+                    TriggerSubject::Matching(filter) => {
+                        object_matches_filter(state, *object, filter, context)?
+                    }
+                }
+            }
             _ => false,
         },
         Trigger::LifeGained { player } => match event {
@@ -3692,6 +6717,7 @@ fn restriction_duration_is_active<S: OracleStateAdapter>(
         | Duration::ThisTurn
         | Duration::UntilEndOfTurn
         | Duration::UntilEndOfNextTurn => true,
+        Duration::UntilEndOfCombat(combat_id) => context.combat_id == Some(*combat_id),
         Duration::WhileSourceOnBattlefield => state
             .object(source_identity)
             .is_some_and(|source| source.zone == Zone::Battlefield),
@@ -3851,6 +6877,69 @@ pub fn object_can_block_attacker<S: OracleStateAdapter>(
     if blocker_object.zone != Zone::Battlefield || attacker_object.zone != Zone::Battlefield {
         return Ok(false);
     }
+    let blocker_has_shadow = effective_object(state, blocker, context)?
+        .characteristics()
+        .keywords
+        .contains(&Keyword::Shadow);
+    let attacker_has_shadow = effective_object(state, attacker, context)?
+        .characteristics()
+        .keywords
+        .contains(&Keyword::Shadow);
+    if blocker_has_shadow != attacker_has_shadow {
+        return Ok(false);
+    }
+    if active_level_children(state, attacker).iter().any(|child| {
+        matches!(
+            &child.kind,
+            LevelChildKind::Static(LevelStaticAbilityProgram::BlockableOnlyByBlackCreatures)
+        )
+    }) && !effective_object(state, blocker, context)?
+        .characteristics()
+        .colors
+        .contains(&Color::Black)
+    {
+        return Ok(false);
+    }
+    if active_level_children(state, attacker).iter().any(|child| {
+        matches!(
+            &child.kind,
+            LevelChildKind::KeywordLine(keywords)
+                if keywords.contains(&LevelKeywordAbility::Islandwalk)
+        )
+    }) && state.object_ids().into_iter().any(|candidate| {
+        state.object(candidate).is_some_and(|permanent| {
+            permanent.zone == Zone::Battlefield
+                && permanent.controller == blocker_object.controller
+                && permanent
+                    .characteristics()
+                    .subtypes
+                    .iter()
+                    .any(|subtype| subtype.eq_ignore_ascii_case("Island"))
+        })
+    }) {
+        return Ok(false);
+    }
+    for record in active_targeting_protections(state, context) {
+        let ProtectedEntity::Object(protected) = record.protection.protected() else {
+            continue;
+        };
+        if protected.object_id != attacker
+            || state.object_incarnation(attacker) != Some(protected.incarnation_id)
+        {
+            continue;
+        }
+        let mut blocker_snapshot =
+            protection_source_snapshot(state, blocker, blocker_object.controller, context)?;
+        blocker_snapshot.effect_kind = ProtectionSourceKind::Object;
+        let query = protection_query_context(state, record.protection.protected(), context)?;
+        if matches!(
+            protection_blocking_decision(&record.protection, &blocker_snapshot, &query)
+                .map_err(|error| ExecutionError::Adapter(error.to_string()))?,
+            ProtectionBlockingDecision::ForbiddenByProtection
+        ) {
+            return Ok(false);
+        }
+    }
     for record in sorted_restrictions(state) {
         let mut local = context.clone();
         local.source = record.source_identity;
@@ -3884,15 +6973,13 @@ pub fn object_can_block_attacker<S: OracleStateAdapter>(
                 blocker: restricted_blocker,
                 attacker: restricted_attacker,
                 duration,
-            } if restriction_duration_is_active(
-                state,
-                record.source_identity,
-                duration,
-                &local,
-            )? && resolve_objects(state, restricted_blocker, &local)?.contains(&blocker)
-                && resolve_objects(state, restricted_attacker, &local)?.contains(&attacker) =>
-            {
-                return Ok(false);
+            } => {
+                if restriction_duration_is_active(state, record.source_identity, duration, &local)?
+                    && resolve_objects(state, restricted_blocker, &local)?.contains(&blocker)
+                    && resolve_objects(state, restricted_attacker, &local)?.contains(&attacker)
+                {
+                    return Ok(false);
+                }
             }
             _ => {}
         }
@@ -3909,6 +6996,14 @@ pub fn object_can_be_blocked<S: OracleStateAdapter>(
         .object(object)
         .ok_or(ExecutionError::MissingObject(object))?;
     if candidate.zone != Zone::Battlefield {
+        return Ok(false);
+    }
+    if active_level_children(state, object).iter().any(|child| {
+        matches!(
+            &child.kind,
+            LevelChildKind::Static(LevelStaticAbilityProgram::Unblockable)
+        )
+    }) {
         return Ok(false);
     }
     for record in sorted_restrictions(state) {
@@ -4469,10 +7564,91 @@ pub fn effective_object<S: OracleStateAdapter>(
         .ok_or(ExecutionError::MissingObject(object))?;
     let mut continuous = state.continuous_effects();
     continuous.sort_by_key(|record| (record.order, record.source_identity));
-    effective.controller = effective_attachment_controllers(state, &continuous, context)?
+    let effective_controllers = effective_attachment_controllers(state, &continuous, context)?;
+    effective.controller = effective_controllers
         .get(&object)
         .copied()
         .ok_or(ExecutionError::MissingObject(object))?;
+
+    let installed_level = state.level_progression_program(object).filter(|installed| {
+        effective.zone == Zone::Battlefield
+            && state.object_incarnation(object) == Some(installed.source_incarnation)
+            && installed.program.production_adapter_connected()
+    });
+    let active_level_band = installed_level.as_ref().and_then(|installed| {
+        let level = effective.counters.get("level").copied().unwrap_or(0);
+        installed
+            .program
+            .bands()
+            .iter()
+            .find(|band| band.range.contains(level))
+            .cloned()
+    });
+    if let Some(installed) = &installed_level {
+        apply_level_keyword_children(
+            effective.characteristics_mut(),
+            installed.program.base_children(),
+        )?;
+    }
+    if let Some(band) = &active_level_band {
+        apply_level_keyword_children(effective.characteristics_mut(), &band.children)?;
+    }
+
+    if let Some(record) = state.unearthed_permanent(object)
+        && effective.zone == Zone::Battlefield
+        && state.object_incarnation(object) == Some(record.source_incarnation)
+        && effective.controller == record.controller_at_return
+        && !effective
+            .characteristics()
+            .keywords
+            .contains(&Keyword::Haste)
+    {
+        effective
+            .characteristics_mut()
+            .keywords
+            .push(Keyword::Haste);
+    }
+    if let Some(record) = state.suspend_haste(object)
+        && effective.zone == Zone::Battlefield
+        && state.object_incarnation(object) == Some(record.source_incarnation)
+        && effective.controller == record.controller
+        && !effective
+            .characteristics()
+            .keywords
+            .contains(&Keyword::Haste)
+    {
+        effective
+            .characteristics_mut()
+            .keywords
+            .push(Keyword::Haste);
+    }
+    if let Some(record) = state.linked_cast_cost(object)
+        && record.grants_haste
+        && record.permanent_incarnation == state.object_incarnation(object)
+        && effective.zone == Zone::Battlefield
+        && effective.controller == record.caster
+        && !effective
+            .characteristics()
+            .keywords
+            .contains(&Keyword::Haste)
+    {
+        effective
+            .characteristics_mut()
+            .keywords
+            .push(Keyword::Haste);
+    }
+    if let Some(record) = state.cast_choice_payment(object)
+        && record
+            .impending_time_counters
+            .is_some_and(|amount| amount > 0)
+        && state.object_incarnation(object) == Some(record.source_incarnation.saturating_add(1))
+        && effective.zone == Zone::Battlefield
+    {
+        effective
+            .characteristics_mut()
+            .card_types
+            .retain(|card_type| *card_type != CardType::Creature);
+    }
 
     for record in &continuous {
         let mut local = context.clone();
@@ -4489,6 +7665,11 @@ pub fn effective_object<S: OracleStateAdapter>(
             }
             _ => {}
         }
+    }
+
+    if let Some(power_toughness) = active_level_band.and_then(|band| band.power_toughness) {
+        effective.characteristics_mut().power = i64::from(power_toughness.power);
+        effective.characteristics_mut().toughness = i64::from(power_toughness.toughness);
     }
 
     for record in &continuous {
@@ -4516,6 +7697,14 @@ pub fn effective_object<S: OracleStateAdapter>(
                             .push(keyword.clone());
                     }
                 }
+            }
+            Effect::RemoveKeyword {
+                objects, keywords, ..
+            } if resolve_objects(state, objects, &local)?.contains(&object) => {
+                effective
+                    .characteristics_mut()
+                    .keywords
+                    .retain(|keyword| !keywords.contains(keyword));
             }
             Effect::GrantAbility {
                 objects, ability, ..
@@ -4555,7 +7744,9 @@ pub fn effective_object<S: OracleStateAdapter>(
                     PowerToughnessOperation::SetBase
                         | PowerToughnessOperation::SetPower
                         | PowerToughnessOperation::SetToughness
-                ) && resolve_objects(state, &change.objects, &local)?.contains(&object) =>
+                ) && (record.object_identities.contains(&object)
+                    || (record.object_identities.is_empty()
+                        && resolve_objects(state, &change.objects, &local)?.contains(&object))) =>
             {
                 let power = i64::from(evaluate_amount(state, &change.power, &local)?);
                 let toughness = i64::from(evaluate_amount(state, &change.toughness, &local)?);
@@ -4585,7 +7776,9 @@ pub fn effective_object<S: OracleStateAdapter>(
             PowerToughnessOperation::SetBase
                 | PowerToughnessOperation::SetPower
                 | PowerToughnessOperation::SetToughness
-        ) || !resolve_objects(state, &change.objects, &local)?.contains(&object)
+        ) || (!record.object_identities.contains(&object)
+            && (!record.object_identities.is_empty()
+                || !resolve_objects(state, &change.objects, &local)?.contains(&object)))
         {
             continue;
         }
@@ -4598,7 +7791,508 @@ pub fn effective_object<S: OracleStateAdapter>(
             toughness,
         )?;
     }
+    for source_id in state.object_ids() {
+        let Some(source_controller) = effective_controllers.get(&source_id).copied() else {
+            continue;
+        };
+        if source_controller != effective.controller {
+            continue;
+        }
+        for child in active_level_children(state, source_id) {
+            match child.kind {
+                LevelChildKind::Static(
+                    LevelStaticAbilityProgram::OtherControlledCreaturesGet {
+                        subtype,
+                        power,
+                        toughness,
+                    },
+                ) => {
+                    if source_id == object
+                        || subtype.as_ref().is_some_and(|required| {
+                            !effective
+                                .characteristics()
+                                .subtypes
+                                .iter()
+                                .any(|candidate| candidate.eq_ignore_ascii_case(required))
+                        })
+                    {
+                        continue;
+                    }
+                    let adjusted_power = effective
+                        .characteristics()
+                        .power
+                        .checked_add(i64::from(power))
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                    let adjusted_toughness = effective
+                        .characteristics()
+                        .toughness
+                        .checked_add(i64::from(toughness))
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                    effective.characteristics_mut().power = adjusted_power;
+                    effective.characteristics_mut().toughness = adjusted_toughness;
+                }
+                LevelChildKind::Static(
+                    LevelStaticAbilityProgram::ControlledSubtypeCreaturesHaveManaAbility {
+                        subtype,
+                        produced,
+                    },
+                ) if effective
+                    .characteristics()
+                    .subtypes
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&subtype)) =>
+                {
+                    let ability = level_subtype_mana_ability(&produced);
+                    if !effective.characteristics().abilities.contains(&ability) {
+                        effective.characteristics_mut().abilities.push(ability);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     Ok(effective)
+}
+
+fn level_keyword_to_runtime(keyword: &LevelKeywordAbility) -> Result<Keyword, ExecutionError> {
+    Ok(match keyword {
+        LevelKeywordAbility::Flying => Keyword::Flying,
+        LevelKeywordAbility::FirstStrike => Keyword::FirstStrike,
+        LevelKeywordAbility::DoubleStrike => Keyword::DoubleStrike,
+        LevelKeywordAbility::Lifelink => Keyword::Lifelink,
+        LevelKeywordAbility::Indestructible => Keyword::Indestructible,
+        LevelKeywordAbility::Vigilance => Keyword::Vigilance,
+        LevelKeywordAbility::Deathtouch => Keyword::Deathtouch,
+        LevelKeywordAbility::Shroud => Keyword::Shroud,
+        LevelKeywordAbility::Trample => Keyword::Trample,
+        LevelKeywordAbility::Islandwalk => {
+            return Err(ExecutionError::Adapter(
+                "level keyword is outside the connected production slice".into(),
+            ));
+        }
+        LevelKeywordAbility::Protection(_) => {
+            return Err(ExecutionError::Adapter(
+                "level protection is projected by the shared protection engine".into(),
+            ));
+        }
+    })
+}
+
+fn apply_level_keyword_children(
+    characteristics: &mut ObjectCharacteristics,
+    children: &[crate::level_progression_runtime::TypedLevelChild],
+) -> Result<(), ExecutionError> {
+    for child in children {
+        let keywords = match &child.kind {
+            LevelChildKind::KeywordLine(keywords) => keywords,
+            LevelChildKind::Activated(ability) => {
+                let granted = level_activated_granted_ability(ability)?;
+                if !characteristics.abilities.contains(&granted) {
+                    characteristics.abilities.push(granted);
+                }
+                continue;
+            }
+            LevelChildKind::Static(
+                LevelStaticAbilityProgram::Unblockable
+                | LevelStaticAbilityProgram::BlockableOnlyByBlackCreatures
+                | LevelStaticAbilityProgram::OtherControlledCreaturesGet { .. }
+                | LevelStaticAbilityProgram::ControlledSubtypeCreaturesHaveManaAbility { .. }
+                | LevelStaticAbilityProgram::PreventDamageToYouOrControlledCreature { .. },
+            ) => continue,
+            LevelChildKind::Triggered(LevelTriggeredAbilityProgram {
+                event: LevelTriggerEvent::BeginningOfEachEndStep,
+                intervening_condition: Some(LevelTriggerCondition::NotYourTurn),
+                effect: LevelTriggeredEffect::TakeExtraTurnAfterThisOne,
+            }) => continue,
+            _ => {
+                return Err(ExecutionError::Adapter(
+                    "connected level band contains an unsupported child".into(),
+                ));
+            }
+        };
+        for keyword in keywords {
+            if matches!(
+                keyword,
+                LevelKeywordAbility::Islandwalk | LevelKeywordAbility::Protection(_)
+            ) {
+                continue;
+            }
+            let keyword = level_keyword_to_runtime(keyword)?;
+            if !characteristics.keywords.contains(&keyword) {
+                characteristics.keywords.push(keyword);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn level_activated_granted_ability(
+    ability: &LevelActivatedAbilityProgram,
+) -> Result<GrantedAbility, ExecutionError> {
+    let costs = ability
+        .cost
+        .components
+        .iter()
+        .map(|component| match component {
+            LevelCostComponent::Mana(mana) => Ok(Cost::Mana(ManaCost(mana.exact.clone()))),
+            LevelCostComponent::TapSource => Ok(Cost::Tap(ObjectRef::Source)),
+            _ => Err(ExecutionError::Adapter(
+                "level activated ability cost is outside the connected production slice".into(),
+            )),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let effects = match &ability.effect {
+        LevelActivatedEffect::AddMana {
+            choices,
+            amount_per_choice,
+            then_scry,
+        } => {
+            let choices = choices
+                .iter()
+                .map(|choice| ManaChoice {
+                    symbols: vec![match choice {
+                        LevelManaProductionChoice::White => Color::White,
+                        LevelManaProductionChoice::Blue => Color::Blue,
+                        LevelManaProductionChoice::Black => Color::Black,
+                        LevelManaProductionChoice::Red => Color::Red,
+                        LevelManaProductionChoice::Green => Color::Green,
+                        LevelManaProductionChoice::Colorless => Color::Colorless,
+                    }],
+                })
+                .collect::<Vec<_>>();
+            let mut effects = vec![Effect::AddMana(ManaProduction {
+                player: PlayerRef::You,
+                choices,
+                amount: Amount::Constant(*amount_per_choice),
+                commander_identity_only: false,
+                scales_with: None,
+                typed: None,
+            })];
+            if let Some(amount) = then_scry {
+                effects.push(Effect::Scry {
+                    player: PlayerRef::You,
+                    amount: Amount::Constant(u32::from(*amount)),
+                });
+            }
+            effects
+        }
+        LevelActivatedEffect::DealDamageToAnyTarget { amount } => {
+            let exact = format!("This object deals {amount} damage to any target.");
+            let program = compile_damage_resolution_leaf_program(&exact).ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "level damage instruction failed exact typed compilation".into(),
+                )
+            })?;
+            vec![Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::DamageClause(Box::new(program)),
+            )]
+        }
+        LevelActivatedEffect::CopyTargetInstantOrSorcery {
+            copies,
+            may_choose_new_targets,
+        } => (0..*copies)
+            .map(|_| Effect::CopyStackObject {
+                object: ObjectRef::Target(0),
+                may_choose_new_targets: *may_choose_new_targets,
+            })
+            .collect(),
+        LevelActivatedEffect::DrawThenDiscard { draw, discard } => vec![
+            Effect::Draw {
+                player: PlayerRef::You,
+                amount: Amount::Constant(*draw),
+                optional: false,
+                delayed_until: None,
+            },
+            Effect::Discard(ObjectSelection {
+                id: 250,
+                chooser: PlayerRef::You,
+                filter: ObjectFilter {
+                    zones: vec![Zone::Hand],
+                    owner: Some(PlayerRef::You),
+                    ..ObjectFilter::default()
+                },
+                amount: TargetAmount::Exactly(
+                    u16::try_from(*discard).map_err(|_| ExecutionError::ArithmeticOverflow)?,
+                ),
+            }),
+        ],
+        LevelActivatedEffect::DrawCards(amount) => vec![Effect::Draw {
+            player: PlayerRef::You,
+            amount: Amount::Constant(*amount),
+            optional: false,
+            delayed_until: None,
+        }],
+        LevelActivatedEffect::TargetCreaturePowerToughnessUntilEndOfTurn { power, toughness }
+            if *power <= 0 && *toughness <= 0 =>
+        {
+            vec![Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::Target(0),
+                operation: PowerToughnessOperation::Subtract,
+                power: Amount::Constant(power.unsigned_abs()),
+                toughness: Amount::Constant(toughness.unsigned_abs()),
+                duration: Duration::UntilEndOfTurn,
+            })]
+        }
+        LevelActivatedEffect::SourcePowerToughnessUntilEndOfTurn { power, toughness } => {
+            vec![Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::Source,
+                operation: PowerToughnessOperation::Add,
+                power: Amount::Constant(
+                    u32::try_from(*power).map_err(|_| ExecutionError::ArithmeticOverflow)?,
+                ),
+                toughness: Amount::Constant(
+                    u32::try_from(*toughness).map_err(|_| ExecutionError::ArithmeticOverflow)?,
+                ),
+                duration: Duration::UntilEndOfTurn,
+            })]
+        }
+        LevelActivatedEffect::CreateCreatureTokens {
+            count,
+            power,
+            toughness,
+            color,
+            subtype,
+        } => {
+            let color = match color.to_ascii_lowercase().as_str() {
+                "white" => Color::White,
+                "blue" => Color::Blue,
+                "black" => Color::Black,
+                "red" => Color::Red,
+                "green" => Color::Green,
+                "colorless" => Color::Colorless,
+                _ => {
+                    return Err(ExecutionError::Adapter(
+                        "level token color is outside the connected production slice".into(),
+                    ));
+                }
+            };
+            vec![Effect::CreateToken(TokenCreation {
+                player: PlayerRef::You,
+                amount: Amount::Constant(*count),
+                specification: TokenSpecification::Defined(Box::new(TokenDefinition {
+                    name: None,
+                    power: Some(Amount::Constant(
+                        u32::try_from(*power).map_err(|_| ExecutionError::ArithmeticOverflow)?,
+                    )),
+                    toughness: Some(Amount::Constant(
+                        u32::try_from(*toughness)
+                            .map_err(|_| ExecutionError::ArithmeticOverflow)?,
+                    )),
+                    colors: vec![color],
+                    card_types: vec![CardType::Creature],
+                    subtypes: vec![subtype.clone()],
+                    keywords: Vec::new(),
+                    abilities: Vec::new(),
+                })),
+                tapped: false,
+                attacking: false,
+            })]
+        }
+        LevelActivatedEffect::RegenerateSource => {
+            let program = compile_regeneration_resolution_leaf_program(
+                "Regenerate this creature.",
+                "Regenerate this creature.",
+            )
+            .ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "level regeneration instruction failed exact compilation".into(),
+                )
+            })?;
+            vec![Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::RegenerationAction(Box::new(program)),
+            )]
+        }
+        _ => {
+            return Err(ExecutionError::Adapter(
+                "level activated ability effect is outside the connected production slice".into(),
+            ));
+        }
+    };
+    Ok(GrantedAbility { costs, effects })
+}
+
+fn level_subtype_mana_ability(produced: &[LevelManaProductionChoice]) -> GrantedAbility {
+    let choices = produced
+        .iter()
+        .map(|choice| ManaChoice {
+            symbols: vec![match choice {
+                LevelManaProductionChoice::White => Color::White,
+                LevelManaProductionChoice::Blue => Color::Blue,
+                LevelManaProductionChoice::Black => Color::Black,
+                LevelManaProductionChoice::Red => Color::Red,
+                LevelManaProductionChoice::Green => Color::Green,
+                LevelManaProductionChoice::Colorless => Color::Colorless,
+            }],
+        })
+        .collect();
+    GrantedAbility {
+        costs: vec![Cost::Tap(ObjectRef::Source)],
+        effects: vec![Effect::AddMana(ManaProduction {
+            player: PlayerRef::You,
+            choices,
+            amount: Amount::Constant(2),
+            commander_identity_only: false,
+            scales_with: None,
+            typed: None,
+        })],
+    }
+}
+
+fn active_level_children<S: OracleStateAdapter>(
+    state: &S,
+    object: ObjectId,
+) -> Vec<crate::level_progression_runtime::TypedLevelChild> {
+    let Some(physical) = state.object(object) else {
+        return Vec::new();
+    };
+    let Some(installed) = state.level_progression_program(object) else {
+        return Vec::new();
+    };
+    if physical.zone != Zone::Battlefield
+        || state.object_incarnation(object) != Some(installed.source_incarnation)
+        || !installed.program.production_adapter_connected()
+    {
+        return Vec::new();
+    }
+    let level = physical.counters.get("level").copied().unwrap_or(0);
+    let mut children = installed.program.base_children().to_vec();
+    if let Some(band) = installed
+        .program
+        .bands()
+        .iter()
+        .find(|band| band.range.contains(level))
+    {
+        children.extend(band.children.clone());
+    }
+    children
+}
+
+pub fn execute_active_level_trigger<S: OracleStateAdapter>(
+    state: &mut S,
+    source: ObjectId,
+    context: &ExecutionContext,
+) -> Result<Option<ExecutionReceipt>, ExecutionError> {
+    let source_object = state
+        .object(source)
+        .ok_or(ExecutionError::MissingObject(source))?;
+    let active_children = active_level_children(state, source);
+    if matches!(
+        context.window,
+        ActionWindow::Triggered(TriggerEvent::ObjectAttacked { object }) if object == source
+    ) {
+        let active = active_children
+            .iter()
+            .filter(|child| {
+                matches!(
+                    child.kind,
+                    LevelChildKind::Triggered(LevelTriggeredAbilityProgram {
+                        event: LevelTriggerEvent::SourceAttacks,
+                        intervening_condition: None,
+                        effect: LevelTriggeredEffect::DealDamageToEachCreatureDefendingPlayerControls { .. },
+                    })
+                )
+            })
+            .collect::<Vec<_>>();
+        let [child] = active.as_slice() else {
+            return if active.is_empty() {
+                Ok(None)
+            } else {
+                Err(ExecutionError::Adapter(
+                    "level progression has conflicting active attack triggers".into(),
+                ))
+            };
+        };
+        let damage =
+            compile_damage_resolution_leaf_program(&child.exact_source).ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "level attack trigger failed exact damage compilation".into(),
+                )
+            })?;
+        let timing = Timing::Triggered(Box::new(Trigger::SourceAttacks));
+        let effects = [Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::DamageClause(Box::new(damage)),
+        )];
+        let mut trigger_context = context.clone();
+        trigger_context.source = source;
+        trigger_context.actor = source_object.controller;
+        trigger_context.executing_clause_address = state
+            .level_progression_program(source)
+            .map(|installed| installed.address);
+        return execute_action(
+            state,
+            ActionDefinition {
+                timing: &timing,
+                conditions: &[],
+                costs: &[],
+                targets: &[],
+                effects: &effects,
+                activation_restriction: None,
+            },
+            &trigger_context,
+        )
+        .map(Some);
+    }
+    let ActionWindow::Triggered(TriggerEvent::BeginningOf {
+        step: Step::EndStep,
+        active_player,
+        ..
+    }) = &context.window
+    else {
+        return Ok(None);
+    };
+    if *active_player == source_object.controller {
+        return Ok(None);
+    }
+    let active = active_children
+        .iter()
+        .filter(|child| {
+            matches!(
+                child.kind,
+                LevelChildKind::Triggered(LevelTriggeredAbilityProgram {
+                    event: LevelTriggerEvent::BeginningOfEachEndStep,
+                    intervening_condition: Some(LevelTriggerCondition::NotYourTurn),
+                    effect: LevelTriggeredEffect::TakeExtraTurnAfterThisOne,
+                })
+            )
+        })
+        .count();
+    if active == 0 {
+        return Ok(None);
+    }
+    if active != 1 {
+        return Err(ExecutionError::Adapter(
+            "level progression has conflicting active end-step triggers".into(),
+        ));
+    }
+    let timing = Timing::Triggered(Box::new(Trigger::BeginningOf {
+        step: Step::EndStep,
+        player: TurnPlayer::EachPlayer,
+    }));
+    let conditions = [Condition::NotYourTurn];
+    let effects = [Effect::TakeExtraTurn(ExtraTurnEffect {
+        player: PlayerRef::You,
+        lose_at_end_step: false,
+    })];
+    let mut trigger_context = context.clone();
+    trigger_context.source = source;
+    trigger_context.actor = source_object.controller;
+    trigger_context.active_player = *active_player;
+    trigger_context.executing_clause_address = state
+        .level_progression_program(source)
+        .map(|installed| installed.address);
+    execute_action(
+        state,
+        ActionDefinition {
+            timing: &timing,
+            conditions: &conditions,
+            costs: &[],
+            targets: &[],
+            effects: &effects,
+            activation_restriction: None,
+        },
+        &trigger_context,
+    )
+    .map(Some)
 }
 
 fn effective_attachment_controllers<S: OracleStateAdapter>(
@@ -4885,6 +8579,20 @@ fn validate_targets<S: OracleStateAdapter>(
             TargetAmount::Exactly(amount) if selected.len() != usize::from(amount) => {
                 return Err(ExecutionError::IllegalTarget { id: target.id });
             }
+            TargetAmount::ExactlyX
+                if selected.len()
+                    != usize::try_from(context.x_value)
+                        .map_err(|_| ExecutionError::ArithmeticOverflow)? =>
+            {
+                return Err(ExecutionError::IllegalTarget { id: target.id });
+            }
+            TargetAmount::UpToX
+                if selected.len()
+                    > usize::try_from(context.x_value)
+                        .map_err(|_| ExecutionError::ArithmeticOverflow)? =>
+            {
+                return Err(ExecutionError::IllegalTarget { id: target.id });
+            }
             TargetAmount::UpTo(amount) if selected.len() > usize::from(amount) => {
                 return Err(ExecutionError::IllegalTarget { id: target.id });
             }
@@ -4895,7 +8603,11 @@ fn validate_targets<S: OracleStateAdapter>(
                     return Err(ExecutionError::IllegalTarget { id: target.id });
                 }
             }
-            TargetAmount::Exactly(_) | TargetAmount::UpTo(_) | TargetAmount::AnyNumber => {}
+            TargetAmount::Exactly(_)
+            | TargetAmount::ExactlyX
+            | TargetAmount::UpToX
+            | TargetAmount::UpTo(_)
+            | TargetAmount::AnyNumber => {}
         }
         match &target.relationship {
             TargetRelationship::Independent => {}
@@ -5026,6 +8738,55 @@ fn targeting_protection_blocks<S: OracleStateAdapter>(
     selected: &[SelectedTarget],
     context: &ExecutionContext,
 ) -> Result<bool, ExecutionError> {
+    let source_controller = source_controller(state, context)?;
+    let active_protections = active_targeting_protections(state, context);
+    let source_snapshot = (!active_protections.is_empty())
+        .then(|| protection_source_snapshot(state, context.source, source_controller, context))
+        .transpose()?;
+    for record in active_protections {
+        let selected_protected =
+            selected
+                .iter()
+                .any(|target| match (target, record.protection.protected()) {
+                    (SelectedTarget::Object(selected), ProtectedEntity::Object(protected)) => {
+                        *selected == protected.object_id
+                            && state.object_incarnation(*selected) == Some(protected.incarnation_id)
+                    }
+                    (SelectedTarget::Player(selected), ProtectedEntity::Player(protected)) => {
+                        *selected == protected
+                    }
+                    _ => false,
+                });
+        if !selected_protected {
+            continue;
+        }
+        let query = protection_query_context(state, record.protection.protected(), context)?;
+        if !matches!(
+            protection_targeting_decision(
+                &record.protection,
+                source_snapshot
+                    .as_ref()
+                    .expect("active protection requested a source snapshot"),
+                &query,
+            )
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?,
+            ProtectionTargetingDecision::Allowed
+        ) {
+            return Ok(true);
+        }
+    }
+    for target in selected {
+        let SelectedTarget::Object(object_id) = target else {
+            continue;
+        };
+        let object = effective_object(state, *object_id, context)?;
+        let keywords = &object.characteristics().keywords;
+        if keywords.contains(&Keyword::Shroud)
+            || (keywords.contains(&Keyword::Hexproof) && object.controller != source_controller)
+        {
+            return Ok(true);
+        }
+    }
     for record in sorted_restrictions(state) {
         let mut local = context.clone();
         local.source = record.source_identity;
@@ -5065,13 +8826,13 @@ fn targeting_protection_blocks<S: OracleStateAdapter>(
                     return Ok(true);
                 }
             }
-            Restriction::PlayersCannotBeTargeted { players, duration }
+            Restriction::PlayersCannotBeTargeted { players, duration } => {
                 if restriction_duration_is_active(
                     state,
                     record.source_identity,
                     duration,
                     &local,
-                )? => {
+                )? {
                     let protected = resolve_players(state, players, &local)?;
                     if selected.iter().any(
                         |target| matches!(target, SelectedTarget::Player(id) if protected.contains(id)),
@@ -5079,6 +8840,7 @@ fn targeting_protection_blocks<S: OracleStateAdapter>(
                         return Ok(true);
                     }
                 }
+            }
             _ => {}
         }
     }
@@ -5091,6 +8853,17 @@ fn condition_holds<S: OracleStateAdapter>(
     context: &ExecutionContext,
 ) -> Result<bool, ExecutionError> {
     Ok(match condition {
+        Condition::All(conditions) => {
+            if conditions.is_empty() {
+                false
+            } else {
+                let mut all_hold = true;
+                for nested in conditions {
+                    all_hold &= condition_holds(state, nested, context)?;
+                }
+                all_hold
+            }
+        }
         Condition::ControlCount {
             player,
             filter,
@@ -5219,18 +8992,68 @@ fn condition_holds<S: OracleStateAdapter>(
             context.payment_declined || !cost_is_payable(state, cost, context)?
         }
         Condition::PaymentAccepted(cost) => {
-            !context.payment_declined && cost_is_payable(state, cost, context)?
+            let _ = cost;
+            !context.payment_declined
         }
         Condition::CardWasCastWithAlternativeCost => context.card_was_cast_with_alternative_cost,
         Condition::CardWasCastUsingEscape => context.card_was_cast_using_escape,
         Condition::CardWasKicked => context.card_was_kicked,
+        Condition::CardWasBargained => context.card_was_bargained,
+        Condition::BoundRevealedOrControlledSubtype {
+            selection_id,
+            subtype,
+            ..
+        } => {
+            let revealed = if let Some(selected) = context.object_choices.get(selection_id) {
+                let [object_id] = selected.as_slice() else {
+                    return Err(ExecutionError::InvalidAmount(
+                        "revealed subtype condition requires exactly one revealed card",
+                    ));
+                };
+                let object = state
+                    .object(*object_id)
+                    .ok_or(ExecutionError::MissingObject(*object_id))?;
+                object.zone == Zone::Hand
+                    && object.owner == context.actor
+                    && object
+                        .characteristics()
+                        .subtypes
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(subtype))
+            } else {
+                false
+            };
+            revealed
+                || state.object_ids().into_iter().any(|object_id| {
+                    state.object(object_id).is_some_and(|object| {
+                        object.zone == Zone::Battlefield
+                            && object.controller == context.actor
+                            && object
+                                .characteristics()
+                                .subtypes
+                                .iter()
+                                .any(|candidate| candidate.eq_ignore_ascii_case(subtype))
+                    })
+                })
+        }
+        Condition::RevealedOrControlledSubtype { .. } => false,
         Condition::CardWasCastUsingTeamwork => context.card_was_cast_using_teamwork,
         Condition::YouAttackedThisTurn => context.you_attacked_this_turn,
         Condition::OpponentLostLifeThisTurn => context.opponent_lost_life_this_turn,
+        Condition::YourTurn => source_controller(state, context)? == context.active_player,
         Condition::NotYourTurn => source_controller(state, context)? != context.active_player,
-        Condition::NotThatPlayersTurn => context
-            .that_player
-            .is_some_and(|player| player != context.active_player),
+        Condition::NotThatPlayersTurn => {
+            referenced_that_player(context).is_some_and(|player| player != context.active_player)
+        }
+        Condition::PlayerIsNotMonarch { player } => {
+            let players = resolve_players(state, player, context)?;
+            let [player] = players.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "monarch condition requires exactly one player",
+                ));
+            };
+            state.common_procedure_state().monarch != Some(u16::from(*player))
+        }
         Condition::GraveyardCardCount {
             player,
             comparison,
@@ -5294,6 +9117,7 @@ fn condition_holds<S: OracleStateAdapter>(
                 .unwrap_or_default()
                 > 0
         }
+        Condition::SourceIsAttached => state.attachment(context.source).is_some(),
         Condition::SourceCounterCount {
             counter,
             comparison,
@@ -5336,6 +9160,7 @@ fn condition_holds<S: OracleStateAdapter>(
                     .object(context.source)
                     .is_some_and(|object| object.zone == Zone::Hand)
         }
+        Condition::PlayingFirst => context.playing_first,
         Condition::NotPlayingFirst => !context.playing_first,
         Condition::ModeSelected(mode) => context.selected_modes.contains(mode),
         Condition::AnotherSpellCastThisTurn => context.spells_cast_by_actor_this_turn > 0,
@@ -5343,6 +9168,7 @@ fn condition_holds<S: OracleStateAdapter>(
             compare_u32(context.spells_cast_by_actor_this_turn, *comparison, *amount)
         }
         Condition::SourceAttackingAlone => context.source_attacking_alone,
+        Condition::SpellCastFromHand => context.cast_from_zone == Some(Zone::Hand),
         Condition::SpellCastFromNonHand => context
             .cast_from_zone
             .is_some_and(|zone| zone != Zone::Hand),
@@ -5368,6 +9194,13 @@ fn condition_holds<S: OracleStateAdapter>(
                     Some(CombatStep::DeclareBlockers | CombatStep::CombatDamage | CombatStep::End)
                 )
         }
+        Condition::CastOnlyDuringYourEndStep => {
+            context.active_player == context.actor && context.current_step == Some(Step::EndStep)
+        }
+        Condition::CastOnlyDuringDeclareAttackersIfActorWasAttackedThisStep => {
+            context.combat_step == Some(CombatStep::DeclareAttackers)
+                && context.actor_was_attacked_this_step
+        }
         Condition::SourceWasCounteredByThisEffect => context.countered,
         Condition::ObjectIsCardType { object, card_type } => {
             let objects = resolve_objects(state, object, context)?;
@@ -5379,6 +9212,7 @@ fn condition_holds<S: OracleStateAdapter>(
                 })
         }
         Condition::FirstResolutionOfNamedSpell => context.first_resolution_of_named_spell,
+        Condition::YouWonPreviousClash => context.you_won_previous_clash == Some(true),
         Condition::UnlessPaid { player, cost } => {
             let players = resolve_players(state, player, context)?;
             context.payment_declined
@@ -5627,6 +9461,21 @@ fn evaluate_count<S: OracleStateAdapter>(
                 life / 2
             };
             u32::try_from(half).map_err(|_| ExecutionError::ArithmeticOverflow)
+        }
+        CountExpression::HalfLibrary { player } => {
+            let players = resolve_players(state, player, context)?;
+            let [player] = players.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "half-library count requires exactly one player",
+                ));
+            };
+            let count = state
+                .object_ids()
+                .into_iter()
+                .filter_map(|id| state.object(id))
+                .filter(|object| object.zone == Zone::Library && object.owner == *player)
+                .count();
+            u32::try_from(count / 2).map_err(|_| ExecutionError::ArithmeticOverflow)
         }
         CountExpression::SelectedObjectsTotalPower { selection_id } => {
             let selected =
@@ -5883,30 +9732,72 @@ fn pay_cost<S: OracleStateAdapter>(
                 pay_cost(state, cost, context)
             }
         }
+        Cost::Alternative { choice_id, options } => {
+            let selected = context
+                .cost_alternative_choices
+                .get(choice_id)
+                .copied()
+                .ok_or(ExecutionError::InvalidAmount(
+                    "alternative cost requires an explicit choice",
+                ))?;
+            let option =
+                options
+                    .get(usize::from(selected))
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "alternative cost choice is outside its option range",
+                    ))?;
+            pay_cost(state, option, context)
+        }
         Cost::Mana(mana) => state
             .pay_mana(context.actor, mana, context.x_value)
             .map_err(ExecutionError::Adapter),
         Cost::AtomicResource(cost) => {
-            let amount = atomic_energy_cost_amount(cost).ok_or(ExecutionError::InvalidAmount(
-                "special resource cost has no executable production payment adapter",
-            ))?;
-            let mut player = state
-                .player(context.actor)
-                .ok_or(ExecutionError::MissingPlayer(context.actor))?;
-            let current = player.counters.get("energy").copied().unwrap_or_default();
-            let remaining = current
-                .checked_sub(amount)
-                .ok_or(ExecutionError::InvalidAmount(
-                    "player lacks the required energy counters",
-                ))?;
-            if remaining == 0 {
-                player.counters.remove("energy");
-            } else {
-                player.counters.insert("energy".to_owned(), remaining);
+            if let Some(amount) = atomic_energy_cost_amount(cost) {
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                let current = player.counters.get("energy").copied().unwrap_or_default();
+                let remaining =
+                    current
+                        .checked_sub(amount)
+                        .ok_or(ExecutionError::InvalidAmount(
+                            "player lacks the required energy counters",
+                        ))?;
+                if remaining == 0 {
+                    player.counters.remove("energy");
+                } else {
+                    player.counters.insert("energy".to_owned(), remaining);
+                }
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("pay_energy:{}:{amount}", context.actor));
+                return Ok(());
             }
-            state.put_player(player).map_err(ExecutionError::Adapter)?;
-            state.record_mutation(format!("pay_energy:{}:{amount}", context.actor));
-            Ok(())
+            if let Some((generic, snow)) = atomic_snow_cost_amount(cost) {
+                let mut source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if source.zone != Zone::Battlefield
+                    || source.controller != context.actor
+                    || source.tapped
+                {
+                    return Err(ExecutionError::Adapter(
+                        "snow atomic activation requires its untapped controlled source".to_owned(),
+                    ));
+                }
+                state
+                    .pay_generic_with_snow(context.actor, generic, snow)
+                    .map_err(ExecutionError::Adapter)?;
+                source.tapped = true;
+                state.put_object(source).map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!(
+                    "pay_atomic_snow:{}:{generic}:{snow}",
+                    context.source
+                ));
+                return Ok(());
+            }
+            Err(ExecutionError::InvalidAmount(
+                "special resource cost has no executable production payment adapter",
+            ))
         }
         Cost::SacrificeSelection(selection) => {
             let objects = resolve_object_selection(state, selection, context)?;
@@ -5968,6 +9859,45 @@ fn pay_cost<S: OracleStateAdapter>(
                     .put_object(candidate)
                     .map_err(ExecutionError::Adapter)?;
                 state.record_mutation(format!("tap_selection_cost:{id}"));
+            }
+            Ok(())
+        }
+        Cost::TapSelectionForSpellReduction {
+            selection,
+            reduction_per_object,
+        } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            for id in &objects {
+                let mut candidate = state
+                    .object(*id)
+                    .ok_or(ExecutionError::MissingObject(*id))?;
+                if candidate.zone != Zone::Battlefield
+                    || candidate.controller != context.actor
+                    || candidate.tapped
+                {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot be tapped for casting reduction"
+                    )));
+                }
+                candidate.tapped = true;
+                state
+                    .put_object(candidate)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+            if !objects.is_empty() {
+                let order = state.next_order();
+                state.register_spell_reduction(SpellReductionRecord {
+                    order,
+                    source_identity: context.source,
+                    object: ObjectRef::Source,
+                    mana: reduction_per_object.clone(),
+                    per: CountExpression::Constant(
+                        u32::try_from(objects.len())
+                            .map_err(|_| ExecutionError::ArithmeticOverflow)?,
+                    ),
+                    maximum_reduction: None,
+                    condition: None,
+                });
             }
             Ok(())
         }
@@ -6157,6 +10087,21 @@ fn pay_cost<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Cost::DiscardSelectionAmount { selection, amount } => {
+            let objects = resolve_object_selection_amount(state, selection, amount, context)?;
+            for id in objects {
+                let candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                if candidate.zone != Zone::Hand || candidate.owner != context.actor {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot be discarded"
+                    )));
+                }
+                state
+                    .move_object(id, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+            Ok(())
+        }
         Cost::DiscardHand { player } => {
             let players = resolve_players(state, player, context)?;
             for player in players {
@@ -6174,6 +10119,31 @@ fn pay_cost<S: OracleStateAdapter>(
                 }
             }
             Ok(())
+        }
+        Cost::Mill { player, amount } => {
+            let players = resolve_players(state, player, context)?;
+            let [player] = players.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "mill cost requires exactly one player",
+                ));
+            };
+            if *player != context.actor {
+                return Err(ExecutionError::InvalidAmount(
+                    "mill cost requires the activating player",
+                ));
+            }
+            let amount = evaluate_amount(state, amount, context)?;
+            let available = state
+                .player(*player)
+                .ok_or(ExecutionError::MissingPlayer(*player))?
+                .library
+                .len();
+            if available < usize::try_from(amount).unwrap_or(usize::MAX) {
+                return Err(ExecutionError::Adapter(
+                    "not enough cards in library to pay mill cost".to_owned(),
+                ));
+            }
+            mill(state, *player, amount)
         }
         Cost::DiscardRandom { player } => {
             let players = resolve_players(state, player, context)?;
@@ -6469,6 +10439,15 @@ fn pay_cost<S: OracleStateAdapter>(
             }
             Ok(())
         }
+        Cost::ExileSelectionAmount { selection, amount } => {
+            let objects = resolve_object_selection_amount(state, selection, amount, context)?;
+            for id in objects {
+                state
+                    .move_object(id, Zone::Exile)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+            Ok(())
+        }
         Cost::ExileSelectionWithTotalManaValue { selection, minimum } => {
             let objects = resolve_object_selection(state, selection, context)?;
             if objects.is_empty() {
@@ -6580,14 +10559,29 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
         Cost::Optional(cost) => {
             context.payment_declined || cost_is_payable_by(state, cost, player, context)?
         }
+        Cost::Alternative { choice_id, options } => context
+            .cost_alternative_choices
+            .get(choice_id)
+            .and_then(|selected| options.get(usize::from(*selected)))
+            .is_some_and(|option| {
+                cost_is_payable_by(state, option, player, context).unwrap_or(false)
+            }),
         Cost::Mana(mana) => state.can_pay_mana(player, mana, context.x_value),
-        Cost::AtomicResource(cost) => atomic_energy_cost_amount(cost).is_some_and(|amount| {
-            state
-                .player(player)
-                .and_then(|player| player.counters.get("energy").copied())
-                .unwrap_or_default()
-                >= amount
-        }),
+        Cost::AtomicResource(cost) => {
+            atomic_energy_cost_amount(cost).is_some_and(|amount| {
+                state
+                    .player(player)
+                    .and_then(|player| player.counters.get("energy").copied())
+                    .unwrap_or_default()
+                    >= amount
+            }) || atomic_snow_cost_amount(cost).is_some_and(|(generic, snow)| {
+                state.object(context.source).is_some_and(|source| {
+                    source.zone == Zone::Battlefield
+                        && source.controller == player
+                        && !source.tapped
+                }) && state.can_pay_generic_with_snow(player, generic, snow)
+            })
+        }
         Cost::Loyalty(cost) => loyalty_cost_is_payable(state, cost, player, context)?,
         Cost::Tap(object) => {
             let objects = resolve_objects(state, object, context)?;
@@ -6623,6 +10617,16 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
                             && !candidate.tapped
                     })
                 })
+        }
+        Cost::TapSelectionForSpellReduction { selection, .. } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            objects.iter().all(|id| {
+                state.object(*id).is_some_and(|candidate| {
+                    candidate.zone == Zone::Battlefield
+                        && candidate.controller == player
+                        && !candidate.tapped
+                })
+            })
         }
         Cost::Untap(object) => {
             let objects = resolve_objects(state, object, context)?;
@@ -6726,8 +10730,27 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
                     })
                 })
         }
+        Cost::DiscardSelectionAmount { selection, amount } => {
+            let objects = resolve_object_selection_amount(state, selection, amount, context)?;
+            objects.iter().all(|id| {
+                state.object(*id).is_some_and(|candidate| {
+                    candidate.zone == Zone::Hand && candidate.owner == player
+                })
+            })
+        }
         Cost::DiscardHand { player: affected } => {
             resolve_players(state, affected, context)?.contains(&player)
+        }
+        Cost::Mill {
+            player: affected,
+            amount,
+        } => {
+            let requested =
+                usize::try_from(evaluate_amount(state, amount, context)?).unwrap_or(usize::MAX);
+            resolve_players(state, affected, context)?.as_slice() == [player]
+                && state
+                    .player(player)
+                    .is_some_and(|candidate| candidate.library.len() >= requested)
         }
         Cost::DiscardRandom { player: affected } => {
             resolve_players(state, affected, context)?.contains(&player)
@@ -6833,6 +10856,14 @@ fn cost_is_payable_by<S: OracleStateAdapter>(
                         .object(*id)
                         .is_some_and(|candidate| candidate.owner == player)
                 })
+        }
+        Cost::ExileSelectionAmount { selection, amount } => {
+            let objects = resolve_object_selection_amount(state, selection, amount, context)?;
+            objects.iter().all(|id| {
+                state
+                    .object(*id)
+                    .is_some_and(|candidate| candidate.owner == player)
+            })
         }
         Cost::ExileSelectionWithTotalManaValue { selection, minimum } => {
             let objects = resolve_object_selection(state, selection, context)?;
@@ -6958,26 +10989,7 @@ fn resolve_players<S: OracleStateAdapter>(
             })
             .collect::<Result<Vec<_>, _>>()?,
         PlayerRef::ThatPlayer => vec![
-            context
-                .that_player
-                .or(match &context.window {
-                    ActionWindow::Triggered(
-                        TriggerEvent::SpellCast { player, .. }
-                        | TriggerEvent::CardDrawn { player, .. }
-                        | TriggerEvent::LifeGained { player, .. }
-                        | TriggerEvent::TokenCreated { player, .. }
-                        | TriggerEvent::PlayerAction { player, .. }
-                        | TriggerEvent::CombatDamageToPlayer { player, .. }
-                        | TriggerEvent::DamageToPlayer { player, .. },
-                    ) => Some(*player),
-                    ActionWindow::Triggered(TriggerEvent::BecameTarget { controller, .. }) => {
-                        Some(*controller)
-                    }
-                    ActionWindow::Triggered(TriggerEvent::BeginningOf {
-                        active_player, ..
-                    }) => Some(*active_player),
-                    _ => None,
-                })
+            referenced_that_player(context)
                 .ok_or(ExecutionError::InvalidAmount("that player is unavailable"))?,
         ],
         PlayerRef::DefendingPlayer => {
@@ -6998,6 +11010,25 @@ fn resolve_players<S: OracleStateAdapter>(
         }
     }
     Ok(players)
+}
+
+fn referenced_that_player(context: &ExecutionContext) -> Option<PlayerId> {
+    context.that_player.or_else(|| match &context.window {
+        ActionWindow::Triggered(
+            TriggerEvent::SpellCast { player, .. }
+            | TriggerEvent::CardDrawn { player, .. }
+            | TriggerEvent::LifeGained { player, .. }
+            | TriggerEvent::TokenCreated { player, .. }
+            | TriggerEvent::PlayerAction { player, .. }
+            | TriggerEvent::CombatDamageToPlayer { player, .. }
+            | TriggerEvent::DamageToPlayer { player, .. },
+        ) => Some(*player),
+        ActionWindow::Triggered(TriggerEvent::BecameTarget { controller, .. }) => Some(*controller),
+        ActionWindow::Triggered(TriggerEvent::BeginningOf { active_player, .. }) => {
+            Some(*active_player)
+        }
+        _ => None,
+    })
 }
 
 fn resolve_objects<S: OracleStateAdapter>(
@@ -7254,6 +11285,9 @@ fn object_matches_filter<S: OracleStateAdapter>(
             .iter()
             .any(|subtype| subtype.eq_ignore_ascii_case("Saga"))
     {
+        return Ok(false);
+    }
+    if filter.has_affinity && !state.object_has_affinity(id) {
         return Ok(false);
     }
     if !filter
@@ -7550,7 +11584,7 @@ fn pay_mana_from_player(
             } => {
                 let color = runtime_typed_mana_color(*color);
                 if !try_spend_colored_mana(player, color) {
-                    spend_generic(&mut player.mana, *alternative)?;
+                    spend_generic(player, *alternative)?;
                 }
             }
             TypedManaSymbol::Phyrexian(color) => {
@@ -7567,7 +11601,7 @@ fn pay_mana_from_player(
             }
         }
     }
-    spend_generic(&mut player.mana, generic)
+    spend_generic(player, generic)
 }
 
 fn spend_colored_mana(player: &mut PlayerState, color: Color) -> Result<(), String> {
@@ -7582,6 +11616,13 @@ fn try_spend_colored_mana(player: &mut PlayerState, color: Color) -> bool {
     let index = color_index(color);
     if player.mana.colored[index] == 0 {
         return false;
+    }
+    if let Some(position) = player
+        .expiring_mana
+        .iter()
+        .position(|unit| unit.color == color)
+    {
+        player.expiring_mana.remove(position);
     }
     player.mana.colored[index] -= 1;
     true
@@ -7613,20 +11654,1285 @@ fn mana_symbols(cost: &str) -> Result<Vec<String>, String> {
     Ok(symbols)
 }
 
-fn spend_generic(pool: &mut ManaPool, mut amount: u32) -> Result<(), String> {
-    let from_unrestricted = pool.unrestricted.min(amount);
-    pool.unrestricted -= from_unrestricted;
+fn spend_generic(player: &mut PlayerState, mut amount: u32) -> Result<(), String> {
+    let from_unrestricted = player.mana.unrestricted.min(amount);
+    player.mana.unrestricted -= from_unrestricted;
     amount -= from_unrestricted;
     for index in [5_usize, 0, 1, 2, 3, 4] {
-        let spend = pool.colored[index].min(amount);
-        pool.colored[index] -= spend;
-        amount -= spend;
+        let color = [
+            Color::White,
+            Color::Blue,
+            Color::Black,
+            Color::Red,
+            Color::Green,
+            Color::Colorless,
+        ][index];
+        while amount > 0 && try_spend_colored_mana(player, color) {
+            amount -= 1;
+        }
     }
     if amount == 0 {
         Ok(())
     } else {
         Err("not enough mana".to_owned())
     }
+}
+
+fn apply_delayed_counter_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &DelayedCounterKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::InvalidAmount(
+            "delayed counter keyword has no production adapter",
+        ));
+    }
+    let action = context.delayed_counter_action.ok_or_else(|| {
+        ExecutionError::InvalidAmount("delayed counter lifecycle action is unavailable")
+    })?;
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if source.zone != Zone::Battlefield || source.controller != context.actor {
+        return Err(ExecutionError::Adapter(format!(
+            "delayed counter source {} is not a controlled battlefield permanent",
+            context.source
+        )));
+    }
+
+    if let DelayedCounterKeywordKind::CumulativeUpkeep {
+        cost_per_age_counter,
+    } = program.kind()
+    {
+        let DelayedCounterAction::ResolveCumulativeUpkeep { pay } = action else {
+            return Err(ExecutionError::InvalidAmount(
+                "Cumulative upkeep requires its exact trigger-resolution action",
+            ));
+        };
+        let ActionWindow::Triggered(TriggerEvent::BeginningOf {
+            step: Step::Upkeep,
+            active_player,
+            ..
+        }) = &context.window
+        else {
+            return Err(ExecutionError::InvalidAmount(
+                "Cumulative upkeep requires a beginning-of-upkeep trigger",
+            ));
+        };
+        if *active_player != context.actor || context.active_player != context.actor {
+            return Err(ExecutionError::InvalidAmount(
+                "Cumulative upkeep is not resolving during its controller's upkeep",
+            ));
+        }
+        let age_counter = CounterKind::Named("age".to_owned());
+        apply_put_counter(
+            state,
+            &ObjectRef::Source,
+            &age_counter,
+            &Amount::Constant(1),
+            context,
+        )?;
+        let age_counters = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?
+            .counters
+            .get("age")
+            .copied()
+            .unwrap_or(0);
+        if pay {
+            pay_cumulative_upkeep_cost(state, cost_per_age_counter, age_counters, context)?;
+            state.record_mutation(format!(
+                "delayed_counter_cumulative_paid:{}:{age_counters}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        } else {
+            let destination = death_destination(state, context.source, context)?;
+            state
+                .move_object(context.source, destination)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "delayed_counter_cumulative_unpaid:{}:{age_counters}:{destination:?}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        return Ok(());
+    }
+
+    if let DelayedCounterKeywordKind::Echo { cost } = program.kind() {
+        let DelayedCounterAction::ResolveEcho { pay } = action else {
+            return Err(ExecutionError::InvalidAmount(
+                "Echo requires its exact trigger-resolution action",
+            ));
+        };
+        let ActionWindow::Triggered(TriggerEvent::BeginningOf {
+            step: Step::Upkeep,
+            active_player,
+            ..
+        }) = &context.window
+        else {
+            return Err(ExecutionError::InvalidAmount(
+                "Echo requires a beginning-of-upkeep trigger",
+            ));
+        };
+        if *active_player != context.actor || context.active_player != context.actor {
+            return Err(ExecutionError::InvalidAmount(
+                "Echo trigger is not resolving during its controller's upkeep",
+            ));
+        }
+        let condition_holds =
+            context
+                .echo_control_history_condition_holds
+                .ok_or(ExecutionError::InvalidAmount(
+                    "Echo control-history evidence is unavailable",
+                ))?;
+        if !condition_holds {
+            if pay {
+                return Err(ExecutionError::InvalidAmount(
+                    "Echo payment cannot be made when its condition failed",
+                ));
+            }
+            state.record_mutation(format!(
+                "delayed_counter_echo_condition_failed:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            return Ok(());
+        }
+        if pay {
+            pay_delayed_echo_cost(state, cost, context)?;
+            state.record_mutation(format!(
+                "delayed_counter_echo_paid:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        } else {
+            let destination = death_destination(state, context.source, context)?;
+            state
+                .move_object(context.source, destination)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "delayed_counter_echo_unpaid:{}:{destination:?}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        return Ok(());
+    }
+
+    let (counter_name, initial) = match program.kind() {
+        DelayedCounterKeywordKind::Vanishing {
+            initial_time_counters,
+        } => ("time", *initial_time_counters),
+        DelayedCounterKeywordKind::Fading {
+            initial_fade_counters,
+        } => ("fade", Some(*initial_fade_counters)),
+        DelayedCounterKeywordKind::Echo { .. }
+        | DelayedCounterKeywordKind::CumulativeUpkeep { .. } => {
+            return Err(ExecutionError::InvalidAmount(
+                "delayed counter keyword has no production adapter",
+            ));
+        }
+    };
+    let counter = CounterKind::Named(counter_name.to_owned());
+
+    match action {
+        DelayedCounterAction::Enter => {
+            if context.window != ActionWindow::Replacement {
+                return Err(ExecutionError::InvalidAmount(
+                    "delayed counter entry requires its replacement window",
+                ));
+            }
+            if let Some(amount) = initial.filter(|amount| *amount > 0) {
+                apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &counter,
+                    &Amount::Constant(amount),
+                    context,
+                )?;
+            }
+            state.record_mutation(format!(
+                "delayed_counter_enter:{}:{counter_name}:{}:{}",
+                context.source,
+                initial.unwrap_or(0),
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        DelayedCounterAction::Upkeep => {
+            let ActionWindow::Triggered(TriggerEvent::BeginningOf {
+                step: Step::Upkeep,
+                active_player,
+                ..
+            }) = &context.window
+            else {
+                return Err(ExecutionError::InvalidAmount(
+                    "delayed counter upkeep requires a beginning-of-upkeep trigger",
+                ));
+            };
+            if *active_player != context.actor || context.active_player != context.actor {
+                return Err(ExecutionError::InvalidAmount(
+                    "delayed counter upkeep is not the controller's upkeep",
+                ));
+            }
+
+            let before = source.counters.get(counter_name).copied().unwrap_or(0);
+            let sacrifice = match program.kind() {
+                DelayedCounterKeywordKind::Vanishing { .. } if before > 0 => {
+                    apply_remove_counter(
+                        state,
+                        &ObjectRef::Source,
+                        &counter,
+                        &Amount::Constant(1),
+                        context,
+                    )?;
+                    state
+                        .object(context.source)
+                        .ok_or(ExecutionError::MissingObject(context.source))?
+                        .counters
+                        .get(counter_name)
+                        .copied()
+                        .unwrap_or(0)
+                        == 0
+                }
+                DelayedCounterKeywordKind::Vanishing { .. } => false,
+                DelayedCounterKeywordKind::Fading { .. } if before > 0 => {
+                    apply_remove_counter(
+                        state,
+                        &ObjectRef::Source,
+                        &counter,
+                        &Amount::Constant(1),
+                        context,
+                    )?;
+                    false
+                }
+                DelayedCounterKeywordKind::Fading { .. } => true,
+                DelayedCounterKeywordKind::Echo { .. }
+                | DelayedCounterKeywordKind::CumulativeUpkeep { .. } => unreachable!(),
+            };
+            if sacrifice {
+                let destination = death_destination(state, context.source, context)?;
+                state
+                    .move_object(context.source, destination)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!(
+                    "delayed_counter_sacrifice:{}:{counter_name}:{destination:?}",
+                    context.source
+                ));
+            }
+            Ok(())
+        }
+        DelayedCounterAction::ResolveEcho { .. }
+        | DelayedCounterAction::ResolveCumulativeUpkeep { .. } => {
+            Err(ExecutionError::InvalidAmount(
+                "trigger resolution action does not match this delayed counter keyword",
+            ))
+        }
+    }
+}
+
+fn delayed_color(color: DelayedManaColor) -> Color {
+    match color {
+        DelayedManaColor::White => Color::White,
+        DelayedManaColor::Blue => Color::Blue,
+        DelayedManaColor::Black => Color::Black,
+        DelayedManaColor::Red => Color::Red,
+        DelayedManaColor::Green => Color::Green,
+    }
+}
+
+fn delayed_counter(counter: &DelayedCounterKind) -> CounterKind {
+    match counter {
+        DelayedCounterKind::PlusOnePlusOne => CounterKind::PlusOnePlusOne,
+        DelayedCounterKind::MinusOneMinusOne => CounterKind::MinusOneMinusOne,
+        DelayedCounterKind::Age => CounterKind::Named("age".to_owned()),
+        DelayedCounterKind::Time => CounterKind::Named("time".to_owned()),
+        DelayedCounterKind::Fade => CounterKind::Named("fade".to_owned()),
+    }
+}
+
+fn delayed_token_definition(definition: &DelayedTokenDefinition) -> TokenDefinition {
+    TokenDefinition {
+        name: Some(definition.name.clone()),
+        power: Some(Amount::Constant(definition.power.max(0) as u32)),
+        toughness: Some(Amount::Constant(definition.toughness.max(0) as u32)),
+        colors: definition
+            .colors
+            .iter()
+            .copied()
+            .map(delayed_color)
+            .collect(),
+        card_types: definition
+            .kinds
+            .iter()
+            .filter_map(|kind| match kind {
+                DelayedPermanentKind::Creature => Some(CardType::Creature),
+                DelayedPermanentKind::Land => Some(CardType::Land),
+                DelayedPermanentKind::Artifact => Some(CardType::Artifact),
+                DelayedPermanentKind::Enchantment => Some(CardType::Enchantment),
+                DelayedPermanentKind::Planeswalker => Some(CardType::Planeswalker),
+                DelayedPermanentKind::Battle => Some(CardType::Battle),
+            })
+            .collect(),
+        subtypes: definition.subtypes.iter().cloned().collect(),
+        keywords: Vec::new(),
+        abilities: Vec::new(),
+    }
+}
+
+fn pay_cumulative_upkeep_cost<S: OracleStateAdapter>(
+    state: &mut S,
+    cost: &DelayedKeywordCost,
+    repetitions: u32,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let repetitions_usize =
+        usize::try_from(repetitions).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+    match cost {
+        DelayedKeywordCost::Mana(mana) => {
+            for index in 0..repetitions_usize {
+                state
+                    .pay_mana(context.actor, &delayed_mana_cost(mana), 0)
+                    .map_err(|reason| ExecutionError::CostFailed { index, reason })?;
+            }
+        }
+        DelayedKeywordCost::PayLife(amount) => {
+            let total = i64::from(*amount)
+                .checked_mul(i64::from(repetitions))
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            let mut player = state
+                .player(context.actor)
+                .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+            if player.life < total {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            player.life -= total;
+            state.put_player(player).map_err(ExecutionError::Adapter)?;
+        }
+        DelayedKeywordCost::AddMana { color, amount } => {
+            let total = amount
+                .checked_mul(repetitions)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            state
+                .add_mana(context.actor, &[delayed_color(*color)], total)
+                .map_err(ExecutionError::Adapter)?;
+        }
+        DelayedKeywordCost::OpponentGainsLife(amount) => {
+            let opponents = context.player_choices.get(&0).cloned().unwrap_or_default();
+            if opponents.len() != repetitions_usize
+                || opponents
+                    .iter()
+                    .any(|opponent| *opponent == context.actor || state.player(*opponent).is_none())
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            for opponent in opponents {
+                let mut player = state
+                    .player(opponent)
+                    .ok_or(ExecutionError::MissingPlayer(opponent))?;
+                player.life = player
+                    .life
+                    .checked_add(i64::from(*amount))
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+        }
+        DelayedKeywordCost::DiscardCards(amount) => {
+            let total = amount
+                .checked_mul(repetitions)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            let expected =
+                usize::try_from(total).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            let cards = context.object_choices.get(&0).cloned().unwrap_or_default();
+            if cards.len() != expected
+                || cards.iter().copied().collect::<BTreeSet<_>>().len() != expected
+                || cards.iter().any(|card| {
+                    !state.object(*card).is_some_and(|object| {
+                        object.zone == Zone::Hand && object.owner == context.actor
+                    })
+                })
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            for card in cards {
+                state
+                    .move_object(card, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+        }
+        DelayedKeywordCost::DrawCards(amount) => {
+            let total = amount
+                .checked_mul(repetitions)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            draw_cards(state, context.actor, total, context)?;
+        }
+        DelayedKeywordCost::ExileTopLibrary(amount) => {
+            let total = amount
+                .checked_mul(repetitions)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            for _ in 0..total {
+                let card = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?
+                    .library
+                    .first()
+                    .copied()
+                    .ok_or(ExecutionError::ActivationRestrictionFailed)?;
+                state
+                    .move_object(card, Zone::Exile)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+        }
+        DelayedKeywordCost::FlipCoins(amount) => {
+            let total = amount
+                .checked_mul(repetitions)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            if context.cumulative_upkeep_coin_results.len()
+                != usize::try_from(total).map_err(|_| ExecutionError::ArithmeticOverflow)?
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "Cumulative upkeep coin-flip evidence is incomplete",
+                ));
+            }
+            for (index, won) in context.cumulative_upkeep_coin_results.iter().enumerate() {
+                state.record_mutation(format!(
+                    "cumulative_upkeep_coin:{}:{index}:{won}",
+                    context.source
+                ));
+            }
+        }
+        DelayedKeywordCost::GainControlOfLandYouDontControl => {
+            let lands = context.object_choices.get(&0).cloned().unwrap_or_default();
+            if lands.len() != repetitions_usize
+                || lands.iter().copied().collect::<BTreeSet<_>>().len() != repetitions_usize
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            for land in lands {
+                let mut object = state
+                    .object(land)
+                    .ok_or(ExecutionError::MissingObject(land))?;
+                if object.zone != Zone::Battlefield
+                    || object.controller == context.actor
+                    || !object_has_type(&object, CardType::Land)
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                object.controller = context.actor;
+                state.put_object(object).map_err(ExecutionError::Adapter)?;
+            }
+        }
+        DelayedKeywordCost::OpponentCreatesToken(definition) => {
+            let opponents = context.player_choices.get(&0).cloned().unwrap_or_default();
+            if opponents.len() != repetitions_usize
+                || opponents
+                    .iter()
+                    .any(|opponent| *opponent == context.actor || state.player(*opponent).is_none())
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let definition = delayed_token_definition(definition);
+            for opponent in opponents {
+                let (amount, specification) = replace_token_event(
+                    state,
+                    opponent,
+                    1,
+                    &TokenSpecification::Defined(Box::new(definition.clone())),
+                    context,
+                )?;
+                let TokenSpecification::Defined(replaced) = specification else {
+                    return Err(ExecutionError::Adapter(
+                        "Cumulative upkeep token replacement changed to unsupported form".into(),
+                    ));
+                };
+                for _ in 0..amount {
+                    let token = insert_defined_token(state, opponent, &replaced, context)?;
+                    apply_enters_replacements(state, token, context)?;
+                }
+            }
+        }
+        DelayedKeywordCost::PayManaAndLife { mana, life } => {
+            let total_life = i64::from(*life)
+                .checked_mul(i64::from(repetitions))
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            let player = state
+                .player(context.actor)
+                .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+            if player.life < total_life {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            for index in 0..repetitions_usize {
+                state
+                    .pay_mana(context.actor, &delayed_mana_cost(mana), 0)
+                    .map_err(|reason| ExecutionError::CostFailed { index, reason })?;
+            }
+            let mut player = state
+                .player(context.actor)
+                .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+            player.life -= total_life;
+            state.put_player(player).map_err(ExecutionError::Adapter)?;
+        }
+        DelayedKeywordCost::PutCounterOnOpponentCreature { kind, amount } => {
+            let creatures = context.object_choices.get(&0).cloned().unwrap_or_default();
+            if creatures.len() != repetitions_usize {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            for creature in creatures {
+                let object = state
+                    .object(creature)
+                    .ok_or(ExecutionError::MissingObject(creature))?;
+                if object.zone != Zone::Battlefield
+                    || object.controller == context.actor
+                    || !object_has_type(&object, CardType::Creature)
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                apply_put_counter(
+                    state,
+                    &ObjectRef::ObjectIdentity(creature),
+                    &delayed_counter(kind),
+                    &Amount::Constant(*amount),
+                    context,
+                )?;
+            }
+        }
+        DelayedKeywordCost::PutCounterOnSource { kind, amount } => {
+            for _ in 0..repetitions {
+                apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &delayed_counter(kind),
+                    &Amount::Constant(*amount),
+                    context,
+                )?;
+            }
+        }
+        DelayedKeywordCost::MoveCardsFromSingleGraveyardToLibraryBottom { amount } => {
+            for payment in 0..repetitions_usize {
+                let key = u8::try_from(payment).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+                let cards = context
+                    .object_choices
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default();
+                let expected =
+                    usize::try_from(*amount).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+                let owners = cards
+                    .iter()
+                    .filter_map(|card| state.object(*card))
+                    .map(|object| object.owner)
+                    .collect::<BTreeSet<_>>();
+                if cards.len() != expected
+                    || cards.iter().copied().collect::<BTreeSet<_>>().len() != expected
+                    || owners.len() != 1
+                    || cards.iter().any(|card| {
+                        !state
+                            .object(*card)
+                            .is_some_and(|object| object.zone == Zone::Graveyard)
+                    })
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                for card in cards {
+                    let owner = state
+                        .object(card)
+                        .ok_or(ExecutionError::MissingObject(card))?
+                        .owner;
+                    state
+                        .move_object(card, Zone::Library)
+                        .map_err(ExecutionError::Adapter)?;
+                    let mut player = state
+                        .player(owner)
+                        .ok_or(ExecutionError::MissingPlayer(owner))?;
+                    player.library.retain(|candidate| *candidate != card);
+                    player.library.push(card);
+                    state.put_player(player).map_err(ExecutionError::Adapter)?;
+                }
+            }
+        }
+        DelayedKeywordCost::SacrificePermanents { kind, amount } => {
+            let total = amount
+                .checked_mul(repetitions)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            let expected =
+                usize::try_from(total).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            let objects = context.object_choices.get(&0).cloned().unwrap_or_default();
+            if objects.len() != expected
+                || objects.iter().copied().collect::<BTreeSet<_>>().len() != expected
+                || objects.iter().any(|chosen| {
+                    !state.object(*chosen).is_some_and(|object| {
+                        object.zone == Zone::Battlefield
+                            && object.controller == context.actor
+                            && match kind {
+                                DelayedPermanentKind::Creature => {
+                                    object_has_type(&object, CardType::Creature)
+                                }
+                                DelayedPermanentKind::Land => {
+                                    object_has_type(&object, CardType::Land)
+                                }
+                                DelayedPermanentKind::Artifact => {
+                                    object_has_type(&object, CardType::Artifact)
+                                }
+                                DelayedPermanentKind::Enchantment => {
+                                    object_has_type(&object, CardType::Enchantment)
+                                }
+                                DelayedPermanentKind::Planeswalker => {
+                                    object_has_type(&object, CardType::Planeswalker)
+                                }
+                                DelayedPermanentKind::Battle => {
+                                    object_has_type(&object, CardType::Battle)
+                                }
+                            }
+                    })
+                })
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            for object in objects {
+                let destination = death_destination(state, object, context)?;
+                state
+                    .move_object(object, destination)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+        }
+        DelayedKeywordCost::SpeakWithoutPauseOrFumble { exact_phrase } => {
+            if !context.cumulative_upkeep_speech_complete
+                || context.cumulative_upkeep_spoken_phrases.len() != repetitions_usize
+                || context
+                    .cumulative_upkeep_spoken_phrases
+                    .iter()
+                    .any(|phrase| phrase != exact_phrase)
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn delayed_mana_cost(cost: &DelayedManaCost) -> ManaCost {
+    let mut exact = String::new();
+    for symbol in &cost.symbols {
+        let symbol = match symbol {
+            DelayedManaSymbol::Generic(amount) => amount.to_string(),
+            DelayedManaSymbol::Colored(DelayedManaColor::White) => "W".to_owned(),
+            DelayedManaSymbol::Colored(DelayedManaColor::Blue) => "U".to_owned(),
+            DelayedManaSymbol::Colored(DelayedManaColor::Black) => "B".to_owned(),
+            DelayedManaSymbol::Colored(DelayedManaColor::Red) => "R".to_owned(),
+            DelayedManaSymbol::Colored(DelayedManaColor::Green) => "G".to_owned(),
+            DelayedManaSymbol::Colorless => "C".to_owned(),
+            DelayedManaSymbol::Snow => "S".to_owned(),
+        };
+        exact.push('{');
+        exact.push_str(&symbol);
+        exact.push('}');
+    }
+    ManaCost(exact)
+}
+
+fn apply_combat_special_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CombatSpecialKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::InvalidAmount(
+            "combat-special keyword has no production adapter",
+        ));
+    }
+    if matches!(program.kind(), CombatSpecialKeywordKind::Ninjutsu { .. }) {
+        return apply_ninjutsu_program(state, program, context);
+    }
+    if matches!(program.kind(), CombatSpecialKeywordKind::Encore { .. }) {
+        return apply_encore_program(state, program, context);
+    }
+    let CombatSpecialKeywordKind::Saddle { threshold } = program.kind() else {
+        return Err(ExecutionError::InvalidAmount(
+            "combat-special keyword has no production adapter",
+        ));
+    };
+    if context.combat_special_action != Some(CombatSpecialAction::ActivateSaddle)
+        || context.window != ActionWindow::Activated
+        || !context.sorcery_timing
+    {
+        return Err(ExecutionError::InvalidAmount(
+            "Saddle requires its sorcery-speed activation receipt",
+        ));
+    }
+    let source = effective_object(state, context.source, context)?;
+    if source.zone != Zone::Battlefield
+        || source.controller != context.actor
+        || !source
+            .characteristics()
+            .card_types
+            .contains(&CardType::Creature)
+        || !source
+            .characteristics()
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Mount"))
+    {
+        return Err(ExecutionError::Adapter(format!(
+            "Saddle source {} is not a controlled battlefield Mount",
+            context.source
+        )));
+    }
+
+    let creatures = context
+        .object_choices
+        .get(&0)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if creatures.is_empty()
+        || creatures.contains(&context.source)
+        || creatures.iter().copied().collect::<BTreeSet<_>>().len() != creatures.len()
+    {
+        return Err(ExecutionError::InvalidAmount(
+            "Saddle requires distinct other creature choices",
+        ));
+    }
+    let mut total_power = 0i64;
+    for creature in creatures {
+        let candidate = effective_object(state, *creature, context)?;
+        if candidate.zone != Zone::Battlefield
+            || candidate.controller != context.actor
+            || candidate.tapped
+            || !candidate
+                .characteristics()
+                .card_types
+                .contains(&CardType::Creature)
+        {
+            return Err(ExecutionError::Adapter(format!(
+                "Saddle cost object {creature} is not an untapped controlled creature"
+            )));
+        }
+        total_power = total_power
+            .checked_add(candidate.characteristics().power)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+    }
+    if total_power < i64::from(*threshold) {
+        return Err(ExecutionError::InvalidAmount(
+            "Saddle creature choices do not meet the printed power threshold",
+        ));
+    }
+    for creature in creatures {
+        let mut candidate = state
+            .object(*creature)
+            .ok_or(ExecutionError::MissingObject(*creature))?;
+        candidate.tapped = true;
+        state
+            .put_object(candidate)
+            .map_err(ExecutionError::Adapter)?;
+        state.record_mutation(format!("saddle_tap:{}:{creature}", context.source));
+    }
+    let incarnation = state
+        .object_incarnation(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    state.mark_saddled(context.source, incarnation);
+    state.record_mutation(format!(
+        "saddled:{}:{incarnation}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+pub fn object_is_saddled<S: OracleStateAdapter>(state: &S, object: ObjectId) -> bool {
+    state
+        .object_incarnation(object)
+        .is_some_and(|incarnation| state.is_saddled(object, incarnation))
+}
+
+fn apply_ninjutsu_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CombatSpecialKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let CombatSpecialKeywordKind::Ninjutsu { cost } = program.kind() else {
+        return Err(ExecutionError::InvalidAmount("Ninjutsu program mismatch"));
+    };
+    if context.window != ActionWindow::Activated {
+        return Err(ExecutionError::InvalidAmount(
+            "Ninjutsu requires its activated-ability window",
+        ));
+    }
+    match context
+        .combat_special_action
+        .ok_or_else(|| ExecutionError::InvalidAmount("Ninjutsu lifecycle action is unavailable"))?
+    {
+        CombatSpecialAction::ActivateNinjutsu { returned_attacker } => {
+            if state.ninjutsu_activation(context.source).is_some()
+                || !context.blockers_declared
+                || context.combat_id.is_none()
+                || context.ninjutsu_returned_attacker_unblocked != Some(true)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "Ninjutsu activation lacks complete unblocked-combat evidence",
+                ));
+            }
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if source.zone != Zone::Hand || source.owner != context.actor {
+                return Err(ExecutionError::Adapter(format!(
+                    "Ninjutsu source {} is not in its owner's hand",
+                    context.source
+                )));
+            }
+            let attacker = effective_object(state, returned_attacker, context)?;
+            if attacker.zone != Zone::Battlefield
+                || attacker.controller != context.actor
+                || !attacker.attacking
+                || !attacker
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::Adapter(format!(
+                    "Ninjutsu return object {returned_attacker} is not an attacking controlled creature"
+                )));
+            }
+            let attack_target =
+                context
+                    .ninjutsu_attack_target
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "Ninjutsu attack target evidence is unavailable",
+                    ))?;
+            if !ninjutsu_attack_target_is_valid(state, attack_target, context)? {
+                return Err(ExecutionError::InvalidAmount(
+                    "Ninjutsu captured attack target is not attackable",
+                ));
+            }
+            state
+                .pay_mana(context.actor, &ManaCost(cost.oracle_text()), 0)
+                .map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(returned_attacker, Zone::Hand)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_ninjutsu_activation(NinjutsuActivationRecord {
+                source: context.source,
+                source_incarnation,
+                actor: context.actor,
+                returned_attacker,
+                returned_attacker_owner: attacker.owner,
+                attack_target,
+                combat_id: context.combat_id.unwrap(),
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "ninjutsu_activate:{}:{source_incarnation}:{returned_attacker}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatSpecialAction::ResolveNinjutsu => {
+            let record = state.consume_ninjutsu_activation(context.source).ok_or(
+                ExecutionError::InvalidAmount("Ninjutsu activation receipt is unavailable"),
+            )?;
+            if record.actor != context.actor
+                || record.program_sha256 != program.semantic_digest()
+                || context.combat_id != Some(record.combat_id)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "Ninjutsu activation receipt does not match this resolution",
+                ));
+            }
+            let Some(source) = state.object(context.source) else {
+                state.record_mutation(format!("ninjutsu_resolve_missing:{}", context.source));
+                return Ok(());
+            };
+            if source.zone != Zone::Hand
+                || source.owner != context.actor
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+            {
+                state.record_mutation(format!("ninjutsu_resolve_unavailable:{}", context.source));
+                return Ok(());
+            }
+            state
+                .move_object(context.source, Zone::Battlefield)
+                .map_err(ExecutionError::Adapter)?;
+            let mut entered = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            entered.controller = context.actor;
+            entered.tapped = true;
+            state.put_object(entered).map_err(ExecutionError::Adapter)?;
+            apply_enters_replacements(state, context.source, context)?;
+            let entered = effective_object(state, context.source, context)?;
+            let attacking = entered.zone == Zone::Battlefield
+                && entered
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+                && !entered
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Battle)
+                && ninjutsu_attack_target_is_valid(state, record.attack_target, context)?;
+            let mut entered = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            entered.tapped = true;
+            entered.attacking = attacking;
+            state.put_object(entered).map_err(ExecutionError::Adapter)?;
+            if attacking {
+                state.set_attack_target(context.source, record.attack_target);
+            }
+            state.record_mutation(format!(
+                "ninjutsu_resolve:{}:{attacking}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatSpecialAction::ActivateSaddle
+        | CombatSpecialAction::ActivateEncore
+        | CombatSpecialAction::ResolveEncore
+        | CombatSpecialAction::ResolveEncoreEndStep => Err(ExecutionError::InvalidAmount(
+            "combat-special action does not match Ninjutsu",
+        )),
+    }
+}
+
+fn ninjutsu_attack_target_is_valid<S: OracleStateAdapter>(
+    state: &S,
+    target: SelectedTarget,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    match target {
+        SelectedTarget::Player(player) => {
+            Ok(player != context.actor && state.player(player).is_some())
+        }
+        SelectedTarget::Object(object) => {
+            let candidate = effective_object(state, object, context)?;
+            if candidate.zone != Zone::Battlefield || candidate.controller == context.actor {
+                return Ok(false);
+            }
+            if candidate
+                .characteristics()
+                .card_types
+                .contains(&CardType::Planeswalker)
+            {
+                return Ok(true);
+            }
+            if candidate
+                .characteristics()
+                .card_types
+                .contains(&CardType::Battle)
+            {
+                return player_can_attack_battle(state, object, context.actor);
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn apply_encore_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CombatSpecialKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let CombatSpecialKeywordKind::Encore { cost } = program.kind() else {
+        return Err(ExecutionError::InvalidAmount("Encore program mismatch"));
+    };
+    match context
+        .combat_special_action
+        .ok_or_else(|| ExecutionError::InvalidAmount("Encore lifecycle action is unavailable"))?
+    {
+        CombatSpecialAction::ActivateEncore => {
+            if context.window != ActionWindow::Activated
+                || !context.sorcery_timing
+                || state.encore_activation(context.source).is_some()
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "Encore requires an unused sorcery-speed activation",
+                ));
+            }
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if source.zone != Zone::Graveyard || source.owner != context.actor {
+                return Err(ExecutionError::Adapter(format!(
+                    "Encore source {} is not in its owner's graveyard",
+                    context.source
+                )));
+            }
+            state
+                .pay_mana(context.actor, &ManaCost(cost.oracle_text()), 0)
+                .map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_encore_activation(EncoreActivationRecord {
+                source: context.source,
+                source_incarnation,
+                actor: context.actor,
+                program_sha256: program.semantic_digest().to_owned(),
+                token_targets: BTreeMap::new(),
+            });
+            state.record_mutation(format!(
+                "encore_activate:{}:{source_incarnation}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatSpecialAction::ResolveEncore => {
+            if context.window != ActionWindow::Activated {
+                return Err(ExecutionError::InvalidAmount(
+                    "Encore resolution requires its activated-ability window",
+                ));
+            }
+            let mut record = state.consume_encore_activation(context.source).ok_or(
+                ExecutionError::InvalidAmount("Encore activation receipt is unavailable"),
+            )?;
+            if !record.token_targets.is_empty()
+                || record.actor != context.actor
+                || record.program_sha256 != program.semantic_digest()
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || !state
+                    .object(context.source)
+                    .is_some_and(|source| source.zone == Zone::Exile)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "Encore activation receipt is stale or already resolved",
+                ));
+            }
+            let opponents = state
+                .player_ids()
+                .into_iter()
+                .filter(|player| *player != context.actor)
+                .collect::<Vec<_>>();
+            if opponents.is_empty() {
+                return Err(ExecutionError::InvalidAmount(
+                    "Encore requires the complete opponent set",
+                ));
+            }
+            let ordinary = TokenSpecification::CopyOf(ObjectRef::ObjectIdentity(context.source));
+            for opponent in opponents {
+                let (amount, specification) =
+                    replace_token_event(state, context.actor, 1, &ordinary, context)?;
+                for _ in 0..amount {
+                    let token = match &specification {
+                        TokenSpecification::CopyOf(original) => {
+                            let original = *resolve_objects(state, original, context)?
+                                .first()
+                                .ok_or(ExecutionError::InvalidAmount(
+                                    "Encore copy token has no original",
+                                ))?;
+                            insert_copy_token(state, context.actor, original)?
+                        }
+                        TokenSpecification::Defined(definition) => {
+                            insert_defined_token(state, context.actor, definition, context)?
+                        }
+                        TokenSpecification::ManifestedCard(_) => {
+                            return Err(ExecutionError::Adapter(
+                                "Encore token replacement cannot manifest".into(),
+                            ));
+                        }
+                    };
+                    let mut object = state
+                        .object(token)
+                        .ok_or(ExecutionError::MissingObject(token))?;
+                    if !object.characteristics().keywords.contains(&Keyword::Haste) {
+                        object.characteristics_mut().keywords.push(Keyword::Haste);
+                    }
+                    state.put_object(object).map_err(ExecutionError::Adapter)?;
+                    apply_enters_replacements(state, token, context)?;
+                    let incarnation = state
+                        .object_incarnation(token)
+                        .ok_or(ExecutionError::MissingObject(token))?;
+                    record.token_targets.insert(token, (opponent, incarnation));
+                    state.record_mutation(format!(
+                        "encore_token:{}:{token}:{opponent}:{incarnation}",
+                        context.source
+                    ));
+                }
+            }
+            state.register_encore_activation(record);
+            Ok(())
+        }
+        CombatSpecialAction::ResolveEncoreEndStep => {
+            let ActionWindow::Triggered(TriggerEvent::BeginningOf {
+                step: Step::EndStep,
+                ..
+            }) = context.window
+            else {
+                return Err(ExecutionError::InvalidAmount(
+                    "Encore sacrifice requires the beginning of the next end step",
+                ));
+            };
+            let record = state.consume_encore_activation(context.source).ok_or(
+                ExecutionError::InvalidAmount("Encore delayed-sacrifice receipt is unavailable"),
+            )?;
+            if record.token_targets.is_empty()
+                || record.actor != context.actor
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "Encore delayed-sacrifice receipt is stale",
+                ));
+            }
+            for (token, (_, incarnation)) in record.token_targets {
+                if state.object_incarnation(token) != Some(incarnation)
+                    || !state
+                        .object(token)
+                        .is_some_and(|object| object.zone == Zone::Battlefield && object.token)
+                {
+                    continue;
+                }
+                let destination = death_destination(state, token, context)?;
+                state
+                    .move_object(token, destination)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!(
+                    "encore_sacrifice:{}:{token}:{destination:?}",
+                    context.source
+                ));
+            }
+            Ok(())
+        }
+        CombatSpecialAction::ActivateSaddle
+        | CombatSpecialAction::ActivateNinjutsu { .. }
+        | CombatSpecialAction::ResolveNinjutsu => Err(ExecutionError::InvalidAmount(
+            "combat-special action does not match Encore",
+        )),
+    }
+}
+
+pub fn encore_required_attack_target<S: OracleStateAdapter>(
+    state: &S,
+    token: ObjectId,
+) -> Option<PlayerId> {
+    state
+        .object_ids()
+        .into_iter()
+        .filter_map(|source| state.encore_activation(source))
+        .find_map(|record| {
+            record
+                .token_targets
+                .get(&token)
+                .and_then(|(target, incarnation)| {
+                    (state.object_incarnation(token) == Some(*incarnation)
+                        && state
+                            .object(token)
+                            .is_some_and(|object| object.zone == Zone::Battlefield && object.token))
+                    .then_some(*target)
+                })
+        })
+}
+
+fn pay_delayed_echo_cost<S: OracleStateAdapter>(
+    state: &mut S,
+    cost: &DelayedKeywordCost,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    match cost {
+        DelayedKeywordCost::Mana(cost) => state
+            .pay_mana(context.actor, &delayed_mana_cost(cost), 0)
+            .map_err(ExecutionError::Adapter),
+        DelayedKeywordCost::DiscardCards(1) => {
+            let [card] = context
+                .object_choices
+                .get(&0)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            else {
+                return Err(ExecutionError::InvalidAmount(
+                    "Echo discard payment requires exactly one chosen card",
+                ));
+            };
+            let candidate = state
+                .object(*card)
+                .ok_or(ExecutionError::MissingObject(*card))?;
+            if candidate.zone != Zone::Hand || candidate.owner != context.actor {
+                return Err(ExecutionError::Adapter(format!(
+                    "Echo discard card {card} is not in the payer's hand"
+                )));
+            }
+            state
+                .move_object(*card, Zone::Graveyard)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("delayed_counter_echo_discard:{card}"));
+            Ok(())
+        }
+        DelayedKeywordCost::SacrificePermanents {
+            kind: crate::delayed_counter_keyword_runtime::PermanentKind::Land,
+            amount: 2,
+        } => {
+            let lands = context
+                .object_choices
+                .get(&0)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if lands.len() != 2 || lands[0] == lands[1] {
+                return Err(ExecutionError::InvalidAmount(
+                    "Echo land payment requires two distinct chosen lands",
+                ));
+            }
+            for land in lands {
+                let candidate = state
+                    .object(*land)
+                    .ok_or(ExecutionError::MissingObject(*land))?;
+                if candidate.zone != Zone::Battlefield
+                    || candidate.controller != context.actor
+                    || !candidate
+                        .characteristics()
+                        .card_types
+                        .contains(&CardType::Land)
+                {
+                    return Err(ExecutionError::Adapter(format!(
+                        "Echo sacrifice object {land} is not a controlled land"
+                    )));
+                }
+            }
+            for land in lands {
+                let destination = death_destination(state, *land, context)?;
+                state
+                    .move_object(*land, destination)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!(
+                    "delayed_counter_echo_sacrifice_land:{land}:{destination:?}"
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(ExecutionError::InvalidAmount(
+            "Echo cost has no production payment adapter",
+        )),
+    }
+}
+
+fn spend_tracked_snow(
+    player: &mut PlayerState,
+    snow_units: &mut Vec<Color>,
+    amount: u32,
+) -> Result<(), String> {
+    let amount =
+        usize::try_from(amount).map_err(|_| "snow mana amount exceeds runtime range".to_owned())?;
+    if snow_units.len() < amount {
+        return Err("not enough mana with snow-source provenance".to_owned());
+    }
+    for _ in 0..amount {
+        let color = snow_units
+            .pop()
+            .ok_or_else(|| "not enough mana with snow-source provenance".to_owned())?;
+        let index = color_index(color);
+        player.mana.colored[index] = player.mana.colored[index]
+            .checked_sub(1)
+            .ok_or_else(|| "snow mana provenance exceeds mana pool".to_owned())?;
+    }
+    Ok(())
 }
 
 fn apply_effect<S: OracleStateAdapter>(
@@ -7704,10 +13010,15 @@ fn apply_effect<S: OracleStateAdapter>(
                 {
                     continue;
                 }
+                let destination = death_destination(state, id, context)?;
                 state
-                    .move_object(id, Zone::Graveyard)
+                    .move_object(id, destination)
                     .map_err(ExecutionError::Adapter)?;
-                state.record_mutation(format!("destroy:{id}"));
+                state.record_mutation(if destination == Zone::Graveyard {
+                    format!("destroy:{id}")
+                } else {
+                    format!("destroy:{id}:{destination:?}")
+                });
             }
             Ok(())
         }
@@ -7719,11 +13030,21 @@ fn apply_effect<S: OracleStateAdapter>(
                 {
                     continue;
                 }
+                let destination = death_destination(state, id, context)?;
                 state
-                    .move_object(id, Zone::Graveyard)
+                    .move_object(id, destination)
                     .map_err(ExecutionError::Adapter)?;
-                state.record_mutation(format!("destroy_no_regeneration:{id}"));
+                state.record_mutation(if destination == Zone::Graveyard {
+                    format!("destroy_no_regeneration:{id}")
+                } else {
+                    format!("destroy_no_regeneration:{id}:{destination:?}")
+                });
             }
+            Ok(())
+        }
+        Effect::ExileIfWouldDieThisTurn { objects } => {
+            let ids = resolve_objects(state, objects, context)?;
+            register_continuous_if_needed(state, context, ids, effect.clone(), Duration::ThisTurn);
             Ok(())
         }
         Effect::MoveZone(zone_move) => apply_zone_move(state, zone_move, context),
@@ -7925,6 +13246,47 @@ fn apply_effect<S: OracleStateAdapter>(
             Ok(())
         }
         Effect::CreateToken(creation) => apply_create_token(state, creation, context).map(|_| ()),
+        Effect::CreateTokensSacrificedCreaturePower { creation, binding } => {
+            let (power, _) = bound_sacrificed_creature_stats(state, binding, context)?;
+            let mut bound_creation = creation.clone();
+            bound_creation.amount = Amount::Constant(power);
+            apply_create_token(state, &bound_creation, context).map(|_| ())
+        }
+        Effect::Populate { selection } => {
+            let originals = resolve_object_selection(state, selection, context)?;
+            let [original] = originals.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "populate requires exactly one creature token",
+                ));
+            };
+            apply_create_token(
+                state,
+                &TokenCreation {
+                    player: PlayerRef::You,
+                    amount: Amount::Constant(1),
+                    specification: TokenSpecification::CopyOf(ObjectRef::ObjectIdentity(*original)),
+                    tapped: false,
+                    attacking: false,
+                },
+                context,
+            )?;
+            Ok(())
+        }
+        Effect::Blight { selection, amount } => {
+            let objects = resolve_object_selection(state, selection, context)?;
+            let [object] = objects.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "blight requires exactly one controlled creature",
+                ));
+            };
+            apply_put_counter(
+                state,
+                &ObjectRef::ObjectIdentity(*object),
+                &CounterKind::MinusOneMinusOne,
+                amount,
+                context,
+            )
+        }
         Effect::CreateTokenAttached {
             creation,
             target,
@@ -7937,12 +13299,20 @@ fn apply_effect<S: OracleStateAdapter>(
                     "attached token creation requires one token and one target",
                 ));
             };
-            state
-                .set_attachment(AttachmentRecord {
+            let attachment = AttachmentRecord {
+                source: *source,
+                target: *target,
+                kind: *kind,
+            };
+            if !protection_allows_attachment(state, attachment, context)? {
+                return Err(ExecutionError::IllegalAttachment {
                     source: *source,
                     target: *target,
-                    kind: *kind,
-                })
+                    expected: *kind,
+                });
+            }
+            state
+                .set_attachment(attachment)
                 .map_err(ExecutionError::Adapter)?;
             state.record_mutation(format!("attach_created:{source}:{target}:{kind:?}"));
             Ok(())
@@ -7959,12 +13329,20 @@ fn apply_effect<S: OracleStateAdapter>(
                     "token-and-source attachment requires one token and one attachment",
                 ));
             };
-            state
-                .set_attachment(AttachmentRecord {
+            let attachment = AttachmentRecord {
+                source: *source,
+                target: *target,
+                kind: *kind,
+            };
+            if !protection_allows_attachment(state, attachment, context)? {
+                return Err(ExecutionError::IllegalAttachment {
                     source: *source,
                     target: *target,
-                    kind: *kind,
-                })
+                    expected: *kind,
+                });
+            }
+            state
+                .set_attachment(attachment)
                 .map_err(ExecutionError::Adapter)?;
             state.record_mutation(format!(
                 "attach_source_to_created:{source}:{target}:{kind:?}"
@@ -7983,12 +13361,20 @@ fn apply_effect<S: OracleStateAdapter>(
                     "attach requires one attachment and one target",
                 ));
             };
-            state
-                .set_attachment(AttachmentRecord {
+            let attachment = AttachmentRecord {
+                source: *source,
+                target: *target,
+                kind: *kind,
+            };
+            if !protection_allows_attachment(state, attachment, context)? {
+                return Err(ExecutionError::IllegalAttachment {
                     source: *source,
                     target: *target,
-                    kind: *kind,
-                })
+                    expected: *kind,
+                });
+            }
+            state
+                .set_attachment(attachment)
                 .map_err(ExecutionError::Adapter)?;
             state.record_mutation(format!("attach:{source}:{target}:{kind:?}"));
             Ok(())
@@ -8088,7 +13474,7 @@ fn apply_effect<S: OracleStateAdapter>(
             }
             let amount = evaluate_amount(state, amount, context)?;
             for player in resolve_players(state, player, context)? {
-                draw_cards(state, player, amount)?;
+                draw_cards(state, player, amount, context)?;
             }
             Ok(())
         }
@@ -8147,7 +13533,7 @@ fn apply_effect<S: OracleStateAdapter>(
                 ));
             }
             let player = players[0];
-            draw_cards(state, player, u32::from(*draw))?;
+            draw_cards(state, player, u32::from(*draw), context)?;
             let selected = context
                 .object_choices
                 .get(choice_id)
@@ -8426,6 +13812,123 @@ fn apply_effect<S: OracleStateAdapter>(
                     .move_object(object, Zone::Graveyard)
                     .map_err(ExecutionError::Adapter)?;
                 state.record_mutation(format!("scoped_player_sacrifice:{object}"));
+            }
+            Ok(())
+        }
+        Effect::PlayersDiscard { players, amount } => {
+            let mut discards = Vec::new();
+            for player in resolve_players(state, players, context)? {
+                let mut legal = state
+                    .object_ids()
+                    .into_iter()
+                    .filter(|object| {
+                        state.object(*object).is_some_and(|object| {
+                            object.owner == player && object.zone == Zone::Hand
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                legal.sort_unstable();
+                let required = usize::from(*amount).min(legal.len());
+                let selected = context
+                    .per_player_object_choices
+                    .get(&player)
+                    .cloned()
+                    .unwrap_or_default();
+                if selected.len() != required
+                    || selected.iter().copied().collect::<BTreeSet<_>>().len() != selected.len()
+                    || selected.iter().any(|object| !legal.contains(object))
+                {
+                    return Err(ExecutionError::InvalidAmount(
+                        "scoped-player discard choice is illegal",
+                    ));
+                }
+                discards.extend(selected);
+            }
+            for object in discards {
+                state
+                    .move_object(object, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("scoped_player_discard:{object}"));
+            }
+            Ok(())
+        }
+        Effect::PlayersDiscardAmount { players, amount } => {
+            let amount = evaluate_amount(state, amount, context)?;
+            let mut discards = Vec::new();
+            for player in resolve_players(state, players, context)? {
+                let mut legal = state
+                    .object_ids()
+                    .into_iter()
+                    .filter(|object| {
+                        state.object(*object).is_some_and(|object| {
+                            object.owner == player && object.zone == Zone::Hand
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                legal.sort_unstable();
+                let required = usize::try_from(amount)
+                    .map_err(|_| ExecutionError::ArithmeticOverflow)?
+                    .min(legal.len());
+                let selected = context
+                    .per_player_object_choices
+                    .get(&player)
+                    .cloned()
+                    .unwrap_or_default();
+                if selected.len() != required
+                    || selected.iter().copied().collect::<BTreeSet<_>>().len() != selected.len()
+                    || selected.iter().any(|object| !legal.contains(object))
+                {
+                    return Err(ExecutionError::InvalidAmount(
+                        "dynamic scoped-player discard choice is illegal",
+                    ));
+                }
+                discards.extend(selected);
+            }
+            for object in discards {
+                state
+                    .move_object(object, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("dynamic_scoped_player_discard:{object}"));
+            }
+            Ok(())
+        }
+        Effect::PlayersDiscardSacrificedCreaturePower { players, binding } => {
+            let (power, _) = bound_sacrificed_creature_stats(state, binding, context)?;
+            let mut discards = Vec::new();
+            for player in resolve_players(state, players, context)? {
+                let mut legal = state
+                    .object_ids()
+                    .into_iter()
+                    .filter(|object| {
+                        state.object(*object).is_some_and(|object| {
+                            object.owner == player && object.zone == Zone::Hand
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                legal.sort_unstable();
+                let required = usize::try_from(power)
+                    .map_err(|_| ExecutionError::ArithmeticOverflow)?
+                    .min(legal.len());
+                let selected = context
+                    .per_player_object_choices
+                    .get(&player)
+                    .cloned()
+                    .unwrap_or_default();
+                if selected.len() != required
+                    || selected.iter().copied().collect::<BTreeSet<_>>().len() != selected.len()
+                    || selected.iter().any(|object| !legal.contains(object))
+                {
+                    return Err(ExecutionError::InvalidAmount(
+                        "sacrificed-power discard choice is illegal",
+                    ));
+                }
+                discards.extend(selected);
+            }
+            for object in discards {
+                state
+                    .move_object(object, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("sacrificed_power_discard:{object}"));
             }
             Ok(())
         }
@@ -8760,6 +14263,35 @@ fn apply_effect<S: OracleStateAdapter>(
                         object.characteristics_mut().keywords.push(keyword.clone());
                     }
                 }
+                state.put_object(object).map_err(ExecutionError::Adapter)?;
+            }
+            register_continuous_if_needed(state, context, ids, effect.clone(), duration.clone());
+            Ok(())
+        }
+        Effect::RemoveKeyword {
+            objects,
+            keywords,
+            duration,
+        } => {
+            let ids = resolve_objects(state, objects, context)?;
+            if *duration != Duration::Permanent {
+                register_continuous_if_needed(
+                    state,
+                    context,
+                    ids,
+                    effect.clone(),
+                    duration.clone(),
+                );
+                return Ok(());
+            }
+            for id in &ids {
+                let mut object = state
+                    .object(*id)
+                    .ok_or(ExecutionError::MissingObject(*id))?;
+                object
+                    .characteristics_mut()
+                    .keywords
+                    .retain(|keyword| !keywords.contains(keyword));
                 state.put_object(object).map_err(ExecutionError::Adapter)?;
             }
             register_continuous_if_needed(state, context, ids, effect.clone(), duration.clone());
@@ -9343,7 +14875,7 @@ fn apply_effect<S: OracleStateAdapter>(
             Ok(())
         }
         Effect::ChooseMode { count } => {
-            if !choice_count_matches(count, &context.selected_modes, context) {
+            if !choice_count_matches(state, count, &context.selected_modes, context)? {
                 return Err(ExecutionError::InvalidAmount("mode choice is illegal"));
             }
             state.record_mutation(format!(
@@ -9353,7 +14885,7 @@ fn apply_effect<S: OracleStateAdapter>(
             Ok(())
         }
         Effect::ChooseModeBy { chooser, count } => {
-            if !choice_count_matches(count, &context.selected_modes, context) {
+            if !choice_count_matches(state, count, &context.selected_modes, context)? {
                 return Err(ExecutionError::InvalidAmount("mode choice is illegal"));
             }
             let selected_chooser = context
@@ -9369,7 +14901,7 @@ fn apply_effect<S: OracleStateAdapter>(
             Ok(())
         }
         Effect::ChooseModeNotPreviouslyChosen { count } => {
-            if !choice_count_matches(count, &context.selected_modes, context)
+            if !choice_count_matches(state, count, &context.selected_modes, context)?
                 || context
                     .selected_modes
                     .iter()
@@ -9389,7 +14921,7 @@ fn apply_effect<S: OracleStateAdapter>(
             count,
             option_count,
         } => {
-            if !choice_count_matches(count, &context.selected_modes, context)
+            if !choice_count_matches(state, count, &context.selected_modes, context)?
                 || context
                     .selected_modes
                     .iter()
@@ -9403,6 +14935,87 @@ fn apply_effect<S: OracleStateAdapter>(
             ));
             Ok(())
         }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program)) => {
+            apply_damage_clause(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::LibraryAccess(program)) => {
+            apply_library_access_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CommonActionProcedure(program)) => {
+            apply_common_action_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CombatRestriction(program)) => {
+            apply_combat_restriction_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::RegenerationAction(program)) => {
+            apply_regeneration_action_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::ObjectState(program)) => {
+            apply_object_state_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::ResidualCostKeyword(program)) => {
+            apply_residual_cost_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleAction(program)) => {
+            apply_oracle_action_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleAbilityEnvelope(program)) => {
+            apply_oracle_ability_envelope_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::LinkedOracleAbilityEnvelope(
+            program,
+        )) => apply_linked_oracle_ability_envelope_program(state, program, context),
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CombatTriggerKeyword(program)) => {
+            apply_combat_trigger_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleFaceModalLine(program)) => {
+            apply_oracle_face_modal_line_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleComposition(program)) => {
+            apply_oracle_composition_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::StaticSpecialKeyword(program)) => {
+            apply_static_special_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::TargetingProtection(program)) => {
+            apply_targeting_protection_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CreatureCounterKeyword(program)) => {
+            apply_creature_counter_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::LevelProgression(program)) => {
+            apply_level_progression_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::AlternateZoneCastKeyword(program)) => {
+            apply_alternate_zone_cast_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CastModifierKeyword(program)) => {
+            apply_cast_modifier_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CastChoiceKeyword(program)) => {
+            apply_cast_choice_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::FaceDownMergeKeyword(program)) => {
+            apply_face_down_merge_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::LinkedCastCostKeyword(program)) => {
+            apply_linked_cast_cost_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::DelayedCounterKeyword(program)) => {
+            apply_delayed_counter_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::CombatSpecialKeyword(program)) => {
+            apply_combat_special_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::ExtendedCastZoneKeyword(program)) => {
+            apply_extended_cast_zone_keyword_program(state, program, context)
+        }
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::GraveyardHandLibraryKeyword(
+            program,
+        )) => apply_graveyard_hand_library_keyword_program(state, program, context),
+        Effect::StandaloneRuleProgram(StandaloneRuleProgram::RetainedOracleComposition(
+            program,
+        )) => apply_retained_bullet_program(state, program, context),
         Effect::StandaloneRuleProgram(_) => Err(ExecutionError::InvalidAmount(
             "standalone rule program requires its dedicated state adapter",
         )),
@@ -9422,6 +15035,11916 @@ fn apply_effect<S: OracleStateAdapter>(
             Ok(())
         }
     }
+}
+
+fn apply_cast_choice_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CastChoiceKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "cast-choice keyword has no complete production adapter".into(),
+        ));
+    }
+    let action = context.cast_choice_action.ok_or_else(|| {
+        ExecutionError::Adapter("cast-choice keyword requires an exact lifecycle action".into())
+    })?;
+    match action {
+        CastChoiceAction::CastCleave => {
+            let CastChoiceKeywordKind::Cleave {
+                alternative_cost, ..
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || !context.card_was_cast_with_alternative_cost
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(alternative_cost.oracle_text()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_cast_choice_payment(CastChoicePaymentRecord {
+                source: context.source,
+                source_incarnation,
+                payer: context.actor,
+                offspring_paid: false,
+                squad_times_paid: 0,
+                casualty_paid: false,
+                awaken_target: None,
+                cleave_paid: true,
+                impending_time_counters: None,
+                converted_cast: false,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "cast_choice_cleave:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastOffering {
+            sacrificed_permanent,
+        } => {
+            let CastChoiceKeywordKind::Offering { sacrifice_quality } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let sacrificed = state
+                .object(sacrificed_permanent)
+                .ok_or(ExecutionError::MissingObject(sacrificed_permanent))?;
+            let quality_matches = match sacrifice_quality {
+                crate::cast_choice_keyword_runtime::SacrificeQuality::Creature => sacrificed
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature),
+                crate::cast_choice_keyword_runtime::SacrificeQuality::Artifact => sacrificed
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Artifact),
+                crate::cast_choice_keyword_runtime::SacrificeQuality::Subtype(subtype) => {
+                    sacrificed
+                        .characteristics()
+                        .subtypes
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(subtype))
+                }
+            };
+            let final_cost = context.offering_final_mana_cost.as_ref().ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "Offering requires the exact reduced final mana cost".into(),
+                )
+            })?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || sacrificed_permanent == context.source
+                || sacrificed.zone != Zone::Battlefield
+                || sacrificed.controller != context.actor
+                || !quality_matches
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(sacrificed_permanent, Zone::Graveyard)
+                .map_err(ExecutionError::Adapter)?;
+            state
+                .pay_mana(context.actor, final_cost, context.x_value)
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "cast_choice_offering:{}:{sacrificed_permanent}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::PayAssist {
+            assisting_player,
+            generic,
+        } => {
+            if !matches!(program.kind(), CastChoiceKeywordKind::Assist) {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let max_generic = program
+                .exact_source()
+                .split_once("pay up to {")
+                .and_then(|(_, tail)| tail.split_once('}'))
+                .and_then(|(amount, _)| amount.parse::<u32>().ok())
+                .ok_or_else(|| ExecutionError::Adapter("Assist limit is unavailable".into()))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Stack
+                || source.controller != context.actor
+                || assisting_player == context.actor
+                || state.player(assisting_player).is_none()
+                || generic == 0
+                || generic > max_generic
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(assisting_player, &ManaCost(format!("{{{generic}}}")), 0)
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            state.record_mutation(format!(
+                "cast_choice_assist:{}:{assisting_player}:{generic}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastImpending => {
+            let CastChoiceKeywordKind::Impending {
+                time_counters,
+                alternative_cost,
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || !context.card_was_cast_with_alternative_cost
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(alternative_cost.oracle_text()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_cast_choice_payment(CastChoicePaymentRecord {
+                source: context.source,
+                source_incarnation,
+                payer: context.actor,
+                offspring_paid: false,
+                squad_times_paid: 0,
+                casualty_paid: false,
+                awaken_target: None,
+                cleave_paid: false,
+                impending_time_counters: Some(*time_counters),
+                converted_cast: false,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "cast_choice_impending:{}:{time_counters}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::ResolveImpendingEntry => {
+            let CastChoiceKeywordKind::Impending { time_counters, .. } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let record = state.cast_choice_payment(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("Impending cast receipt is missing".into())
+            })?;
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::Triggered(TriggerEvent::ObjectEntered { object }) if object == context.source)
+                || source.zone != Zone::Battlefield
+                || state.object_incarnation(context.source)
+                    != Some(record.source_incarnation.saturating_add(1))
+                || record.impending_time_counters != Some(*time_counters)
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            source.counters.insert("time".into(), *time_counters);
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "cast_choice_impending_enter:{}:{time_counters}",
+                context.source
+            ));
+            Ok(())
+        }
+        CastChoiceAction::ResolveImpendingCounterTrigger => {
+            let CastChoiceKeywordKind::Impending { .. } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let mut record = state.cast_choice_payment(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("Impending permanent receipt is missing".into())
+            })?;
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let amount = source.counters.get("time").copied().unwrap_or(0);
+            if !matches!(context.window, ActionWindow::Triggered(TriggerEvent::BeginningOf { step: Step::EndStep, active_player, .. }) if active_player == source.controller)
+                || source.zone != Zone::Battlefield
+                || state.object_incarnation(context.source)
+                    != Some(record.source_incarnation.saturating_add(1))
+                || amount == 0
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            if amount == 1 {
+                source.counters.remove("time");
+                record.impending_time_counters = Some(0);
+            } else {
+                source.counters.insert("time".into(), amount - 1);
+                record.impending_time_counters = Some(amount - 1);
+            }
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state.register_cast_choice_payment(record);
+            state.record_mutation(format!(
+                "cast_choice_impending_counter:{}:{}",
+                context.source,
+                amount - 1
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastMoreThanMeetsTheEye => {
+            let CastChoiceKeywordKind::MoreThanMeetsTheEye { alternative_cost } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || source.back.is_none()
+                || !context.card_was_cast_with_alternative_cost
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(alternative_cost.oracle_text()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            source.active_face = 1;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_cast_choice_payment(CastChoicePaymentRecord {
+                source: context.source,
+                source_incarnation,
+                payer: context.actor,
+                offspring_paid: false,
+                squad_times_paid: 0,
+                casualty_paid: false,
+                awaken_target: None,
+                cleave_paid: false,
+                impending_time_counters: None,
+                converted_cast: true,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "cast_choice_more_than_meets_the_eye:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::PayOffspring { pay } => {
+            let CastChoiceKeywordKind::Offspring { additional_cost } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            register_cast_choice_payment(
+                state,
+                program,
+                context,
+                pay.then_some(ManaCost(additional_cost.oracle_text())),
+                pay,
+                0,
+                false,
+            )
+        }
+        CastChoiceAction::PaySquad { times } => {
+            let CastChoiceKeywordKind::Squad {
+                repeatable_additional_cost,
+                ..
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            pay_repeated_cast_choice_cost(state, context, repeatable_additional_cost, times)?;
+            register_cast_choice_payment(state, program, context, None, false, times, false)
+        }
+        CastChoiceAction::PayStrive => {
+            let CastChoiceKeywordKind::Strive {
+                additional_cost_per_extra_target,
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let target_count = context
+                .targets
+                .values()
+                .try_fold(0u32, |count, targets| {
+                    count.checked_add(u32::try_from(targets.len()).ok()?)
+                })
+                .ok_or(ExecutionError::InvalidAmount(
+                    "Strive target count exceeds the production range",
+                ))?;
+            if target_count == 0 {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            pay_repeated_cast_choice_mana(
+                state,
+                context,
+                additional_cost_per_extra_target,
+                target_count - 1,
+            )?;
+            state.record_mutation(format!(
+                "cast_choice_strive_paid:{}:{}:{}",
+                context.source,
+                target_count - 1,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::PayEscalate => {
+            let CastChoiceKeywordKind::Escalate {
+                additional_cost_per_extra_mode,
+                available_modes,
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let selected = context.selected_modes.iter().copied().collect::<Vec<_>>();
+            if selected.is_empty()
+                || selected.len() != context.selected_modes.len()
+                || selected
+                    .iter()
+                    .any(|mode| u32::from(*mode) >= *available_modes)
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let extra = u32::try_from(selected.len() - 1).map_err(|_| {
+                ExecutionError::InvalidAmount("Escalate mode count exceeds the production range")
+            })?;
+            pay_repeated_cast_choice_cost(state, context, additional_cost_per_extra_mode, extra)?;
+            state.record_mutation(format!(
+                "cast_choice_escalate_paid:{}:{extra}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::PayCasualty {
+            sacrificed_creature,
+        } => {
+            let CastChoiceKeywordKind::Casualty { minimum_power, .. } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Stack
+                || source.controller != context.actor
+                || state.cast_choice_payment(context.source).is_some()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            if let Some(creature_id) = sacrificed_creature {
+                let creature = state
+                    .object(creature_id)
+                    .ok_or(ExecutionError::MissingObject(creature_id))?;
+                if creature.zone != Zone::Battlefield
+                    || creature.controller != context.actor
+                    || !creature
+                        .characteristics()
+                        .card_types
+                        .contains(&CardType::Creature)
+                    || creature.characteristics().power < i64::from(*minimum_power)
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                state
+                    .move_object(creature_id, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+            register_cast_choice_payment(
+                state,
+                program,
+                context,
+                None,
+                false,
+                0,
+                sacrificed_creature.is_some(),
+            )
+        }
+        CastChoiceAction::ResolveCastTrigger => {
+            let CastChoiceKeywordKind::Casualty {
+                reminder_mentions_new_targets,
+                ..
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let record = state
+                .consume_cast_choice_payment(context.source)
+                .ok_or_else(|| ExecutionError::Adapter("Casualty receipt is missing".into()))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(
+                context.window,
+                ActionWindow::Triggered(TriggerEvent::SpellCast { player, spell, .. })
+                    if player == record.payer && spell == context.source
+            ) || source.zone != Zone::Stack
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            if record.casualty_paid {
+                let mut copy = source;
+                let id = state.allocate_object_id();
+                copy.id = id;
+                copy.origin_id = id;
+                copy.copy_of = Some(context.source);
+                copy.token = false;
+                state
+                    .insert_physical_object(copy)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!(
+                    "cast_choice_casualty_copy:{}:{id}:{}:{}",
+                    context.source,
+                    reminder_mentions_new_targets,
+                    program.semantic_digest()
+                ));
+            }
+            Ok(())
+        }
+        CastChoiceAction::CastEmerge {
+            sacrificed_permanent,
+        } => {
+            let CastChoiceKeywordKind::Emerge {
+                alternative_cost,
+                sacrifice_quality,
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let sacrificed = state
+                .object(sacrificed_permanent)
+                .ok_or(ExecutionError::MissingObject(sacrificed_permanent))?;
+            let quality_matches = match sacrifice_quality {
+                crate::cast_choice_keyword_runtime::SacrificeQuality::Creature => sacrificed
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature),
+                crate::cast_choice_keyword_runtime::SacrificeQuality::Artifact => sacrificed
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Artifact),
+                crate::cast_choice_keyword_runtime::SacrificeQuality::Subtype(subtype) => {
+                    sacrificed
+                        .characteristics()
+                        .subtypes
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(subtype))
+                }
+            };
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || sacrificed_permanent == context.source
+                || sacrificed.zone != Zone::Battlefield
+                || sacrificed.controller != context.actor
+                || !quality_matches
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let reduction = sacrificed.characteristics().mana_value;
+            state
+                .move_object(sacrificed_permanent, Zone::Graveyard)
+                .map_err(ExecutionError::Adapter)?;
+            let payable_cost =
+                reduce_generic_mana_cost(&alternative_cost.oracle_text(), reduction)?;
+            state
+                .pay_mana(context.actor, &payable_cost, context.x_value)
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            let mut source = source;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "cast_choice_emerge:{}:{sacrificed_permanent}:{reduction}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastWebSlinging { returned_creature } => {
+            let CastChoiceKeywordKind::WebSlinging { alternative_cost } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let returned = state
+                .object(returned_creature)
+                .ok_or(ExecutionError::MissingObject(returned_creature))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || returned.zone != Zone::Battlefield
+                || returned.controller != context.actor
+                || !returned.tapped
+                || !returned
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(returned_creature, Zone::Hand)
+                .map_err(ExecutionError::Adapter)?;
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(alternative_cost.oracle_text()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            let mut source = source;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "cast_choice_web_slinging:{}:{returned_creature}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastAwaken { target_land } => {
+            let CastChoiceKeywordKind::Awaken {
+                alternative_cost, ..
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let land = state
+                .object(target_land)
+                .ok_or(ExecutionError::MissingObject(target_land))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || land.zone != Zone::Battlefield
+                || land.controller != context.actor
+                || !land.characteristics().card_types.contains(&CardType::Land)
+                || state.cast_choice_payment(context.source).is_some()
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(alternative_cost.oracle_text()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            let target_incarnation = state
+                .object_incarnation(target_land)
+                .ok_or(ExecutionError::MissingObject(target_land))?;
+            let mut source = source;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_cast_choice_payment(CastChoicePaymentRecord {
+                source: context.source,
+                source_incarnation,
+                payer: context.actor,
+                offspring_paid: false,
+                squad_times_paid: 0,
+                casualty_paid: false,
+                awaken_target: Some((target_land, target_incarnation)),
+                cleave_paid: false,
+                impending_time_counters: None,
+                converted_cast: false,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "cast_choice_awaken_cast:{}:{target_land}:{target_incarnation}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::ResolveAwaken => {
+            let CastChoiceKeywordKind::Awaken { counters, .. } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let record = state
+                .consume_cast_choice_payment(context.source)
+                .ok_or_else(|| ExecutionError::Adapter("Awaken receipt is missing".into()))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let (target_land, target_incarnation) = record.awaken_target.ok_or_else(|| {
+                ExecutionError::Adapter("Awaken target receipt is missing".into())
+            })?;
+            let land = state
+                .object(target_land)
+                .ok_or(ExecutionError::MissingObject(target_land))?;
+            if !matches!(context.window, ActionWindow::SpellResolution)
+                || source.zone != Zone::Stack
+                || record.payer != context.actor
+                || record.program_sha256 != program.semantic_digest()
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || state.object_incarnation(target_land) != Some(target_incarnation)
+                || land.zone != Zone::Battlefield
+                || land.controller != context.actor
+                || !land.characteristics().card_types.contains(&CardType::Land)
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            apply_put_counter(
+                state,
+                &ObjectRef::ObjectIdentity(target_land),
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(*counters),
+                context,
+            )?;
+            apply_effect(
+                state,
+                &Effect::SetCharacteristics(SetCharacteristics {
+                    object: ObjectRef::ObjectIdentity(target_land),
+                    colors: None,
+                    card_types: Some(vec![CardType::Creature]),
+                    subtypes: Some(vec!["Elemental".to_owned()]),
+                    name: None,
+                    base_power: Some(Amount::Constant(0)),
+                    base_toughness: Some(Amount::Constant(0)),
+                    retain_other_card_types: true,
+                    retain_other_subtypes: true,
+                    retain_other_colors: true,
+                    retain_other_names: true,
+                    duration: Duration::Permanent,
+                }),
+                context,
+            )?;
+            apply_effect(
+                state,
+                &Effect::GrantKeyword {
+                    objects: ObjectRef::ObjectIdentity(target_land),
+                    keywords: vec![Keyword::Haste],
+                    duration: Duration::Permanent,
+                },
+                context,
+            )?;
+            state.record_mutation(format!(
+                "cast_choice_awaken_resolve:{}:{target_land}:{counters}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastPrototype => {
+            let CastChoiceKeywordKind::Prototype {
+                alternative_cost,
+                power,
+                toughness,
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || state.prototype_cast(context.source).is_some()
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let (mana_value, colors) = prototype_mana_value_and_colors(alternative_cost)?;
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(alternative_cost.oracle_text()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            let original_front = source.front.clone();
+            source.controller = context.actor;
+            source.front.mana_value = mana_value;
+            source.front.colors = colors;
+            source.front.power = i64::from(*power);
+            source.front.toughness = i64::from(*toughness);
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_prototype_cast(PrototypeCastRecord {
+                source: context.source,
+                source_incarnation,
+                caster: context.actor,
+                original_front,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "cast_choice_prototype_cast:{}:{source_incarnation}:{mana_value}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::PrototypeZoneChange { destination } => {
+            let CastChoiceKeywordKind::Prototype { .. } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let mut record = state.prototype_cast(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("Prototype cast receipt is missing".into())
+            })?;
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::Replacement)
+                || record.caster != context.actor
+                || record.program_sha256 != program.semantic_digest()
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || !matches!(source.zone, Zone::Stack | Zone::Battlefield)
+                || destination == source.zone
+                || (destination == Zone::Battlefield && source.zone != Zone::Stack)
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            if source.zone == Zone::Stack && destination == Zone::Battlefield {
+                state
+                    .move_object(context.source, destination)
+                    .map_err(ExecutionError::Adapter)?;
+                record.source_incarnation = state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                state.register_prototype_cast(record);
+            } else {
+                source.front = record.original_front;
+                state.put_object(source).map_err(ExecutionError::Adapter)?;
+                state
+                    .move_object(context.source, destination)
+                    .map_err(ExecutionError::Adapter)?;
+                state.consume_prototype_cast(context.source);
+            }
+            state.record_mutation(format!(
+                "cast_choice_prototype_zone:{}:{destination:?}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastMiracle => {
+            let CastChoiceKeywordKind::Miracle { alternative_cost } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(
+                context.window,
+                ActionWindow::Triggered(TriggerEvent::CardDrawn {
+                    player,
+                    card,
+                    occurrence_this_turn: 1,
+                }) if player == context.actor && card == context.source
+            ) || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(alternative_cost.oracle_text()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            let mut source = source;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "cast_choice_miracle:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::RecordMayhemDiscard => {
+            let CastChoiceKeywordKind::Mayhem { .. } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(
+                context.window,
+                ActionWindow::Triggered(TriggerEvent::PlayerAction {
+                    player,
+                    action: PlayerActionKind::Discard,
+                    object: Some(object),
+                }) if player == context.actor && object == context.source
+            ) || source.zone != Zone::Graveyard
+                || source.owner != context.actor
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.record_mayhem_discard(context.source, incarnation);
+            state.record_mutation(format!(
+                "cast_choice_mayhem_discard:{}:{incarnation}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastMayhem => {
+            let CastChoiceKeywordKind::Mayhem {
+                alternative_cost,
+                permits_land_play,
+            } = program.kind()
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let recorded_incarnation = state
+                .mayhem_discard_incarnation(context.source)
+                .ok_or_else(|| {
+                    ExecutionError::Adapter("Mayhem discard receipt is missing".into())
+                })?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Graveyard
+                || source.owner != context.actor
+                || state.object_incarnation(context.source) != Some(recorded_incarnation)
+                || !context.mayhem_cast_timing_legal
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            match (alternative_cost, permits_land_play) {
+                (Some(cost), false) => {
+                    if !context.alternate_cast_other_costs_paid
+                        || source
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Land)
+                    {
+                        return Err(ExecutionError::ActivationRestrictionFailed);
+                    }
+                    state
+                        .pay_mana(
+                            context.actor,
+                            &ManaCost(cost.oracle_text()),
+                            context.x_value,
+                        )
+                        .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+                    let mut source = source;
+                    source.controller = context.actor;
+                    state.put_object(source).map_err(ExecutionError::Adapter)?;
+                    state
+                        .move_object(context.source, Zone::Stack)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                (None, true) => {
+                    if !source
+                        .characteristics()
+                        .card_types
+                        .contains(&CardType::Land)
+                        || !context.sorcery_timing
+                        || context.active_player != context.actor
+                    {
+                        return Err(ExecutionError::ActivationRestrictionFailed);
+                    }
+                    let mut player = state
+                        .player(context.actor)
+                        .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                    if player.land_plays_remaining == 0 {
+                        return Err(ExecutionError::ActivationRestrictionFailed);
+                    }
+                    player.land_plays_remaining -= 1;
+                    state.put_player(player).map_err(ExecutionError::Adapter)?;
+                    let mut source = source;
+                    source.controller = context.actor;
+                    state.put_object(source).map_err(ExecutionError::Adapter)?;
+                    state
+                        .move_object(context.source, Zone::Battlefield)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                _ => {
+                    return Err(ExecutionError::Adapter(
+                        "Mayhem program has inconsistent play semantics".into(),
+                    ));
+                }
+            }
+            state.consume_mayhem_discard(context.source);
+            state.record_mutation(format!(
+                "cast_choice_mayhem_play:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::RecordFreerunningCombatDamage => {
+            let CastChoiceKeywordKind::Freerunning { .. } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let ActionWindow::Triggered(TriggerEvent::CombatDamageToPlayer {
+                source, amount, ..
+            }) = context.window
+            else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let damage_source = state
+                .object(source)
+                .ok_or(ExecutionError::MissingObject(source))?;
+            let is_assassin = damage_source
+                .characteristics()
+                .subtypes
+                .iter()
+                .any(|subtype| subtype.eq_ignore_ascii_case("Assassin"));
+            if amount == 0
+                || damage_source.controller != context.actor
+                || (!is_assassin && !state.is_commander(source))
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state.record_freerunning_eligibility(context.actor);
+            state.record_mutation(format!(
+                "cast_choice_freerunning_damage:{}:{source}:{}",
+                context.actor,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::CastFreerunning {
+            returned_blue_creature,
+        } => {
+            let CastChoiceKeywordKind::Freerunning { alternative_cost } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || !state.freerunning_eligible(context.actor)
+                || !context.freerunning_cast_timing_legal
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            match (alternative_cost.mana.as_ref(), alternative_cost.nonmana.as_slice()) {
+                (Some(mana), []) if returned_blue_creature.is_none() => {
+                    state
+                        .pay_mana(
+                            context.actor,
+                            &ManaCost(mana.oracle_text()),
+                            context.x_value,
+                        )
+                        .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+                }
+                (
+                    None,
+                    [crate::cast_choice_keyword_runtime::NonManaCost::ReturnBlueCreatureYouControlToOwnersHand],
+                ) => {
+                    let returned_id = returned_blue_creature.ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "Freerunning requires the returned blue creature".into(),
+                        )
+                    })?;
+                    let returned = state
+                        .object(returned_id)
+                        .ok_or(ExecutionError::MissingObject(returned_id))?;
+                    if returned.zone != Zone::Battlefield
+                        || returned.controller != context.actor
+                        || !returned
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature)
+                        || !returned.characteristics().colors.contains(&Color::Blue)
+                    {
+                        return Err(ExecutionError::ActivationRestrictionFailed);
+                    }
+                    state
+                        .move_object(returned_id, Zone::Hand)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                _ => {
+                    return Err(ExecutionError::Adapter(
+                        "Freerunning cost is outside the production subset".into(),
+                    ));
+                }
+            }
+            let mut source = source;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "cast_choice_freerunning_cast:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CastChoiceAction::ResolveEntry => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(
+                context.window,
+                ActionWindow::Triggered(TriggerEvent::ObjectEntered { object })
+                    if object == context.source
+            ) || source.zone != Zone::Battlefield
+                || source.controller != context.actor
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let record = state
+                .consume_cast_choice_payment(context.source)
+                .ok_or_else(|| {
+                    ExecutionError::Adapter("cast-choice entry receipt is missing".into())
+                })?;
+            if record.payer != context.actor
+                || record.program_sha256 != program.semantic_digest()
+                || state.object_incarnation(context.source)
+                    != Some(record.source_incarnation.saturating_add(1))
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            match program.kind() {
+                CastChoiceKeywordKind::Offspring { .. } if record.offspring_paid => {
+                    create_cast_choice_copy_tokens(state, context, 1, true)?;
+                }
+                CastChoiceKeywordKind::Squad { entry_kind, .. } if record.squad_times_paid > 0 => {
+                    let legal_kind = match entry_kind {
+                        crate::cast_choice_keyword_runtime::SquadEntryKind::Creature => source
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature),
+                        crate::cast_choice_keyword_runtime::SquadEntryKind::Enchantment => source
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Enchantment),
+                    };
+                    if !legal_kind {
+                        return Err(ExecutionError::ActivationRestrictionFailed);
+                    }
+                    create_cast_choice_copy_tokens(state, context, record.squad_times_paid, false)?;
+                }
+                CastChoiceKeywordKind::Offspring { .. } | CastChoiceKeywordKind::Squad { .. } => {}
+                _ => return Err(ExecutionError::ActivationRestrictionFailed),
+            }
+            state.record_mutation(format!(
+                "cast_choice_entry:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn apply_face_down_merge_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &FaceDownMergeKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "face-down or merge keyword has no complete production adapter".into(),
+        ));
+    }
+    let action = context.face_down_merge_action.ok_or_else(|| {
+        ExecutionError::Adapter("face-down keyword requires an exact lifecycle action".into())
+    })?;
+    match action {
+        FaceDownMergeAction::CastFaceDown => {
+            let disguise_ward = match program.kind() {
+                FaceDownMergeKeywordKind::Morph { .. }
+                | FaceDownMergeKeywordKind::Megamorph { .. } => false,
+                FaceDownMergeKeywordKind::Disguise { .. } => true,
+                FaceDownMergeKeywordKind::Mutate { .. } => {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+            };
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if context.window != ActionWindow::CastingAdditionalCost
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || !context.card_was_cast_with_alternative_cost
+                || !context.alternate_cast_other_costs_paid
+                || state.face_down_cast(context.source).is_some()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(context.actor, &ManaCost("{3}".to_owned()), 0)
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            let original_front = source.front.clone();
+            let original_back = source.back.clone();
+            source.face_down = true;
+            source.active_face = 0;
+            source.front = ObjectCharacteristics {
+                names: Vec::new(),
+                card_types: vec![CardType::Creature],
+                supertypes: Vec::new(),
+                subtypes: Vec::new(),
+                colors: Vec::new(),
+                mana_value: 0,
+                power: 2,
+                toughness: 2,
+                keywords: disguise_ward
+                    .then_some(Keyword::Ward(Box::new(WardCost::Mana(ManaCost(
+                        "{2}".to_owned(),
+                    )))))
+                    .into_iter()
+                    .collect(),
+                abilities: Vec::new(),
+            };
+            source.back = None;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_face_down_cast(FaceDownCastRecord {
+                source: context.source,
+                source_incarnation,
+                controller: context.actor,
+                original_front,
+                original_back,
+                disguise_ward,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "face_down_cast:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        FaceDownMergeAction::ResolveFaceDown => {
+            let mut record = state.face_down_cast(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("missing exact face-down cast receipt".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if context.window != ActionWindow::SpellResolution
+                || source.zone != Zone::Stack
+                || !source.face_down
+                || record.source_incarnation
+                    != state.object_incarnation(context.source).unwrap_or(0)
+                || record.controller != context.actor
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Battlefield)
+                .map_err(ExecutionError::Adapter)?;
+            record.source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_face_down_cast(record);
+            state.record_mutation(format!("face_down_resolved:{}", context.source));
+            Ok(())
+        }
+        FaceDownMergeAction::TurnFaceUp => {
+            let record = state.face_down_cast(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("missing exact face-down permanent receipt".into())
+            })?;
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if context.window != ActionWindow::SpecialAction(SpecialActionTiming::TurnFaceUp)
+                || source.zone != Zone::Battlefield
+                || !source.face_down
+                || source.controller != context.actor
+                || record.source_incarnation
+                    != state.object_incarnation(context.source).unwrap_or(0)
+                || record.controller != context.actor
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let add_megamorph_counter = match program.kind() {
+                FaceDownMergeKeywordKind::Morph { face_up_cost } => {
+                    pay_turn_face_up_cost(state, context, face_up_cost)?;
+                    false
+                }
+                FaceDownMergeKeywordKind::Megamorph { face_up_cost } => {
+                    pay_turn_face_up_cost(
+                        state,
+                        context,
+                        &TurnFaceUpCost::Mana(face_up_cost.clone()),
+                    )?;
+                    true
+                }
+                FaceDownMergeKeywordKind::Disguise { face_up_cost, .. } => {
+                    pay_turn_face_up_cost(
+                        state,
+                        context,
+                        &TurnFaceUpCost::Mana(face_up_cost.clone()),
+                    )?;
+                    false
+                }
+                FaceDownMergeKeywordKind::Mutate { .. } => {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+            };
+            source.front = record.original_front;
+            source.back = record.original_back;
+            source.face_down = false;
+            source.active_face = 0;
+            if add_megamorph_counter {
+                *source.counters.entry("+1/+1".to_owned()).or_default() += 1;
+            }
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state.consume_face_down_cast(context.source);
+            state.record_mutation(format!(
+                "turn_face_up:{}:{add_megamorph_counter}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        FaceDownMergeAction::CastMutate { target } => {
+            let FaceDownMergeKeywordKind::Mutate { alternative_cost } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let target_object = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if context.window != ActionWindow::CastingAdditionalCost
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || !context.card_was_cast_with_alternative_cost
+                || !context.alternate_cast_other_costs_paid
+                || state.mutate_cast(context.source).is_some()
+                || target_object.zone != Zone::Battlefield
+                || target_object.owner != context.actor
+                || !target_object
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+                || target_object
+                    .characteristics()
+                    .subtypes
+                    .iter()
+                    .any(|subtype| subtype.eq_ignore_ascii_case("Human"))
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(alternative_cost.exact().to_owned()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            state.register_mutate_cast(MutateCastRecord {
+                source: context.source,
+                source_incarnation: state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?,
+                target,
+                target_incarnation: state
+                    .object_incarnation(target)
+                    .ok_or(ExecutionError::MissingObject(target))?,
+                caster: context.actor,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "mutate_cast:{}:{target}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        FaceDownMergeAction::ResolveMutate { source_on_top } => {
+            let FaceDownMergeKeywordKind::Mutate { .. } = program.kind() else {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            };
+            let record = state.mutate_cast(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("missing exact mutate cast receipt".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if context.window != ActionWindow::SpellResolution
+                || source.zone != Zone::Stack
+                || source.controller != context.actor
+                || record.source_incarnation
+                    != state.object_incarnation(context.source).unwrap_or(0)
+                || record.caster != context.actor
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let legal_target = state.object(record.target).filter(|target| {
+                target.zone == Zone::Battlefield
+                    && target.owner == context.actor
+                    && state.object_incarnation(record.target) == Some(record.target_incarnation)
+                    && target
+                        .characteristics()
+                        .card_types
+                        .contains(&CardType::Creature)
+                    && !target
+                        .characteristics()
+                        .subtypes
+                        .iter()
+                        .any(|subtype| subtype.eq_ignore_ascii_case("Human"))
+            });
+            let Some(mut target) = legal_target else {
+                state
+                    .move_object(context.source, Zone::Battlefield)
+                    .map_err(ExecutionError::Adapter)?;
+                state.consume_mutate_cast(context.source);
+                state.record_mutation(format!("mutate_resolved_without_target:{}", context.source));
+                return Ok(());
+            };
+
+            let source_characteristics = source.front.clone();
+            let mut merged =
+                state
+                    .merged_permanent(record.target)
+                    .unwrap_or_else(|| MergedPermanentRecord {
+                        object: record.target,
+                        component_objects: vec![record.target],
+                        top_component: record.target,
+                        component_characteristics: BTreeMap::from([(
+                            record.target,
+                            target.front.clone(),
+                        )]),
+                        program_sha256s: Vec::new(),
+                    });
+            let prior_abilities = target.front.abilities.clone();
+            let prior_keywords = target.front.keywords.clone();
+            if source_on_top {
+                target.front = source_characteristics.clone();
+                target.front.abilities.extend(prior_abilities);
+                target.front.keywords.extend(prior_keywords);
+                target.token = source.token;
+                merged.top_component = context.source;
+            } else {
+                target
+                    .front
+                    .abilities
+                    .extend(source_characteristics.abilities.clone());
+                target
+                    .front
+                    .keywords
+                    .extend(source_characteristics.keywords.clone());
+            }
+            merged.component_objects.push(context.source);
+            merged
+                .component_characteristics
+                .insert(context.source, source_characteristics);
+            merged
+                .program_sha256s
+                .push(program.semantic_digest().to_owned());
+            state
+                .move_object(context.source, Zone::Merged)
+                .map_err(ExecutionError::Adapter)?;
+            state.put_object(target).map_err(ExecutionError::Adapter)?;
+            state.register_merged_permanent(merged);
+            state.consume_mutate_cast(context.source);
+            state.record_mutation(format!(
+                "mutate_merged:{}:{}:{source_on_top}:{}",
+                context.source,
+                record.target,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn pay_turn_face_up_cost<S: OracleStateAdapter>(
+    state: &mut S,
+    context: &ExecutionContext,
+    cost: &TurnFaceUpCost,
+) -> Result<(), ExecutionError> {
+    let objects = &context.face_down_merge_cost_objects;
+    let expected = match cost {
+        TurnFaceUpCost::Mana(_) | TurnFaceUpCost::PayLife(_) => 0usize,
+        TurnFaceUpCost::DiscardFromHand { count, .. }
+        | TurnFaceUpCost::ReturnControlledToOwnersHand { count, .. }
+        | TurnFaceUpCost::RevealFromHand { count, .. }
+        | TurnFaceUpCost::SacrificeControlled { count, .. } => {
+            usize::try_from(*count).map_err(|_| ExecutionError::ArithmeticOverflow)?
+        }
+    };
+    if objects.len() != expected
+        || objects.iter().copied().collect::<BTreeSet<_>>().len() != expected
+    {
+        return Err(ExecutionError::Adapter(
+            "turn-face-up cost object receipt is incomplete or duplicated".into(),
+        ));
+    }
+    match cost {
+        TurnFaceUpCost::Mana(cost) => state
+            .pay_mana(
+                context.actor,
+                &ManaCost(cost.exact().to_owned()),
+                context.x_value,
+            )
+            .map_err(|reason| ExecutionError::CostFailed { index: 0, reason }),
+        TurnFaceUpCost::PayLife(amount) => {
+            let mut player = state
+                .player(context.actor)
+                .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+            let amount = i64::from(*amount);
+            if player.life <= amount {
+                return Err(ExecutionError::CostFailed {
+                    index: 0,
+                    reason: "insufficient life for turn-face-up cost".into(),
+                });
+            }
+            player.life -= amount;
+            state.put_player(player).map_err(ExecutionError::Adapter)
+        }
+        TurnFaceUpCost::DiscardFromHand { filter, .. }
+        | TurnFaceUpCost::RevealFromHand { filter, .. } => {
+            if matches!(cost, TurnFaceUpCost::RevealFromHand { .. })
+                && !context.face_down_merge_reveal_complete
+            {
+                return Err(ExecutionError::Adapter(
+                    "turn-face-up reveal receipt is incomplete".into(),
+                ));
+            }
+            for id in objects {
+                let object = state
+                    .object(*id)
+                    .ok_or(ExecutionError::MissingObject(*id))?;
+                if object.zone != Zone::Hand
+                    || object.owner != context.actor
+                    || !face_down_card_matches(&object, filter)
+                {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot pay the turn-face-up hand cost"
+                    )));
+                }
+            }
+            if matches!(cost, TurnFaceUpCost::DiscardFromHand { .. }) {
+                for id in objects {
+                    state
+                        .move_object(*id, Zone::Graveyard)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+            } else {
+                state.record_mutation(format!("turn_face_up_reveal:{objects:?}"));
+            }
+            Ok(())
+        }
+        TurnFaceUpCost::ReturnControlledToOwnersHand { filter, .. }
+        | TurnFaceUpCost::SacrificeControlled { filter, .. } => {
+            for id in objects {
+                let object = state
+                    .object(*id)
+                    .ok_or(ExecutionError::MissingObject(*id))?;
+                if object.zone != Zone::Battlefield
+                    || object.controller != context.actor
+                    || !face_down_permanent_matches(&object, context.source, filter)
+                {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {id} cannot pay the turn-face-up permanent cost"
+                    )));
+                }
+            }
+            let destination = if matches!(cost, TurnFaceUpCost::ReturnControlledToOwnersHand { .. })
+            {
+                Zone::Hand
+            } else {
+                Zone::Graveyard
+            };
+            for id in objects {
+                state
+                    .move_object(*id, destination)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn face_down_card_matches(object: &PhysicalObject, filter: &FaceDownCardFilter) -> bool {
+    match filter {
+        FaceDownCardFilter::Any => true,
+        FaceDownCardFilter::Color(color) => {
+            object.characteristics().colors.contains(&match color {
+                crate::face_down_merge_keyword_runtime::ManaColor::White => Color::White,
+                crate::face_down_merge_keyword_runtime::ManaColor::Blue => Color::Blue,
+                crate::face_down_merge_keyword_runtime::ManaColor::Black => Color::Black,
+                crate::face_down_merge_keyword_runtime::ManaColor::Red => Color::Red,
+                crate::face_down_merge_keyword_runtime::ManaColor::Green => Color::Green,
+            })
+        }
+        FaceDownCardFilter::Subtype(subtype) => object
+            .characteristics()
+            .subtypes
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(subtype)),
+    }
+}
+
+fn face_down_permanent_matches(
+    object: &PhysicalObject,
+    source: ObjectId,
+    filter: &FaceDownPermanentFilter,
+) -> bool {
+    match filter {
+        FaceDownPermanentFilter::AnotherCreature => {
+            object.id != source
+                && object
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+        }
+        FaceDownPermanentFilter::Subtype(subtype) => object
+            .characteristics()
+            .subtypes
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(subtype)),
+    }
+}
+
+fn prototype_mana_value_and_colors(
+    mana: &crate::cast_choice_keyword_runtime::ManaCost,
+) -> Result<(u32, Vec<Color>), ExecutionError> {
+    use crate::cast_choice_keyword_runtime::{ManaColor, ManaSymbol};
+
+    let mut mana_value = 0u32;
+    let mut colors = BTreeSet::new();
+    let mut add_color = |color: ManaColor| {
+        colors.insert(match color {
+            ManaColor::White => Color::White,
+            ManaColor::Blue => Color::Blue,
+            ManaColor::Black => Color::Black,
+            ManaColor::Red => Color::Red,
+            ManaColor::Green => Color::Green,
+        });
+    };
+    for symbol in &mana.symbols {
+        match symbol {
+            ManaSymbol::Generic(amount) => {
+                mana_value = mana_value
+                    .checked_add(*amount)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+            ManaSymbol::Colored(color) | ManaSymbol::Phyrexian(color) => {
+                mana_value = mana_value
+                    .checked_add(1)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+                add_color(*color);
+            }
+            ManaSymbol::Hybrid(first, second) => {
+                mana_value = mana_value
+                    .checked_add(1)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+                add_color(*first);
+                add_color(*second);
+            }
+            ManaSymbol::Colorless | ManaSymbol::Snow => {
+                mana_value = mana_value
+                    .checked_add(1)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+            ManaSymbol::VariableX => {
+                return Err(ExecutionError::Adapter(
+                    "Prototype production cost cannot contain X".into(),
+                ));
+            }
+        }
+    }
+    Ok((mana_value, colors.into_iter().collect()))
+}
+
+fn pay_repeated_cast_choice_mana<S: OracleStateAdapter>(
+    state: &mut S,
+    context: &ExecutionContext,
+    mana: &crate::cast_choice_keyword_runtime::ManaCost,
+    times: u32,
+) -> Result<(), ExecutionError> {
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+        || source.zone != Zone::Stack
+        || source.controller != context.actor
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    for index in 0..times {
+        state
+            .pay_mana(
+                context.actor,
+                &ManaCost(mana.oracle_text()),
+                context.x_value,
+            )
+            .map_err(|reason| ExecutionError::CostFailed {
+                index: usize::try_from(index).unwrap_or(usize::MAX),
+                reason,
+            })?;
+    }
+    Ok(())
+}
+
+fn pay_repeated_cast_choice_cost<S: OracleStateAdapter>(
+    state: &mut S,
+    context: &ExecutionContext,
+    cost: &crate::cast_choice_keyword_runtime::CostExpression,
+    times: u32,
+) -> Result<(), ExecutionError> {
+    use crate::cast_choice_keyword_runtime::NonManaCost;
+
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+        || source.zone != Zone::Stack
+        || source.controller != context.actor
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+
+    let required_per_repetition = cost.nonmana.iter().try_fold(0usize, |count, item| {
+        let amount = match item {
+            NonManaCost::TapUntappedCreatureYouControl => 1,
+            NonManaCost::DiscardCards(amount)
+            | NonManaCost::ExileCardsFromYourGraveyard(amount) => {
+                usize::try_from(*amount).map_err(|_| ExecutionError::ArithmeticOverflow)?
+            }
+            _ => {
+                return Err(ExecutionError::Adapter(
+                    "cast-choice nonmana cost has no production payment adapter".into(),
+                ));
+            }
+        };
+        count
+            .checked_add(amount)
+            .ok_or(ExecutionError::ArithmeticOverflow)
+    })?;
+    let required = required_per_repetition
+        .checked_mul(usize::try_from(times).map_err(|_| ExecutionError::ArithmeticOverflow)?)
+        .ok_or(ExecutionError::ArithmeticOverflow)?;
+    if context.cast_choice_nonmana_payments.len() != required
+        || context
+            .cast_choice_nonmana_payments
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != required
+    {
+        return Err(ExecutionError::Adapter(
+            "cast-choice nonmana payment receipt is incomplete or reuses an object".into(),
+        ));
+    }
+
+    let mut cursor = 0usize;
+    for _ in 0..times {
+        for item in &cost.nonmana {
+            let count = match item {
+                NonManaCost::TapUntappedCreatureYouControl => 1,
+                NonManaCost::DiscardCards(amount)
+                | NonManaCost::ExileCardsFromYourGraveyard(amount) => {
+                    usize::try_from(*amount).map_err(|_| ExecutionError::ArithmeticOverflow)?
+                }
+                _ => unreachable!("unsupported costs rejected above"),
+            };
+            for object_id in &context.cast_choice_nonmana_payments[cursor..cursor + count] {
+                let object = state
+                    .object(*object_id)
+                    .ok_or(ExecutionError::MissingObject(*object_id))?;
+                let legal = match item {
+                    NonManaCost::TapUntappedCreatureYouControl => {
+                        object.zone == Zone::Battlefield
+                            && object.controller == context.actor
+                            && !object.tapped
+                            && object
+                                .characteristics()
+                                .card_types
+                                .contains(&CardType::Creature)
+                    }
+                    NonManaCost::DiscardCards(_) => {
+                        object.zone == Zone::Hand && object.owner == context.actor
+                    }
+                    NonManaCost::ExileCardsFromYourGraveyard(_) => {
+                        object.zone == Zone::Graveyard && object.owner == context.actor
+                    }
+                    _ => false,
+                };
+                if !legal {
+                    return Err(ExecutionError::Adapter(format!(
+                        "object {object_id} cannot pay the cast-choice nonmana cost"
+                    )));
+                }
+            }
+            cursor += count;
+        }
+    }
+
+    if let Some(mana) = &cost.mana {
+        pay_repeated_cast_choice_mana(state, context, mana, times)?;
+    }
+    cursor = 0;
+    for repetition in 0..times {
+        for item in &cost.nonmana {
+            let count = match item {
+                NonManaCost::TapUntappedCreatureYouControl => 1,
+                NonManaCost::DiscardCards(amount)
+                | NonManaCost::ExileCardsFromYourGraveyard(amount) => {
+                    usize::try_from(*amount).map_err(|_| ExecutionError::ArithmeticOverflow)?
+                }
+                _ => unreachable!("unsupported costs rejected above"),
+            };
+            for object_id in &context.cast_choice_nonmana_payments[cursor..cursor + count] {
+                match item {
+                    NonManaCost::TapUntappedCreatureYouControl => {
+                        let mut object = state
+                            .object(*object_id)
+                            .ok_or(ExecutionError::MissingObject(*object_id))?;
+                        object.tapped = true;
+                        state.put_object(object).map_err(ExecutionError::Adapter)?;
+                    }
+                    NonManaCost::DiscardCards(_) => state
+                        .move_object(*object_id, Zone::Graveyard)
+                        .map_err(ExecutionError::Adapter)?,
+                    NonManaCost::ExileCardsFromYourGraveyard(_) => state
+                        .move_object(*object_id, Zone::Exile)
+                        .map_err(ExecutionError::Adapter)?,
+                    _ => unreachable!("unsupported costs rejected above"),
+                }
+                state.record_mutation(format!(
+                    "cast_choice_nonmana_payment:{}:{repetition}:{object_id}",
+                    context.source
+                ));
+            }
+            cursor += count;
+        }
+    }
+    Ok(())
+}
+
+fn register_cast_choice_payment<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CastChoiceKeywordProgram,
+    context: &ExecutionContext,
+    single_cost: Option<ManaCost>,
+    offspring_paid: bool,
+    squad_times_paid: u32,
+    casualty_paid: bool,
+) -> Result<(), ExecutionError> {
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+        || source.zone != Zone::Stack
+        || source.controller != context.actor
+        || state.cast_choice_payment(context.source).is_some()
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    if let Some(cost) = single_cost {
+        state
+            .pay_mana(context.actor, &cost, 0)
+            .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+    }
+    let source_incarnation = state
+        .object_incarnation(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    state.register_cast_choice_payment(CastChoicePaymentRecord {
+        source: context.source,
+        source_incarnation,
+        payer: context.actor,
+        offspring_paid,
+        squad_times_paid,
+        casualty_paid,
+        awaken_target: None,
+        cleave_paid: false,
+        impending_time_counters: None,
+        converted_cast: false,
+        program_sha256: program.semantic_digest().to_owned(),
+    });
+    state.record_mutation(format!(
+        "cast_choice_payment:{}:{offspring_paid}:{squad_times_paid}:{casualty_paid}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn create_cast_choice_copy_tokens<S: OracleStateAdapter>(
+    state: &mut S,
+    context: &ExecutionContext,
+    requested: u32,
+    offspring_exception: bool,
+) -> Result<(), ExecutionError> {
+    let ordinary = TokenSpecification::CopyOf(ObjectRef::ObjectIdentity(context.source));
+    let (amount, specification) =
+        replace_token_event(state, context.actor, requested, &ordinary, context)?;
+    for _ in 0..amount {
+        let token = match &specification {
+            TokenSpecification::CopyOf(original) => {
+                let original = *resolve_objects(state, original, context)?
+                    .first()
+                    .ok_or(ExecutionError::InvalidAmount("copy token has no original"))?;
+                let token = insert_copy_token(state, context.actor, original)?;
+                if offspring_exception {
+                    let mut object = state
+                        .object(token)
+                        .ok_or(ExecutionError::MissingObject(token))?;
+                    object.characteristics_mut().power = 1;
+                    object.characteristics_mut().toughness = 1;
+                    state.put_object(object).map_err(ExecutionError::Adapter)?;
+                }
+                token
+            }
+            TokenSpecification::Defined(definition) => {
+                insert_defined_token(state, context.actor, definition, context)?
+            }
+            TokenSpecification::ManifestedCard(_) => {
+                return Err(ExecutionError::Adapter(
+                    "cast-choice token replacement cannot manifest".into(),
+                ));
+            }
+        };
+        apply_enters_replacements(state, token, context)?;
+    }
+    Ok(())
+}
+
+/// Returns whether the current stack incarnation was cast for this exact
+/// Overload program. Resolution uses this receipt to interpret every bound
+/// `target` word as `each`; a zone change invalidates it automatically.
+pub fn spell_is_overloaded<S: OracleStateAdapter>(
+    state: &S,
+    source: ObjectId,
+    program: &CastModifierKeywordProgram,
+) -> bool {
+    let Some(record) = state.overload_cast(source) else {
+        return false;
+    };
+    matches!(program.kind(), CastModifierKeywordKind::Overload { .. })
+        && state
+            .object(source)
+            .is_some_and(|object| object.zone == Zone::Stack)
+        && state.object_incarnation(source) == Some(record.source_incarnation)
+        && record.program_sha256 == program.semantic_digest()
+}
+
+/// Returns whether the current stack incarnation paid this exact Cleave cost.
+/// Resolution consumers use the program's content-keyed removed fragments only
+/// when this receipt matches.
+pub fn spell_is_cleaved<S: OracleStateAdapter>(
+    state: &S,
+    source: ObjectId,
+    program: &CastChoiceKeywordProgram,
+) -> bool {
+    state.cast_choice_payment(source).is_some_and(|record| {
+        record.cleave_paid
+            && record.program_sha256 == program.semantic_digest()
+            && state.object_incarnation(source) == Some(record.source_incarnation)
+            && state
+                .object(source)
+                .is_some_and(|object| object.zone == Zone::Stack)
+    })
+}
+
+/// Returns whether this exact Splice program was paid and attached to the
+/// current physical Arcane spell. Both the revealed hand card and stack spell
+/// are incarnation-bound so either zone change invalidates the copied payload.
+pub fn spell_has_spliced_program<S: OracleStateAdapter>(
+    state: &S,
+    spell: ObjectId,
+    source: ObjectId,
+    program: &CastModifierKeywordProgram,
+) -> bool {
+    let Some(record) = state.splice_cast(spell, source) else {
+        return false;
+    };
+    matches!(
+        program.kind(),
+        CastModifierKeywordKind::SpliceOntoArcane { .. }
+    ) && state
+        .object(spell)
+        .is_some_and(|object| object.zone == Zone::Stack)
+        && state
+            .object(source)
+            .is_some_and(|object| object.zone == Zone::Hand)
+        && state.object_incarnation(spell) == Some(record.spell_incarnation)
+        && state.object_incarnation(source) == Some(record.source_incarnation)
+        && record.program_sha256 == program.semantic_digest()
+}
+
+fn cast_modifier_cost_object_matches(
+    object: &PhysicalObject,
+    actor: PlayerId,
+    filter: CastModifierPermanentFilter,
+) -> bool {
+    if object.zone != Zone::Battlefield || object.controller != actor {
+        return false;
+    }
+    let has_subtype = |expected: &str| {
+        object
+            .characteristics()
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case(expected))
+    };
+    match filter {
+        CastModifierPermanentFilter::Land => object_has_type(object, CardType::Land),
+        CastModifierPermanentFilter::Island => {
+            object_has_type(object, CardType::Land) && has_subtype("Island")
+        }
+        CastModifierPermanentFilter::Mountain => {
+            object_has_type(object, CardType::Land) && has_subtype("Mountain")
+        }
+        CastModifierPermanentFilter::BlueCreature => {
+            object_has_type(object, CardType::Creature)
+                && object.characteristics().colors.contains(&Color::Blue)
+        }
+        CastModifierPermanentFilter::WhiteCreature => {
+            object_has_type(object, CardType::Creature)
+                && object.characteristics().colors.contains(&Color::White)
+        }
+        CastModifierPermanentFilter::Dalek => {
+            object_has_type(object, CardType::Creature) && has_subtype("Dalek")
+        }
+        CastModifierPermanentFilter::Horror => {
+            object_has_type(object, CardType::Creature) && has_subtype("Horror")
+        }
+    }
+}
+
+fn pay_production_cast_modifier_cost<S: OracleStateAdapter>(
+    state: &mut S,
+    atoms: &[CastModifierCostAtom],
+    repetitions: u32,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    for (index, atom) in atoms.iter().enumerate() {
+        match atom {
+            CastModifierCostAtom::Mana(mana) => {
+                for payment in 0..repetitions {
+                    state
+                        .pay_mana(
+                            context.actor,
+                            &ManaCost(mana.exact().to_owned()),
+                            context.x_value,
+                        )
+                        .map_err(|reason| ExecutionError::CostFailed {
+                            index: index
+                                .saturating_add(usize::try_from(payment).unwrap_or(usize::MAX)),
+                            reason,
+                        })?;
+                }
+            }
+            CastModifierCostAtom::PayLife(amount) => {
+                let total = i64::from(*amount)
+                    .checked_mul(i64::from(repetitions))
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                if player.life < total {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                player.life -= total;
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+            CastModifierCostAtom::PayEnergy(amount) => {
+                let total = amount
+                    .checked_mul(repetitions)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                let energy = player.counters.entry("energy".into()).or_default();
+                if *energy < total {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                *energy -= total;
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+            CastModifierCostAtom::DiscardCards { amount, random } => {
+                let total = amount
+                    .checked_mul(repetitions)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+                let expected =
+                    usize::try_from(total).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+                let cards = if *random {
+                    if context.replay_seed == 0 {
+                        return Err(ExecutionError::ActivationRestrictionFailed);
+                    }
+                    context.random_cost_card_choices.clone()
+                } else {
+                    context.object_choices.get(&0).cloned().unwrap_or_default()
+                };
+                if cards.len() != expected
+                    || cards.iter().copied().collect::<BTreeSet<_>>().len() != expected
+                    || cards.iter().any(|card| {
+                        !state.object(*card).is_some_and(|object| {
+                            object.zone == Zone::Hand && object.owner == context.actor
+                        })
+                    })
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                for card in cards {
+                    state
+                        .move_object(card, Zone::Graveyard)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+            }
+            CastModifierCostAtom::OpponentGainsLife(amount) => {
+                let opponents = context.player_choices.get(&0).cloned().unwrap_or_default();
+                if opponents.len()
+                    != usize::try_from(repetitions)
+                        .map_err(|_| ExecutionError::ArithmeticOverflow)?
+                    || opponents.iter().any(|opponent| {
+                        *opponent == context.actor || state.player(*opponent).is_none()
+                    })
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                for opponent in opponents {
+                    let mut player = state
+                        .player(opponent)
+                        .ok_or(ExecutionError::MissingPlayer(opponent))?;
+                    player.life = player
+                        .life
+                        .checked_add(i64::from(*amount))
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                    state.put_player(player).map_err(ExecutionError::Adapter)?;
+                }
+            }
+            CastModifierCostAtom::ExileCardsFromOwnGraveyard { amount } => {
+                let expected = usize::try_from(
+                    amount
+                        .checked_mul(repetitions)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                )
+                .map_err(|_| ExecutionError::ArithmeticOverflow)?;
+                let cards = context.object_choices.get(&0).cloned().unwrap_or_default();
+                if cards.len() != expected
+                    || cards.iter().copied().collect::<BTreeSet<_>>().len() != expected
+                    || cards.iter().any(|card| {
+                        !state.object(*card).is_some_and(|object| {
+                            object.zone == Zone::Graveyard && object.owner == context.actor
+                        })
+                    })
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                for card in cards {
+                    state
+                        .move_object(card, Zone::Exile)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+            }
+            CastModifierCostAtom::ReturnControlledCreatureToOwnersHand { filter } => {
+                let objects = context.object_choices.get(&0).cloned().unwrap_or_default();
+                let expected =
+                    usize::try_from(repetitions).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+                if objects.len() != expected
+                    || objects.iter().copied().collect::<BTreeSet<_>>().len() != expected
+                    || objects.iter().any(|chosen| {
+                        !state.object(*chosen).is_some_and(|object| {
+                            cast_modifier_cost_object_matches(&object, context.actor, *filter)
+                        })
+                    })
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                for chosen in objects {
+                    state
+                        .move_object(chosen, Zone::Hand)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+            }
+            CastModifierCostAtom::SacrificePermanents { amount, filter } => {
+                let expected = usize::try_from(
+                    amount
+                        .checked_mul(repetitions)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                )
+                .map_err(|_| ExecutionError::ArithmeticOverflow)?;
+                let objects = context.object_choices.get(&0).cloned().unwrap_or_default();
+                if objects.len() != expected
+                    || objects.iter().copied().collect::<BTreeSet<_>>().len() != expected
+                    || objects.iter().any(|chosen| {
+                        !state.object(*chosen).is_some_and(|object| {
+                            cast_modifier_cost_object_matches(&object, context.actor, *filter)
+                        })
+                    })
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                for object in objects {
+                    let destination = death_destination(state, object, context)?;
+                    state
+                        .move_object(object, destination)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+            }
+            CastModifierCostAtom::TapUntappedControlledCreature { filter } => {
+                let objects = context.object_choices.get(&0).cloned().unwrap_or_default();
+                let expected =
+                    usize::try_from(repetitions).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+                if objects.len() != expected
+                    || objects.iter().copied().collect::<BTreeSet<_>>().len() != expected
+                    || objects.iter().any(|chosen| {
+                        !state.object(*chosen).is_some_and(|object| {
+                            !object.tapped
+                                && cast_modifier_cost_object_matches(
+                                    &object,
+                                    context.actor,
+                                    *filter,
+                                )
+                        })
+                    })
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                for chosen in objects {
+                    let mut object = state
+                        .object(chosen)
+                        .ok_or(ExecutionError::MissingObject(chosen))?;
+                    object.tapped = true;
+                    state.put_object(object).map_err(ExecutionError::Adapter)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cast_modifier_copy_target_receipts(
+    program: &CastModifierKeywordProgram,
+    copies: u32,
+    context: &ExecutionContext,
+) -> Result<Vec<BTreeMap<u8, Vec<SelectedTarget>>>, ExecutionError> {
+    let copies = usize::try_from(copies).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+    if copies == 0 {
+        return Ok(Vec::new());
+    }
+    if program.copies_allow_new_targets() {
+        if !context.copy_target_choices_complete || context.copy_target_choices.len() != copies {
+            return Err(ExecutionError::InvalidAmount(
+                "stack-copy target-choice evidence is incomplete",
+            ));
+        }
+        Ok(context.copy_target_choices.clone())
+    } else if context.copy_target_choices.is_empty() {
+        Ok(vec![BTreeMap::new(); copies])
+    } else {
+        Err(ExecutionError::InvalidAmount(
+            "target-free stack copies received target choices",
+        ))
+    }
+}
+
+fn apply_cast_modifier_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CastModifierKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "cast-modifier keyword has no complete production adapter".into(),
+        ));
+    }
+    if matches!(program.kind(), CastModifierKeywordKind::Storm) {
+        let ActionWindow::Triggered(TriggerEvent::SpellCast {
+            player,
+            spell,
+            occurrence_this_turn,
+        }) = context.window
+        else {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        };
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if source.zone != Zone::Stack || player != context.actor || spell != context.source {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        let copies = occurrence_this_turn.saturating_sub(1);
+        let target_receipts = cast_modifier_copy_target_receipts(program, copies, context)?;
+        for targets in target_receipts {
+            let mut copy = source.clone();
+            let id = state.allocate_object_id();
+            copy.id = id;
+            copy.origin_id = id;
+            copy.copy_of = Some(context.source);
+            copy.token = program.copies_become_tokens();
+            state
+                .insert_physical_object(copy)
+                .map_err(ExecutionError::Adapter)?;
+            state.set_stack_copy_targets(id, targets);
+            state.record_mutation(format!("copy_stack:{}:{id}:false", context.source));
+        }
+        state.record_mutation(format!(
+            "cast_modifier_storm_resolved:{}:{copies}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CastModifierKeywordKind::Replicate {
+        repeatable_additional_cost,
+    } = program.kind()
+    {
+        let action = context.replicate_action.ok_or_else(|| {
+            ExecutionError::Adapter("Replicate requires an exact lifecycle action".into())
+        })?;
+        match action {
+            ReplicateAction::PayAdditionalCosts { times } => {
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                    || source.zone != Zone::Stack
+                    || source.controller != context.actor
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                pay_production_cast_modifier_cost(
+                    state,
+                    repeatable_additional_cost.atoms(),
+                    times,
+                    context,
+                )?;
+                let source_incarnation = state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if source.zone != Zone::Battlefield
+                    || source.controller != context.actor
+                    || !source.attacking
+                    || !object_has_type(&source, CardType::Creature)
+                {
+                    return Err(ExecutionError::Adapter(
+                        "Enlist source is not its controlled declared attacking creature".into(),
+                    ));
+                }
+                state.register_replicate_payment(ReplicatePaymentRecord {
+                    source: context.source,
+                    source_incarnation,
+                    payer: context.actor,
+                    times,
+                    program_sha256: program.semantic_digest().to_owned(),
+                });
+                state.record_mutation(format!(
+                    "cast_modifier_replicate_paid:{}:{times}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            ReplicateAction::ResolveCastTrigger => {
+                let record = state.replicate_payment(context.source).ok_or_else(|| {
+                    ExecutionError::Adapter("Replicate payment record is missing".into())
+                })?;
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if !matches!(
+                    context.window,
+                    ActionWindow::Triggered(TriggerEvent::SpellCast { player, spell, .. })
+                        if player == record.payer && spell == context.source
+                ) || source.zone != Zone::Stack
+                    || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                    || record.program_sha256 != program.semantic_digest()
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                let target_receipts =
+                    cast_modifier_copy_target_receipts(program, record.times, context)?;
+                for targets in target_receipts {
+                    let mut copy = source.clone();
+                    let id = state.allocate_object_id();
+                    copy.id = id;
+                    copy.origin_id = id;
+                    copy.copy_of = Some(context.source);
+                    copy.token = program.copies_become_tokens();
+                    state
+                        .insert_physical_object(copy)
+                        .map_err(ExecutionError::Adapter)?;
+                    state.set_stack_copy_targets(id, targets);
+                    state.record_mutation(format!("copy_stack:{}:{id}:false", context.source));
+                }
+                state.consume_replicate_payment(context.source);
+                state.record_mutation(format!(
+                    "cast_modifier_replicate_resolved:{}:{}:{}",
+                    context.source,
+                    record.times,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+        }
+    }
+    if matches!(program.kind(), CastModifierKeywordKind::Conspire) {
+        let action = context.conspire_action.ok_or_else(|| {
+            ExecutionError::Adapter("Conspire requires an exact lifecycle action".into())
+        })?;
+        match action {
+            ConspireAction::PayByTapping { creatures } => {
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                    || source.zone != Zone::Stack
+                    || source.controller != context.actor
+                    || creatures[0] == creatures[1]
+                    || state.conspire_payment(context.source).is_some()
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                let spell_colors = source
+                    .characteristics()
+                    .colors
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                let mut selected = Vec::with_capacity(2);
+                for creature in creatures {
+                    let object = state
+                        .object(creature)
+                        .ok_or(ExecutionError::MissingObject(creature))?;
+                    if object.zone != Zone::Battlefield
+                        || object.controller != context.actor
+                        || object.tapped
+                        || !object_has_type(&object, CardType::Creature)
+                        || !object
+                            .characteristics()
+                            .colors
+                            .iter()
+                            .any(|color| spell_colors.contains(color))
+                    {
+                        return Err(ExecutionError::ActivationRestrictionFailed);
+                    }
+                    selected.push(object);
+                }
+                for mut creature in selected {
+                    creature.tapped = true;
+                    state
+                        .put_object(creature)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                let source_incarnation = state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                state.register_conspire_payment(ConspirePaymentRecord {
+                    source: context.source,
+                    source_incarnation,
+                    payer: context.actor,
+                    program_sha256: program.semantic_digest().to_owned(),
+                });
+                state.record_mutation(format!(
+                    "cast_modifier_conspire_paid:{}:{}:{}",
+                    context.source, creatures[0], creatures[1]
+                ));
+                return Ok(());
+            }
+            ConspireAction::ResolveCastTrigger => {
+                let record = state.conspire_payment(context.source).ok_or_else(|| {
+                    ExecutionError::Adapter("Conspire payment record is missing".into())
+                })?;
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if !matches!(
+                    context.window,
+                    ActionWindow::Triggered(TriggerEvent::SpellCast { player, spell, .. })
+                        if player == record.payer && spell == context.source
+                ) || source.zone != Zone::Stack
+                    || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                    || record.program_sha256 != program.semantic_digest()
+                {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+                let mut target_receipts = cast_modifier_copy_target_receipts(program, 1, context)?;
+                let mut copy = source;
+                let id = state.allocate_object_id();
+                copy.id = id;
+                copy.origin_id = id;
+                copy.copy_of = Some(context.source);
+                copy.token = program.copies_become_tokens();
+                state
+                    .insert_physical_object(copy)
+                    .map_err(ExecutionError::Adapter)?;
+                state.set_stack_copy_targets(
+                    id,
+                    target_receipts.pop().expect("one Conspire target receipt"),
+                );
+                state.consume_conspire_payment(context.source);
+                state.record_mutation(format!("copy_stack:{}:{id}:false", context.source));
+                state.record_mutation(format!(
+                    "cast_modifier_conspire_resolved:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+        }
+    }
+    if let CastModifierKeywordKind::SpliceOntoArcane { additional_cost } = program.kind() {
+        let Some(SpliceAction::AddToArcaneSpell { spell }) = context.splice_action else {
+            return Err(ExecutionError::Adapter(
+                "Splice requires the exact receiving Arcane spell".into(),
+            ));
+        };
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        let receiving_spell = state
+            .object(spell)
+            .ok_or(ExecutionError::MissingObject(spell))?;
+        if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+            || source.zone != Zone::Hand
+            || source.owner != context.actor
+            || receiving_spell.zone != Zone::Stack
+            || receiving_spell.controller != context.actor
+            || !object_has_type(&receiving_spell, CardType::Instant)
+                && !object_has_type(&receiving_spell, CardType::Sorcery)
+            || !receiving_spell
+                .characteristics()
+                .subtypes
+                .iter()
+                .any(|subtype| subtype.eq_ignore_ascii_case("Arcane"))
+            || state.splice_cast(spell, context.source).is_some()
+        {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        pay_production_cast_modifier_cost(state, additional_cost.atoms(), 1, context)?;
+        let source_incarnation = state
+            .object_incarnation(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        let spell_incarnation = state
+            .object_incarnation(spell)
+            .ok_or(ExecutionError::MissingObject(spell))?;
+        state.register_splice_cast(SpliceCastRecord {
+            source: context.source,
+            source_incarnation,
+            spell,
+            spell_incarnation,
+            payer: context.actor,
+            program_sha256: program.semantic_digest().to_owned(),
+        });
+        let order = state.next_order();
+        state.register_revealed_card(RevealedCardRecord {
+            order,
+            source_identity: context.source,
+            player: context.actor,
+            card: context.source,
+            as_additional_cost: true,
+        });
+        state.record_mutation(format!(
+            "cast_modifier_splice_paid:{}:{spell}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CastModifierKeywordKind::Overload { alternative_cost } = program.kind() {
+        if context.overload_action != Some(OverloadAction::PayAlternativeCost) {
+            return Err(ExecutionError::Adapter(
+                "Overload requires its exact alternative-cost cast action".into(),
+            ));
+        }
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+            || source.zone != Zone::Stack
+            || source.controller != context.actor
+            || !context.card_was_cast_with_alternative_cost
+            || !context.alternate_cast_other_costs_paid
+            || !context.targets.is_empty()
+        {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        state
+            .pay_mana(
+                context.actor,
+                &ManaCost(alternative_cost.exact().to_owned()),
+                context.x_value,
+            )
+            .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+        let source_incarnation = state
+            .object_incarnation(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        state.register_overload_cast(OverloadCastRecord {
+            source: context.source,
+            source_incarnation,
+            payer: context.actor,
+            program_sha256: program.semantic_digest().to_owned(),
+        });
+        state.record_mutation(format!(
+            "cast_modifier_overload_paid:{}:{source_incarnation}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CastModifierKeywordKind::Entwine { additional_cost } = program.kind() {
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        let mode_count = context.entwine_mode_count.ok_or_else(|| {
+            ExecutionError::Adapter("Entwine requires the complete printed mode count".into())
+        })?;
+        let selected = context
+            .selected_modes
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let complete = (0..mode_count).collect::<BTreeSet<_>>();
+        if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+            || source.zone != Zone::Stack
+            || source.controller != context.actor
+            || mode_count < 2
+            || selected.len() != context.selected_modes.len()
+            || selected != complete
+        {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        pay_production_cast_modifier_cost(state, additional_cost.atoms(), 1, context)?;
+        state.record_mutation(format!(
+            "cast_modifier_entwine_paid:{}:{mode_count}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    let CastModifierKeywordKind::Buyback { additional_cost } = program.kind() else {
+        return Err(ExecutionError::Adapter(
+            "cast-modifier keyword family is not executable".into(),
+        ));
+    };
+    let action = context.buyback_action.ok_or_else(|| {
+        ExecutionError::Adapter("Buyback requires an exact lifecycle action".into())
+    })?;
+    match action {
+        BuybackAction::PayAdditionalCost => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Stack
+                || source.controller != context.actor
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            pay_production_cast_modifier_cost(state, additional_cost.atoms(), 1, context)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_buyback_payment(BuybackPaymentRecord {
+                source: context.source,
+                source_incarnation,
+                payer: context.actor,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "cast_modifier_buyback_paid:{}:{source_incarnation}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        BuybackAction::ResolveToHandInsteadOfGraveyard => {
+            let record = state.buyback_payment(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("Buyback payment record is missing".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::Replacement)
+                || source.zone != Zone::Stack
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Hand)
+                .map_err(ExecutionError::Adapter)?;
+            state.consume_buyback_payment(context.source);
+            state.record_mutation(format!(
+                "cast_modifier_buyback_return:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn linked_mana_color(color: LinkedManaColor) -> Color {
+    match color {
+        LinkedManaColor::White => Color::White,
+        LinkedManaColor::Blue => Color::Blue,
+        LinkedManaColor::Black => Color::Black,
+        LinkedManaColor::Red => Color::Red,
+        LinkedManaColor::Green => Color::Green,
+        LinkedManaColor::Colorless => Color::Colorless,
+    }
+}
+
+fn linked_cast_cost_parts(
+    kind: &LinkedCastCostKind,
+) -> (
+    Option<&crate::linked_cast_cost_keyword_runtime::ManaCost>,
+    &LinkedAdditionalCastCost,
+    bool,
+    bool,
+    bool,
+    bool,
+) {
+    static NONE: LinkedAdditionalCastCost = LinkedAdditionalCastCost::None;
+    match kind {
+        LinkedCastCostKind::ResidualEvoke(program) => (
+            program.alternative_cost.mana.as_ref(),
+            &program.alternative_cost.additional,
+            false,
+            true,
+            false,
+            false,
+        ),
+        LinkedCastCostKind::Blitz(program) => (
+            program.alternative_cost.mana.as_ref(),
+            &program.alternative_cost.additional,
+            program.grants_haste,
+            false,
+            program.grants_death_draw,
+            program.schedules_next_end_step_sacrifice,
+        ),
+        LinkedCastCostKind::Spectacle(program) => (
+            Some(&program.alternative_cost),
+            &NONE,
+            false,
+            false,
+            false,
+            false,
+        ),
+        LinkedCastCostKind::Surge(program) => (
+            Some(&program.alternative_cost),
+            &NONE,
+            false,
+            false,
+            false,
+            false,
+        ),
+        LinkedCastCostKind::Prowl(program) => (
+            Some(&program.alternative_cost),
+            &NONE,
+            false,
+            false,
+            false,
+            false,
+        ),
+    }
+}
+
+fn apply_linked_cast_cost_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &LinkedCastCostProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "linked cast-cost keyword has no complete production adapter".into(),
+        ));
+    }
+    let action = context.linked_cast_cost_action.ok_or_else(|| {
+        ExecutionError::Adapter(
+            "linked cast-cost keyword requires an exact lifecycle action".into(),
+        )
+    })?;
+    match action {
+        LinkedCastCostAction::PayAlternativeCost => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let cast_turn = context.turn_sequence.ok_or_else(|| {
+                ExecutionError::Adapter("linked cast-cost payment requires an exact turn".into())
+            })?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || source.zone != Zone::Stack
+                || source.controller != context.actor
+                || !context.card_was_cast_with_alternative_cost
+                || !context.alternate_cast_other_costs_paid
+                || matches!(
+                    context.cast_from_zone,
+                    None | Some(Zone::Stack | Zone::Battlefield)
+                )
+                || state.linked_cast_cost(context.source).is_some()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let effective = effective_object(state, context.source, context)?;
+            let expected_types = program
+                .source_context()
+                .card_types
+                .iter()
+                .filter_map(|card_type| match card_type {
+                    crate::linked_cast_cost_keyword_runtime::CardType::Artifact => {
+                        Some(CardType::Artifact)
+                    }
+                    crate::linked_cast_cost_keyword_runtime::CardType::Battle => {
+                        Some(CardType::Battle)
+                    }
+                    crate::linked_cast_cost_keyword_runtime::CardType::Creature => {
+                        Some(CardType::Creature)
+                    }
+                    crate::linked_cast_cost_keyword_runtime::CardType::Enchantment => {
+                        Some(CardType::Enchantment)
+                    }
+                    crate::linked_cast_cost_keyword_runtime::CardType::Instant => {
+                        Some(CardType::Instant)
+                    }
+                    crate::linked_cast_cost_keyword_runtime::CardType::Kindred => None,
+                    crate::linked_cast_cost_keyword_runtime::CardType::Land => Some(CardType::Land),
+                    crate::linked_cast_cost_keyword_runtime::CardType::Planeswalker => {
+                        Some(CardType::Planeswalker)
+                    }
+                    crate::linked_cast_cost_keyword_runtime::CardType::Sorcery => {
+                        Some(CardType::Sorcery)
+                    }
+                })
+                .collect::<Vec<_>>();
+            let actual_types = effective
+                .characteristics()
+                .card_types
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            let actual_subtypes = effective
+                .characteristics()
+                .subtypes
+                .iter()
+                .map(|value| value.to_ascii_lowercase())
+                .collect::<BTreeSet<_>>();
+            if actual_types.len() != expected_types.len()
+                || actual_types
+                    .iter()
+                    .any(|card_type| !expected_types.contains(card_type))
+                || actual_subtypes != program.source_context().creature_types
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            match program.kind() {
+                LinkedCastCostKind::ResidualEvoke(_) | LinkedCastCostKind::Blitz(_) => {}
+                LinkedCastCostKind::Spectacle(_) if context.opponent_lost_life_this_turn => {}
+                LinkedCastCostKind::Surge(_)
+                    if context.linked_surge_condition_met == Some(true) => {}
+                LinkedCastCostKind::Prowl(prowl)
+                    if context.linked_prowl_damage_receipts.iter().any(|receipt| {
+                        receipt.turn == cast_turn
+                            && receipt.source_controller == context.actor
+                            && receipt.damaged_player != context.actor
+                            && receipt.amount > 0
+                            && !receipt
+                                .source_creature_types
+                                .is_disjoint(&prowl.qualifying_creature_types)
+                    }) => {}
+                _ => return Err(ExecutionError::ActivationRestrictionFailed),
+            }
+            let (mana, additional, grants_haste, evoke, death_draw, end_sacrifice) =
+                linked_cast_cost_parts(program.kind());
+            if let Some(mana) = mana {
+                state
+                    .pay_mana(
+                        context.actor,
+                        &ManaCost(mana.exact.clone()),
+                        context.x_value,
+                    )
+                    .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            } else if context.x_value != 0 {
+                return Err(ExecutionError::InvalidAmount(
+                    "linked cast cost without mana received an X payment",
+                ));
+            }
+            match additional {
+                LinkedAdditionalCastCost::None => {
+                    if context.linked_cast_additional_card.is_some() {
+                        return Err(ExecutionError::InvalidAmount(
+                            "linked cast cost received an unexpected additional card",
+                        ));
+                    }
+                }
+                LinkedAdditionalCastCost::PayLife(amount) => {
+                    if context.linked_cast_additional_card.is_some() {
+                        return Err(ExecutionError::InvalidAmount(
+                            "linked life cost received an additional card",
+                        ));
+                    }
+                    let mut player = state
+                        .player(context.actor)
+                        .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                    let amount = i64::from(*amount);
+                    if amount < 0 {
+                        return Err(ExecutionError::InvalidAmount(
+                            "linked life payment exceeds i64",
+                        ));
+                    }
+                    if player.life < amount {
+                        return Err(ExecutionError::CostFailed {
+                            index: 1,
+                            reason: "insufficient life".into(),
+                        });
+                    }
+                    player.life -= amount;
+                    state.put_player(player).map_err(ExecutionError::Adapter)?;
+                }
+                LinkedAdditionalCastCost::DiscardOneCard
+                | LinkedAdditionalCastCost::ExileOneCardFromHandWithColor(_) => {
+                    let card_id = context.linked_cast_additional_card.ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "linked cast cost requires one exact additional hand card".into(),
+                        )
+                    })?;
+                    let card = state
+                        .object(card_id)
+                        .ok_or(ExecutionError::MissingObject(card_id))?;
+                    let color_matches = match additional {
+                        LinkedAdditionalCastCost::ExileOneCardFromHandWithColor(color) => card
+                            .characteristics()
+                            .colors
+                            .contains(&linked_mana_color(*color)),
+                        _ => true,
+                    };
+                    if card_id == context.source
+                        || card.zone != Zone::Hand
+                        || card.owner != context.actor
+                        || card.copy_of.is_some()
+                        || !color_matches
+                    {
+                        return Err(ExecutionError::ActivationRestrictionFailed);
+                    }
+                    let destination =
+                        if matches!(additional, LinkedAdditionalCastCost::DiscardOneCard) {
+                            Zone::Graveyard
+                        } else {
+                            Zone::Exile
+                        };
+                    state
+                        .move_object(card_id, destination)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+            }
+            let stack_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_linked_cast_cost(LinkedCastCostRecord {
+                source: context.source,
+                stack_incarnation,
+                permanent_incarnation: None,
+                caster: context.actor,
+                cast_turn,
+                grants_haste,
+                evoke_sacrifice: evoke,
+                blitz_death_draw: death_draw,
+                blitz_end_step_sacrifice: end_sacrifice,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "linked_cast_cost_paid:{}:{}:{}",
+                context.source,
+                program.kind().label(),
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        LinkedCastCostAction::ResolvePermanentEntry => {
+            let mut record = state.linked_cast_cost(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("linked cast-cost receipt is missing".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(
+                context.window,
+                ActionWindow::Triggered(TriggerEvent::ObjectEntered { object })
+                    if object == context.source
+            ) || source.zone != Zone::Battlefield
+                || source.controller != record.caster
+                || incarnation
+                    != record.stack_incarnation.checked_add(1).ok_or_else(|| {
+                        ExecutionError::Adapter("linked cast-cost incarnation overflow".into())
+                    })?
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            record.permanent_incarnation = Some(incarnation);
+            state.register_linked_cast_cost(record);
+            state.record_mutation(format!(
+                "linked_cast_cost_entered:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        LinkedCastCostAction::ResolveEvokeSacrifice => {
+            let record = state
+                .linked_cast_cost(context.source)
+                .ok_or_else(|| ExecutionError::Adapter("Evoke cast receipt is missing".into()))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !record.evoke_sacrifice
+                || !matches!(
+                    context.window,
+                    ActionWindow::Triggered(TriggerEvent::ObjectEntered { object })
+                        if object == context.source
+                )
+                || source.zone != Zone::Battlefield
+                || state.object_incarnation(context.source) != record.permanent_incarnation
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Graveyard)
+                .map_err(ExecutionError::Adapter)?;
+            state.consume_linked_cast_cost(context.source);
+            state.record_mutation(format!("linked_evoke_sacrifice:{}", context.source));
+            Ok(())
+        }
+        LinkedCastCostAction::ResolveBlitzEndStepSacrifice => {
+            let record = state
+                .linked_cast_cost(context.source)
+                .ok_or_else(|| ExecutionError::Adapter("Blitz cast receipt is missing".into()))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let turn = context.turn_sequence.ok_or_else(|| {
+                ExecutionError::Adapter("Blitz end step requires an exact turn".into())
+            })?;
+            if !record.blitz_end_step_sacrifice
+                || turn < record.cast_turn
+                || !matches!(
+                    context.window,
+                    ActionWindow::Triggered(TriggerEvent::BeginningOf {
+                        step: Step::EndStep,
+                        ..
+                    })
+                )
+                || source.zone != Zone::Battlefield
+                || state.object_incarnation(context.source) != record.permanent_incarnation
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Graveyard)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!("linked_blitz_end_sacrifice:{}", context.source));
+            Ok(())
+        }
+        LinkedCastCostAction::ResolveBlitzDeathDraw => {
+            let record = state
+                .linked_cast_cost(context.source)
+                .ok_or_else(|| ExecutionError::Adapter("Blitz death receipt is missing".into()))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !record.blitz_death_draw
+                || !matches!(
+                    context.window,
+                    ActionWindow::Triggered(TriggerEvent::ObjectEvent {
+                        object,
+                        event: ObjectEventKind::Dies,
+                    }) if object == context.source
+                )
+                || source.zone != Zone::Graveyard
+                || state.object_incarnation(context.source)
+                    != record
+                        .permanent_incarnation
+                        .and_then(|value| value.checked_add(1))
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            draw_cards(state, record.caster, 1, context)?;
+            state.consume_linked_cast_cost(context.source);
+            state.record_mutation(format!("linked_blitz_death_draw:{}", context.source));
+            Ok(())
+        }
+    }
+}
+
+fn apply_alternate_zone_cast_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &AlternateZoneKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "alternate-zone keyword has no complete production adapter".into(),
+        ));
+    }
+    if let AlternateZoneKeywordKind::Suspend(suspend) = program.kind() {
+        return apply_suspend_program(state, program, suspend, context);
+    }
+    if let AlternateZoneKeywordKind::ResidualFlashback(flashback) = program.kind() {
+        return apply_residual_flashback_program(state, program, flashback, context);
+    }
+    if let AlternateZoneKeywordKind::Madness(madness) = program.kind() {
+        return apply_madness_program(state, program, madness, context);
+    }
+    if let AlternateZoneKeywordKind::Unearth(unearth) = program.kind() {
+        return apply_unearth_program(state, program, unearth, context);
+    }
+    let AlternateZoneKeywordKind::Escape(escape) = program.kind() else {
+        return Err(ExecutionError::Adapter(
+            "alternate-zone keyword family is not executable".into(),
+        ));
+    };
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+        || context.cast_from_zone != Some(Zone::Graveyard)
+        || source.zone != Zone::Graveyard
+        || source.owner != context.actor
+        || !context.alternate_cast_other_costs_paid
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    pay_alternate_zone_cost(
+        state,
+        &escape.alternative_cost,
+        AlternateFlashbackCostModifier::None,
+        context,
+    )?;
+    let mut source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    source.controller = context.actor;
+    state.put_object(source).map_err(ExecutionError::Adapter)?;
+    state
+        .move_object(context.source, Zone::Stack)
+        .map_err(ExecutionError::Adapter)?;
+    state.record_mutation(format!(
+        "alternate_zone_escape:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_extended_cast_zone_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &ExtendedCastZoneProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "extended cast-zone keyword has no complete production adapter".into(),
+        ));
+    }
+    if let ExtendedCastZoneKind::Warp(warp) = program.kind() {
+        return apply_warp_program(state, program, warp, context);
+    }
+    if matches!(
+        program.kind(),
+        ExtendedCastZoneKind::Foretell(_) | ExtendedCastZoneKind::Plot(_)
+    ) {
+        return apply_extended_exile_cast_program(state, program, context);
+    }
+    let action = context.extended_graveyard_cast_action.ok_or_else(|| {
+        ExecutionError::Adapter(
+            "Retrace or Jump-start requires an exact graveyard-cast lifecycle action".into(),
+        )
+    })?;
+    match (program.kind(), action) {
+        (
+            ExtendedCastZoneKind::Retrace(_) | ExtendedCastZoneKind::JumpStart(_),
+            ExtendedGraveyardCastAction::Cast { discarded_card },
+        ) => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let discarded = state
+                .object(discarded_card)
+                .ok_or(ExecutionError::MissingObject(discarded_card))?;
+            let is_retrace = matches!(program.kind(), ExtendedCastZoneKind::Retrace(_));
+            let exact_program = match program.kind() {
+                ExtendedCastZoneKind::Retrace(retrace) => {
+                    retrace.cast_from_owners_graveyard
+                        && retrace.discard_land_additional_cost
+                        && retrace.retains_other_costs_and_timing
+                }
+                ExtendedCastZoneKind::JumpStart(jump_start) => {
+                    jump_start.cast_from_owners_graveyard
+                        && jump_start.discard_card_additional_cost
+                        && jump_start.retains_other_costs_and_timing
+                        && jump_start.every_stack_exit_replaced_with_exile
+                }
+                _ => false,
+            };
+            if !exact_program
+                || !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || context.cast_from_zone != Some(Zone::Graveyard)
+                || source.zone != Zone::Graveyard
+                || source.owner != context.actor
+                || discarded.zone != Zone::Hand
+                || discarded.owner != context.actor
+                || (is_retrace
+                    && !discarded
+                        .characteristics()
+                        .card_types
+                        .contains(&CardType::Land))
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(discarded_card, Zone::Graveyard)
+                .map_err(ExecutionError::Adapter)?;
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if matches!(program.kind(), ExtendedCastZoneKind::JumpStart(_)) {
+                state.register_jump_start_stack(JumpStartStackRecord {
+                    source: context.source,
+                    source_incarnation,
+                    caster: context.actor,
+                    program_sha256: program.semantic_digest().to_owned(),
+                });
+            }
+            state.record_mutation(format!(
+                "extended_cast_zone_{}_cast:{}:{source_incarnation}:{discarded_card}:{}",
+                if is_retrace { "retrace" } else { "jump_start" },
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        (
+            ExtendedCastZoneKind::JumpStart(jump_start),
+            ExtendedGraveyardCastAction::StackExit {
+                requested_destination,
+            },
+        ) => {
+            let record = state.jump_start_stack(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("Jump-start stack record is missing".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !jump_start.every_stack_exit_replaced_with_exile
+                || !matches!(context.window, ActionWindow::Replacement)
+                || requested_destination == Zone::Stack
+                || source.zone != Zone::Stack
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || record.caster != context.actor
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            state.consume_jump_start_stack(context.source);
+            state.record_mutation(format!(
+                "extended_cast_zone_jump_start_exile:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        _ => Err(ExecutionError::Adapter(
+            "extended cast-zone action does not match its exact keyword family".into(),
+        )),
+    }
+}
+
+fn apply_graveyard_hand_library_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &ZoneKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if let ZoneKeywordKind::Forecast { cost, effect } = program.kind() {
+        return apply_forecast_program(state, program, cost, effect, context);
+    }
+    if let ZoneKeywordKind::Recover {
+        cost,
+        trigger_requires_another_creature,
+    } = program.kind()
+    {
+        return apply_recover_program(
+            state,
+            program,
+            cost,
+            *trigger_requires_another_creature,
+            context,
+        );
+    }
+    if matches!(program.kind(), ZoneKeywordKind::Dredge { .. }) {
+        if !program.production_adapter_connected()
+            || !matches!(context.window, ActionWindow::Static)
+        {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if source.zone != Zone::Graveyard || source.owner != context.actor {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        state.install_dredge_program(context.source, program.clone());
+        state.record_mutation(format!(
+            "install_dredge:{}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    let (cost, source_zone, destination_zone) = match program.kind() {
+        ZoneKeywordKind::Embalm { cost, .. } | ZoneKeywordKind::Scavenge { cost } => {
+            (cost, Zone::Graveyard, Zone::Exile)
+        }
+        ZoneKeywordKind::Eternalize { mana_cost, .. } => (mana_cost, Zone::Graveyard, Zone::Exile),
+        ZoneKeywordKind::Transmute { cost, .. }
+        | ZoneKeywordKind::Reinforce { cost, .. }
+        | ZoneKeywordKind::Bloodrush { cost, .. }
+        | ZoneKeywordKind::Channel { cost, .. } => (cost, Zone::Hand, Zone::Graveyard),
+        _ => {
+            return Err(ExecutionError::Adapter(
+                "graveyard/hand/library keyword has no connected production adapter".into(),
+            ));
+        }
+    };
+    let timing_is_legal = match program.kind() {
+        ZoneKeywordKind::Bloodrush { .. } => context.instant_timing,
+        ZoneKeywordKind::Channel { timing, .. } => match timing {
+            ZoneProgramTiming::Sorcery => {
+                context.sorcery_timing && context.active_player == context.actor
+            }
+            ZoneProgramTiming::AnyPriority => context.instant_timing,
+            _ => false,
+        },
+        _ => context.sorcery_timing && context.active_player == context.actor,
+    };
+    if !program.production_adapter_connected()
+        || !matches!(context.window, ActionWindow::Activated)
+        || !timing_is_legal
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if source.zone != source_zone || source.owner != context.actor {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    let additional_discard = match program.kind() {
+        ZoneKeywordKind::Eternalize {
+            discard_another_card: true,
+            ..
+        } => {
+            let discard = context.zone_keyword_additional_discard.ok_or_else(|| {
+                ExecutionError::Adapter("Eternalize requires an exact additional discard".into())
+            })?;
+            let card = state
+                .object(discard)
+                .ok_or(ExecutionError::MissingObject(discard))?;
+            if discard == context.source || card.zone != Zone::Hand || card.owner != context.actor {
+                return Err(ExecutionError::Adapter(
+                    "Eternalize additional discard must be another card in its owner's hand".into(),
+                ));
+            }
+            Some(discard)
+        }
+        _ => None,
+    };
+    let source_power = source.characteristics().power.max(0) as u64;
+    let mut player = state
+        .player(context.actor)
+        .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+    let payable_cost = match program.kind() {
+        ZoneKeywordKind::Channel {
+            legendary_creature_reduction: true,
+            ..
+        } => {
+            let reduction = state
+                .object_ids()
+                .into_iter()
+                .filter_map(|id| state.object(id))
+                .filter(|object| {
+                    object.zone == Zone::Battlefield
+                        && object.controller == context.actor
+                        && object
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature)
+                        && object
+                            .characteristics()
+                            .supertypes
+                            .contains(&Supertype::Legendary)
+                })
+                .count() as u32;
+            reduce_generic_mana_cost(cost.exact(), reduction)?
+        }
+        _ => ManaCost(cost.exact().to_owned()),
+    };
+    pay_mana_from_player(&mut player, &payable_cost, context.x_value)
+        .map_err(ExecutionError::Adapter)?;
+    state.put_player(player).map_err(ExecutionError::Adapter)?;
+    if let Some(discard) = additional_discard {
+        state
+            .move_object(discard, Zone::Graveyard)
+            .map_err(ExecutionError::Adapter)?;
+    }
+    state
+        .move_object(context.source, destination_zone)
+        .map_err(ExecutionError::Adapter)?;
+
+    match program.kind() {
+        ZoneKeywordKind::Embalm {
+            token_exception, ..
+        }
+        | ZoneKeywordKind::Eternalize {
+            token_exception, ..
+        } => {
+            let ordinary = TokenSpecification::CopyOf(ObjectRef::ObjectIdentity(context.source));
+            let (amount, specification) =
+                replace_token_event(state, context.actor, 1, &ordinary, context)?;
+            for _ in 0..amount {
+                let id = match &specification {
+                    TokenSpecification::CopyOf(original) => {
+                        let originals = resolve_objects(state, original, context)?;
+                        let original = *originals.first().ok_or(ExecutionError::InvalidAmount(
+                            "Embalm or Eternalize copy token has no original",
+                        ))?;
+                        let id = insert_copy_token(state, context.actor, original)?;
+                        let mut token =
+                            state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                        token.back = None;
+                        token.active_face = 0;
+                        token.characteristics_mut().mana_value = 0;
+                        if !token
+                            .characteristics()
+                            .subtypes
+                            .iter()
+                            .any(|subtype| subtype == "Zombie")
+                        {
+                            token
+                                .characteristics_mut()
+                                .subtypes
+                                .push("Zombie".to_owned());
+                        }
+                        match token_exception {
+                            ZoneTokenCopyException::Embalm => {
+                                token.characteristics_mut().colors = vec![Color::White];
+                            }
+                            ZoneTokenCopyException::Eternalize => {
+                                token.characteristics_mut().colors = vec![Color::Black];
+                                token.characteristics_mut().power = 4;
+                                token.characteristics_mut().toughness = 4;
+                            }
+                            ZoneTokenCopyException::EternalizeLandCreature => {
+                                token.characteristics_mut().colors = vec![Color::Black];
+                                token.characteristics_mut().card_types = vec![CardType::Creature];
+                                token.characteristics_mut().power = 4;
+                                token.characteristics_mut().toughness = 4;
+                                token.tapped = true;
+                            }
+                        }
+                        state.put_object(token).map_err(ExecutionError::Adapter)?;
+                        id
+                    }
+                    TokenSpecification::Defined(definition) => {
+                        insert_defined_token(state, context.actor, definition, context)?
+                    }
+                    TokenSpecification::ManifestedCard(_) => {
+                        return Err(ExecutionError::Adapter(
+                            "Embalm or Eternalize token substitution cannot manifest".into(),
+                        ));
+                    }
+                };
+                apply_enters_replacements(state, id, context)?;
+                state.record_mutation(format!("zone_keyword_token:{id}"));
+            }
+            state.record_mutation(format!(
+                "{}:{}:{}",
+                program.kind().label().to_ascii_lowercase(),
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        ZoneKeywordKind::Transmute {
+            target_mana_value, ..
+        } => {
+            let search = context.transmute_library_choice.ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "Transmute requires an explicit library choice, including fail-to-find".into(),
+                )
+            })?;
+            if let Some(card) = search {
+                let candidate = state
+                    .object(card)
+                    .ok_or(ExecutionError::MissingObject(card))?;
+                if candidate.zone != Zone::Library
+                    || candidate.owner != context.actor
+                    || candidate.characteristics().mana_value != *target_mana_value
+                {
+                    return Err(ExecutionError::Adapter(
+                        "Transmute chose a card outside its owner's library or with the wrong mana value"
+                            .into(),
+                    ));
+                }
+                let order = state.next_order();
+                state.register_revealed_card(RevealedCardRecord {
+                    order,
+                    source_identity: context.source,
+                    player: context.actor,
+                    card,
+                    as_additional_cost: false,
+                });
+                state
+                    .move_object(card, Zone::Hand)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!(
+                    "transmute_reveal:{}:{card}:{order}",
+                    context.source
+                ));
+            }
+            deterministic_shuffle(state, context.actor, context.replay_seed)?;
+            state.record_mutation(format!(
+                "transmute:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        ZoneKeywordKind::Reinforce { amount, .. } => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter("Reinforce requires an exact creature target".into())
+            })?;
+            let candidate = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if candidate.zone != Zone::Battlefield
+                || !candidate
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            let counters = match amount {
+                ReinforceAmount::Fixed(amount) => *amount,
+                ReinforceAmount::ChosenX => context.x_value,
+            };
+            apply_put_counter(
+                state,
+                &ObjectRef::ObjectIdentity(target),
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(counters),
+                context,
+            )?;
+            state.record_mutation(format!(
+                "reinforce:{}:{target}:{counters}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        ZoneKeywordKind::Scavenge { .. } => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter("Scavenge requires an exact creature target".into())
+            })?;
+            let candidate = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if candidate.zone != Zone::Battlefield
+                || !candidate
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            let counters =
+                u32::try_from(source_power).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            apply_put_counter(
+                state,
+                &ObjectRef::ObjectIdentity(target),
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(counters),
+                context,
+            )?;
+            state.record_mutation(format!(
+                "scavenge:{}:{target}:{counters}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        ZoneKeywordKind::Bloodrush { pump, .. } => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "Bloodrush requires an exact attacking creature target".into(),
+                )
+            })?;
+            let candidate = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if candidate.zone != Zone::Battlefield
+                || !candidate.attacking
+                || !candidate
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            let lands_controlled = state
+                .object_ids()
+                .into_iter()
+                .filter_map(|id| state.object(id))
+                .filter(|object| {
+                    object.zone == Zone::Battlefield
+                        && object.controller == context.actor
+                        && object
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Land)
+                })
+                .count() as u32;
+            let value = |number: ZoneNumberValue| -> Result<u32, ExecutionError> {
+                match number {
+                    ZoneNumberValue::Fixed(value) => Ok(value),
+                    ZoneNumberValue::ChosenX => Ok(context.x_value),
+                    ZoneNumberValue::SourcePower => {
+                        u32::try_from(source_power).map_err(|_| ExecutionError::ArithmeticOverflow)
+                    }
+                    ZoneNumberValue::LandsControlled => Ok(lands_controlled),
+                }
+            };
+            apply_effect(
+                state,
+                &Effect::ModifyPowerToughness(PowerToughnessChange {
+                    objects: ObjectRef::ObjectIdentity(target),
+                    operation: PowerToughnessOperation::Add,
+                    power: Amount::Constant(value(pump.power)?),
+                    toughness: Amount::Constant(value(pump.toughness)?),
+                    duration: Duration::UntilEndOfTurn,
+                }),
+                context,
+            )?;
+            let keywords = pump
+                .granted_keywords
+                .iter()
+                .map(|keyword| match keyword {
+                    ZoneGrantedKeyword::Deathtouch => Ok(Keyword::Deathtouch),
+                    ZoneGrantedKeyword::DoubleStrike => Ok(Keyword::DoubleStrike),
+                    ZoneGrantedKeyword::FirstStrike => Ok(Keyword::FirstStrike),
+                    ZoneGrantedKeyword::Flying => Ok(Keyword::Flying),
+                    ZoneGrantedKeyword::Haste => Ok(Keyword::Haste),
+                    ZoneGrantedKeyword::Reach => Ok(Keyword::Reach),
+                    ZoneGrantedKeyword::Trample => Ok(Keyword::Trample),
+                    ZoneGrantedKeyword::Shadow => Err(ExecutionError::Adapter(
+                        "Bloodrush shadow has no production combat contract".into(),
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if !keywords.is_empty() {
+                apply_effect(
+                    state,
+                    &Effect::GrantKeyword {
+                        objects: ObjectRef::ObjectIdentity(target),
+                        keywords,
+                        duration: Duration::UntilEndOfTurn,
+                    },
+                    context,
+                )?;
+            }
+            state.record_mutation(format!(
+                "bloodrush:{}:{target}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        ZoneKeywordKind::Channel { effect, .. } => {
+            match effect {
+                ZoneChannelEffect::DrawOne => draw_cards(state, context.actor, 1, context)?,
+                ZoneChannelEffect::DealDamage {
+                    amount: ZoneNumberValue::Fixed(4),
+                    target:
+                        crate::graveyard_hand_library_keyword_runtime::DamageTarget::AttackingOrBlockingCreature,
+                } => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "Channel requires an exact attacking or blocking creature target"
+                                .into(),
+                        )
+                    })?;
+                    let exact =
+                        "This object deals 4 damage to target attacking or blocking creature.";
+                    let damage = compile_damage_resolution_leaf_program(exact).ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "Channel damage instruction failed exact typed compilation".into(),
+                        )
+                    })?;
+                    let mut damage_context = context.clone();
+                    damage_context.targets.insert(
+                        damage.recipient_target_id(),
+                        vec![SelectedTarget::Object(target)],
+                    );
+                    apply_damage_clause(state, &damage, &damage_context)?;
+                }
+                ZoneChannelEffect::DamageEachCreature(
+                    crate::graveyard_hand_library_keyword_runtime::TargetFilter::CreatureWithFlying,
+                    ZoneNumberValue::ChosenX,
+                ) => {
+                    let exact = "This object deals X damage to each creature with flying.";
+                    let damage = compile_damage_resolution_leaf_program(exact).ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "Channel flying damage instruction failed exact typed compilation"
+                                .into(),
+                        )
+                    })?;
+                    apply_damage_clause(state, &damage, context)?;
+                }
+                ZoneChannelEffect::TargetCreatureCantBlockThisTurn => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter("Channel requires an exact creature target".into())
+                    })?;
+                    let creature = state
+                        .object(target)
+                        .ok_or(ExecutionError::MissingObject(target))?;
+                    if creature.zone != Zone::Battlefield
+                        || !creature
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature)
+                    {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    apply_effect(
+                        state,
+                        &Effect::Restriction(Restriction::CannotBlock {
+                            object: ObjectRef::ObjectIdentity(target),
+                            duration: Duration::UntilEndOfTurn,
+                        }),
+                        context,
+                    )?;
+                }
+                ZoneChannelEffect::CreateGreenHumanMonk => {
+                    apply_create_token(
+                        state,
+                        &TokenCreation {
+                            player: PlayerRef::You,
+                            amount: Amount::Constant(1),
+                            specification: TokenSpecification::Defined(Box::new(TokenDefinition {
+                                name: None,
+                                power: Some(Amount::Constant(1)),
+                                toughness: Some(Amount::Constant(1)),
+                                colors: vec![Color::Green],
+                                card_types: vec![CardType::Creature],
+                                subtypes: vec!["Human".to_owned(), "Monk".to_owned()],
+                                keywords: Vec::new(),
+                                abilities: vec![GrantedAbility {
+                                    costs: vec![Cost::Tap(ObjectRef::Source)],
+                                    effects: vec![Effect::AddMana(ManaProduction {
+                                        player: PlayerRef::You,
+                                        choices: vec![ManaChoice {
+                                            symbols: vec![Color::Green],
+                                        }],
+                                        amount: Amount::Constant(1),
+                                        commander_identity_only: false,
+                                        scales_with: None,
+                                        typed: Some(TypedManaProductionExpression {
+                                            version: BOUNDED_ORACLE_MANA_EXPRESSION_VERSION,
+                                            quantity: TypedManaQuantity::Fixed(1),
+                                            composition: TypedManaComposition::Exact(vec![
+                                                TypedManaColor::Green,
+                                            ]),
+                                            derived_source_scope: None,
+                                            spend_restriction: None,
+                                            retention: TypedManaRetention::Normal,
+                                        }),
+                                    })],
+                                }],
+                            })),
+                            tapped: false,
+                            attacking: false,
+                        },
+                        context,
+                    )?;
+                }
+                ZoneChannelEffect::GainLife(amount) => {
+                    change_life(state, context.actor, i64::from(*amount))?
+                }
+                ZoneChannelEffect::ReturnTargetToHand(_) => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter("Channel requires an exact creature target".into())
+                    })?;
+                    let candidate = state
+                        .object(target)
+                        .ok_or(ExecutionError::MissingObject(target))?;
+                    if candidate.zone != Zone::Battlefield
+                        || !candidate
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature)
+                    {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    state
+                        .move_object(target, Zone::Hand)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                ZoneChannelEffect::ReturnTargetCardFromGraveyardToHand(_) => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter("Channel requires an exact graveyard target".into())
+                    })?;
+                    let candidate = state
+                        .object(target)
+                        .ok_or(ExecutionError::MissingObject(target))?;
+                    if candidate.zone != Zone::Graveyard || candidate.owner != context.actor {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    state
+                        .move_object(target, Zone::Hand)
+                        .map_err(ExecutionError::Adapter)?;
+                }
+                ZoneChannelEffect::PumpTargetCreature(pump) => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter("Channel requires an exact creature target".into())
+                    })?;
+                    let candidate = state
+                        .object(target)
+                        .ok_or(ExecutionError::MissingObject(target))?;
+                    if candidate.zone != Zone::Battlefield
+                        || !candidate
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature)
+                    {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    let lands_controlled = state
+                        .object_ids()
+                        .into_iter()
+                        .filter_map(|id| state.object(id))
+                        .filter(|object| {
+                            object.zone == Zone::Battlefield
+                                && object.controller == context.actor
+                                && object
+                                    .characteristics()
+                                    .card_types
+                                    .contains(&CardType::Land)
+                        })
+                        .count() as u32;
+                    let value = |number: ZoneNumberValue| -> Result<u32, ExecutionError> {
+                        match number {
+                            ZoneNumberValue::Fixed(value) => Ok(value),
+                            ZoneNumberValue::ChosenX => Ok(context.x_value),
+                            ZoneNumberValue::SourcePower => u32::try_from(source_power)
+                                .map_err(|_| ExecutionError::ArithmeticOverflow),
+                            ZoneNumberValue::LandsControlled => Ok(lands_controlled),
+                        }
+                    };
+                    apply_effect(
+                        state,
+                        &Effect::ModifyPowerToughness(PowerToughnessChange {
+                            objects: ObjectRef::ObjectIdentity(target),
+                            operation: PowerToughnessOperation::Add,
+                            power: Amount::Constant(value(pump.power)?),
+                            toughness: Amount::Constant(value(pump.toughness)?),
+                            duration: Duration::UntilEndOfTurn,
+                        }),
+                        context,
+                    )?;
+                }
+                ZoneChannelEffect::GrantTargetCreatureKeywordUntilEndOfTurn(keyword) => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter("Channel requires an exact creature target".into())
+                    })?;
+                    let candidate = state
+                        .object(target)
+                        .ok_or(ExecutionError::MissingObject(target))?;
+                    if candidate.zone != Zone::Battlefield
+                        || !candidate
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature)
+                    {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    let keyword = match keyword {
+                        ZoneGrantedKeyword::FirstStrike => Keyword::FirstStrike,
+                        ZoneGrantedKeyword::Flying => Keyword::Flying,
+                        ZoneGrantedKeyword::Haste => Keyword::Haste,
+                        _ => {
+                            return Err(ExecutionError::Adapter(
+                                "Channel keyword has no production contract".into(),
+                            ));
+                        }
+                    };
+                    apply_effect(
+                        state,
+                        &Effect::GrantKeyword {
+                            objects: ObjectRef::ObjectIdentity(target),
+                            keywords: vec![keyword],
+                            duration: Duration::UntilEndOfTurn,
+                        },
+                        context,
+                    )?;
+                }
+                ZoneChannelEffect::ForceAllAbleCreaturesToBlockTarget => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter("Channel requires an exact creature target".into())
+                    })?;
+                    let creature = state
+                        .object(target)
+                        .ok_or(ExecutionError::MissingObject(target))?;
+                    if creature.zone != Zone::Battlefield
+                        || !creature
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature)
+                    {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    let blockers = ObjectFilter {
+                        zones: vec![Zone::Battlefield],
+                        card_types: vec![CardType::Creature],
+                        ..ObjectFilter::default()
+                    };
+                    apply_effect(
+                        state,
+                        &Effect::Restriction(Restriction::MustBlockIfAble {
+                            blockers: ObjectRef::EachMatching(blockers),
+                            attacker: Some(ObjectRef::ObjectIdentity(target)),
+                            duration: Duration::UntilEndOfTurn,
+                        }),
+                        context,
+                    )?;
+                }
+                ZoneChannelEffect::TapAndFreezeUpToTwoOpposingCreatures => {
+                    let unique = context
+                        .zone_keyword_targets
+                        .iter()
+                        .copied()
+                        .collect::<BTreeSet<_>>();
+                    if context.zone_keyword_targets.len() > 2
+                        || unique.len() != context.zone_keyword_targets.len()
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "Channel requires up to two distinct creature targets".into(),
+                        ));
+                    }
+                    for target in &context.zone_keyword_targets {
+                        let creature = state
+                            .object(*target)
+                            .ok_or(ExecutionError::MissingObject(*target))?;
+                        if creature.zone != Zone::Battlefield
+                            || creature.controller == context.actor
+                            || !creature
+                                .characteristics()
+                                .card_types
+                                .contains(&CardType::Creature)
+                        {
+                            return Err(ExecutionError::IllegalTarget { id: 0 });
+                        }
+                    }
+                    for target in &context.zone_keyword_targets {
+                        let mut creature = state
+                            .object(*target)
+                            .ok_or(ExecutionError::MissingObject(*target))?;
+                        creature.tapped = true;
+                        state
+                            .put_object(creature)
+                            .map_err(ExecutionError::Adapter)?;
+                    }
+                    if !context.zone_keyword_targets.is_empty() {
+                        let order = state.next_order();
+                        state.register_next_untap_prevention(NextUntapPreventionRecord {
+                            order,
+                            source_identity: context.source,
+                            object_identities: context.zone_keyword_targets.clone(),
+                        });
+                    }
+                }
+                ZoneChannelEffect::DestroyTarget(_) => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter("Channel requires an exact creature target".into())
+                    })?;
+                    let creature = effective_object(state, target, context)?;
+                    if creature.zone != Zone::Battlefield
+                        || !creature
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Creature)
+                        || !creature
+                            .characteristics()
+                            .keywords
+                            .contains(&Keyword::Flying)
+                    {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    apply_effect(
+                        state,
+                        &Effect::Destroy {
+                            object: ObjectRef::ObjectIdentity(target),
+                        },
+                        context,
+                    )?;
+                }
+                ZoneChannelEffect::PutTargetOnLibraryTopOrBottom => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter("Channel requires an exact permanent target".into())
+                    })?;
+                    let permanent = state
+                        .object(target)
+                        .ok_or(ExecutionError::MissingObject(target))?;
+                    if permanent.zone != Zone::Battlefield
+                        || permanent
+                            .characteristics()
+                            .card_types
+                            .contains(&CardType::Land)
+                    {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    apply_effect(
+                        state,
+                        &Effect::MoveToChosenLibraryEnd {
+                            object: ObjectRef::ObjectIdentity(target),
+                            choice_id: 0,
+                        },
+                        context,
+                    )?;
+                }
+                ZoneChannelEffect::AnimateTargetLandWithCounters => {
+                    let target = context.zone_keyword_target.ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "Channel requires an exact controlled land target".into(),
+                        )
+                    })?;
+                    let land = state
+                        .object(target)
+                        .ok_or(ExecutionError::MissingObject(target))?;
+                    if land.zone != Zone::Battlefield
+                        || land.controller != context.actor
+                        || !land.characteristics().card_types.contains(&CardType::Land)
+                    {
+                        return Err(ExecutionError::IllegalTarget { id: 0 });
+                    }
+                    apply_put_counter(
+                        state,
+                        &ObjectRef::ObjectIdentity(target),
+                        &CounterKind::PlusOnePlusOne,
+                        &Amount::Constant(context.x_value),
+                        context,
+                    )?;
+                    apply_effect(
+                        state,
+                        &Effect::SetCharacteristics(SetCharacteristics {
+                            object: ObjectRef::ObjectIdentity(target),
+                            colors: Some(vec![Color::Green]),
+                            card_types: Some(vec![CardType::Creature]),
+                            subtypes: Some(vec!["Spirit".to_owned()]),
+                            name: None,
+                            base_power: Some(Amount::Constant(0)),
+                            base_toughness: Some(Amount::Constant(0)),
+                            retain_other_card_types: true,
+                            retain_other_subtypes: false,
+                            retain_other_colors: false,
+                            retain_other_names: true,
+                            duration: Duration::Permanent,
+                        }),
+                        context,
+                    )?;
+                    apply_effect(
+                        state,
+                        &Effect::GrantKeyword {
+                            objects: ObjectRef::ObjectIdentity(target),
+                            keywords: vec![Keyword::Haste],
+                            duration: Duration::Permanent,
+                        },
+                        context,
+                    )?;
+                }
+                ZoneChannelEffect::GrantFlyingToXTargets => {
+                    let unique = context
+                        .zone_keyword_targets
+                        .iter()
+                        .copied()
+                        .collect::<BTreeSet<_>>();
+                    if context.zone_keyword_targets.len() != context.x_value as usize
+                        || unique.len() != context.zone_keyword_targets.len()
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "Channel requires exactly X distinct creature targets".into(),
+                        ));
+                    }
+                    for target in &context.zone_keyword_targets {
+                        let creature = state
+                            .object(*target)
+                            .ok_or(ExecutionError::MissingObject(*target))?;
+                        if creature.zone != Zone::Battlefield
+                            || !creature
+                                .characteristics()
+                                .card_types
+                                .contains(&CardType::Creature)
+                        {
+                            return Err(ExecutionError::IllegalTarget { id: 0 });
+                        }
+                    }
+                    for target in &context.zone_keyword_targets {
+                        apply_effect(
+                            state,
+                            &Effect::GrantKeyword {
+                                objects: ObjectRef::ObjectIdentity(*target),
+                                keywords: vec![Keyword::Flying],
+                                duration: Duration::UntilEndOfTurn,
+                            },
+                            context,
+                        )?;
+                    }
+                }
+                _ => {
+                    return Err(ExecutionError::Adapter(
+                        "Channel effect has no connected production adapter".into(),
+                    ));
+                }
+            }
+            state.record_mutation(format!(
+                "channel:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        _ => unreachable!("connected zone keywords were matched before paying costs"),
+    }
+    Ok(())
+}
+
+fn apply_forecast_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &ZoneKeywordProgram,
+    cost: &ZoneForecastCost,
+    forecast: &ZoneForecastEffect,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected()
+        || !matches!(context.window, ActionWindow::Activated)
+        || context.active_player != context.actor
+        || context.current_step != Some(Step::Upkeep)
+        || context.ability_occurrence_this_turn != 1
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if source.zone != Zone::Hand || source.owner != context.actor {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+
+    match cost {
+        ZoneForecastCost::ManaAndReveal(mana) => {
+            if !context.zone_keyword_tap_costs.is_empty() {
+                return Err(ExecutionError::Adapter(
+                    "mana Forecast cannot also pay tap costs".into(),
+                ));
+            }
+            let mut player = state
+                .player(context.actor)
+                .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+            pay_mana_from_player(
+                &mut player,
+                &ManaCost(mana.exact().to_owned()),
+                context.x_value,
+            )
+            .map_err(ExecutionError::Adapter)?;
+            state.put_player(player).map_err(ExecutionError::Adapter)?;
+        }
+        ZoneForecastCost::TapTwoWhiteOrBlueCreaturesAndReveal => {
+            let unique = context
+                .zone_keyword_tap_costs
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            if unique.len() != 2 || context.zone_keyword_tap_costs.len() != 2 {
+                return Err(ExecutionError::Adapter(
+                    "Forecast requires exactly two distinct tap-cost creatures".into(),
+                ));
+            }
+            for target in &context.zone_keyword_tap_costs {
+                let creature = state
+                    .object(*target)
+                    .ok_or(ExecutionError::MissingObject(*target))?;
+                if creature.zone != Zone::Battlefield
+                    || creature.controller != context.actor
+                    || creature.tapped
+                    || !creature
+                        .characteristics()
+                        .card_types
+                        .contains(&CardType::Creature)
+                    || !creature
+                        .characteristics()
+                        .colors
+                        .iter()
+                        .any(|color| matches!(color, Color::White | Color::Blue))
+                {
+                    return Err(ExecutionError::Adapter(
+                        "Forecast tap cost requires untapped controlled white or blue creatures"
+                            .into(),
+                    ));
+                }
+            }
+            for target in &context.zone_keyword_tap_costs {
+                let mut creature = state
+                    .object(*target)
+                    .ok_or(ExecutionError::MissingObject(*target))?;
+                creature.tapped = true;
+                state
+                    .put_object(creature)
+                    .map_err(ExecutionError::Adapter)?;
+            }
+        }
+    }
+    let order = state.next_order();
+    state.register_revealed_card(RevealedCardRecord {
+        order,
+        source_identity: context.source,
+        player: context.actor,
+        card: context.source,
+        as_additional_cost: false,
+    });
+
+    match forecast {
+        ZoneForecastEffect::SetTargetCreatureColorsUntilEndOfTurn => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter("Forecast requires an exact creature target".into())
+            })?;
+            let creature = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            let colors = context
+                .zone_keyword_chosen_colors
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if creature.zone != Zone::Battlefield
+                || !creature
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+                || colors.is_empty()
+                || colors.len() != context.zone_keyword_chosen_colors.len()
+                || colors.contains(&Color::Colorless)
+            {
+                return Err(ExecutionError::Adapter(
+                    "Forecast color choice requires distinct Magic colors and a creature target"
+                        .into(),
+                ));
+            }
+            apply_effect(
+                state,
+                &Effect::SetCharacteristics(SetCharacteristics {
+                    object: ObjectRef::ObjectIdentity(target),
+                    colors: Some(context.zone_keyword_chosen_colors.clone()),
+                    card_types: None,
+                    subtypes: None,
+                    name: None,
+                    base_power: None,
+                    base_toughness: None,
+                    retain_other_card_types: true,
+                    retain_other_subtypes: true,
+                    retain_other_colors: false,
+                    retain_other_names: true,
+                    duration: Duration::UntilEndOfTurn,
+                }),
+                context,
+            )?;
+        }
+        ZoneForecastEffect::TargetSmallCreatureCantBeBlockedThisTurn => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter("Forecast requires an exact creature target".into())
+            })?;
+            let creature = effective_object(state, target, context)?;
+            if creature.zone != Zone::Battlefield
+                || creature.characteristics().power > 2
+                || !creature
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            apply_effect(
+                state,
+                &Effect::Restriction(Restriction::CannotBeBlocked {
+                    object: ObjectRef::ObjectIdentity(target),
+                    duration: Duration::UntilEndOfTurn,
+                }),
+                context,
+            )?;
+        }
+        ZoneForecastEffect::DrawOne => draw_cards(state, context.actor, 1, context)?,
+        ZoneForecastEffect::EachPlayerDrawsOne => {
+            for player in state.player_ids() {
+                draw_cards(state, player, 1, context)?;
+            }
+        }
+        ZoneForecastEffect::TapTargetCreature { must_be_untapped } => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter("Forecast requires an exact creature target".into())
+            })?;
+            let mut creature = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if creature.zone != Zone::Battlefield
+                || !creature
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+                || (*must_be_untapped && creature.tapped)
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            creature.tapped = true;
+            state
+                .put_object(creature)
+                .map_err(ExecutionError::Adapter)?;
+        }
+        ZoneForecastEffect::CreateWhiteBlueBird => {
+            apply_create_token(
+                state,
+                &TokenCreation {
+                    player: PlayerRef::You,
+                    amount: Amount::Constant(1),
+                    specification: TokenSpecification::Defined(Box::new(TokenDefinition {
+                        name: None,
+                        power: Some(Amount::Constant(1)),
+                        toughness: Some(Amount::Constant(1)),
+                        colors: vec![Color::White, Color::Blue],
+                        card_types: vec![CardType::Creature],
+                        subtypes: vec!["Bird".to_owned()],
+                        keywords: vec![Keyword::Flying],
+                        abilities: Vec::new(),
+                    })),
+                    tapped: false,
+                    attacking: false,
+                },
+                context,
+            )?;
+        }
+        ZoneForecastEffect::ReturnSmallCreatureCardFromGraveyard => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter("Forecast requires an exact graveyard target".into())
+            })?;
+            let creature = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if creature.zone != Zone::Graveyard
+                || creature.owner != context.actor
+                || creature.characteristics().mana_value > 1
+                || !creature
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            state
+                .move_object(target, Zone::Battlefield)
+                .map_err(ExecutionError::Adapter)?;
+            apply_enters_replacements(state, target, context)?;
+        }
+        ZoneForecastEffect::PumpTargetCreature(pump) => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter("Forecast requires an exact creature target".into())
+            })?;
+            let creature = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if creature.zone != Zone::Battlefield
+                || !creature
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            let fixed = |number: ZoneNumberValue| match number {
+                ZoneNumberValue::Fixed(value) => Ok(value),
+                _ => Err(ExecutionError::Adapter(
+                    "Forecast pump requires fixed characteristics".into(),
+                )),
+            };
+            apply_effect(
+                state,
+                &Effect::ModifyPowerToughness(PowerToughnessChange {
+                    objects: ObjectRef::ObjectIdentity(target),
+                    operation: PowerToughnessOperation::Add,
+                    power: Amount::Constant(fixed(pump.power)?),
+                    toughness: Amount::Constant(fixed(pump.toughness)?),
+                    duration: Duration::UntilEndOfTurn,
+                }),
+                context,
+            )?;
+        }
+        ZoneForecastEffect::GrantTargetCreatureKeywordUntilEndOfTurn(
+            ZoneGrantedKeyword::Shadow,
+        ) => {
+            let target = context.zone_keyword_target.ok_or_else(|| {
+                ExecutionError::Adapter("Forecast requires an exact creature target".into())
+            })?;
+            let creature = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if creature.zone != Zone::Battlefield
+                || !creature
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            apply_effect(
+                state,
+                &Effect::GrantKeyword {
+                    objects: ObjectRef::ObjectIdentity(target),
+                    keywords: vec![Keyword::Shadow],
+                    duration: Duration::UntilEndOfTurn,
+                },
+                context,
+            )?;
+        }
+        _ => {
+            return Err(ExecutionError::Adapter(
+                "Forecast effect has no connected production adapter".into(),
+            ));
+        }
+    }
+    state.record_mutation(format!(
+        "forecast:{}:{}:{}",
+        context.source,
+        order,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_recover_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &ZoneKeywordProgram,
+    cost: &ZoneRecoverCost,
+    trigger_requires_another_creature: bool,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    let ActionWindow::Triggered(TriggerEvent::ObjectEvent {
+        object: died,
+        event: ObjectEventKind::Dies,
+    }) = &context.window
+    else {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    };
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let died_object = state
+        .object(*died)
+        .ok_or(ExecutionError::MissingObject(*died))?;
+    if source.zone != Zone::Graveyard
+        || source.owner != context.actor
+        || died_object.owner != context.actor
+        || died_object.zone != Zone::Graveyard
+        || !died_object
+            .characteristics()
+            .card_types
+            .contains(&CardType::Creature)
+        || (trigger_requires_another_creature && *died == context.source)
+    {
+        return Err(ExecutionError::ActivationRestrictionFailed);
+    }
+    let pay = context.zone_keyword_recover_pay.ok_or_else(|| {
+        ExecutionError::Adapter("Recover requires an explicit pay-or-decline choice".into())
+    })?;
+    if pay {
+        let mut player = state
+            .player(context.actor)
+            .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+        match cost {
+            ZoneRecoverCost::Mana(mana) => {
+                pay_mana_from_player(
+                    &mut player,
+                    &ManaCost(mana.exact().to_owned()),
+                    context.x_value,
+                )
+                .map_err(ExecutionError::Adapter)?;
+            }
+            ZoneRecoverCost::HalfLifeRoundedUp => {
+                let payment = (player.life.max(0) + 1) / 2;
+                player.life = player
+                    .life
+                    .checked_sub(payment)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+        }
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+        if state
+            .object(context.source)
+            .is_some_and(|source| source.zone == Zone::Graveyard)
+        {
+            state
+                .move_object(context.source, Zone::Hand)
+                .map_err(ExecutionError::Adapter)?;
+        }
+    } else if state
+        .object(context.source)
+        .is_some_and(|source| source.zone == Zone::Graveyard)
+    {
+        state
+            .move_object(context.source, Zone::Exile)
+            .map_err(ExecutionError::Adapter)?;
+    }
+    state.record_mutation(format!(
+        "recover:{}:{died}:{pay}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_warp_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &ExtendedCastZoneProgram,
+    warp: &crate::extended_cast_zone_keyword_runtime::WarpProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let action = context
+        .warp_action
+        .ok_or_else(|| ExecutionError::Adapter("Warp requires an exact lifecycle action".into()))?;
+    let turn = context
+        .turn_sequence
+        .ok_or_else(|| ExecutionError::Adapter("Warp requires a monotonic turn identity".into()))?;
+    match action {
+        WarpAction::CastForWarp => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let zone_allowed = source.zone == Zone::Hand
+                || (warp.source_permission
+                    == crate::extended_cast_zone_keyword_runtime::WarpSourcePermission::HandOrOwnersGraveyard
+                    && source.zone == Zone::Graveyard);
+            if !warp.delayed_exile_at_next_end_step
+                || !warp.later_turn_cast_from_exile
+                || !warp.later_cast_uses_normal_costs_and_timing
+                || !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || context.cast_from_zone != Some(source.zone)
+                || !zone_allowed
+                || source.owner != context.actor
+                || source.copy_of.is_some()
+                || source.token
+                || !warp_permanent_kind_matches(warp.permanent_kind, &source)
+                || !context.instant_timing
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(warp.warp_cost.exact.clone()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            if warp.life_cost > 0 {
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                if player.life < i64::from(warp.life_cost) {
+                    return Err(ExecutionError::CostFailed {
+                        index: 1,
+                        reason: "cannot pay more life than the player's current total".into(),
+                    });
+                }
+                player.life -= i64::from(warp.life_cost);
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+            let mut source = source;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_warp_delayed_exile(WarpDelayedExileRecord {
+                source: context.source,
+                source_incarnation,
+                holder: context.actor,
+                cast_turn: turn,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "extended_cast_zone_warp_cast:{}:{source_incarnation}:{turn}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        WarpAction::ResolveAsPermanent => {
+            let mut record = state.warp_delayed_exile(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("Warp delayed-exile record is missing".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::SpellResolution)
+                || source.zone != Zone::Stack
+                || source.controller != context.actor
+                || record.holder != context.actor
+                || record.program_sha256 != program.semantic_digest()
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || !warp_permanent_kind_matches(warp.permanent_kind, &source)
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Battlefield)
+                .map_err(ExecutionError::Adapter)?;
+            record.source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_warp_delayed_exile(record.clone());
+            state.record_mutation(format!(
+                "extended_cast_zone_warp_resolve:{}:{}:{}",
+                context.source,
+                record.source_incarnation,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        WarpAction::BeginningOfNextEndStep => {
+            let record = state.warp_delayed_exile(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("Warp delayed-exile record is missing".into())
+            })?;
+            if !matches!(
+                &context.window,
+                ActionWindow::Triggered(TriggerEvent::BeginningOf {
+                    step: Step::EndStep,
+                    ..
+                })
+            ) || turn < record.cast_turn
+                || record.holder != context.actor
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let still_that_permanent = state.object(context.source).is_some_and(|source| {
+                source.zone == Zone::Battlefield
+                    && source.controller == record.holder
+                    && state.object_incarnation(context.source) == Some(record.source_incarnation)
+            });
+            state.consume_warp_delayed_exile(context.source);
+            if !still_that_permanent {
+                state.record_mutation(format!(
+                    "extended_cast_zone_warp_end_step_no_change:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            state
+                .move_object(context.source, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_warp_exile_cast_permission(WarpExileCastPermissionRecord {
+                source: context.source,
+                source_incarnation,
+                holder: record.holder,
+                exile_turn: turn,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "extended_cast_zone_warp_exile:{}:{source_incarnation}:{turn}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        WarpAction::CastFromExile => {
+            let permission = state
+                .warp_exile_cast_permission(context.source)
+                .ok_or_else(|| {
+                    ExecutionError::Adapter("Warp exile permission is missing".into())
+                })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || context.cast_from_zone != Some(Zone::Exile)
+                || source.zone != Zone::Exile
+                || source.owner != context.actor
+                || permission.holder != context.actor
+                || turn <= permission.exile_turn
+                || permission.program_sha256 != program.semantic_digest()
+                || state.object_incarnation(context.source) != Some(permission.source_incarnation)
+                || !context.instant_timing
+                || !context.normal_cast_all_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let mut source = source;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            state.consume_warp_exile_cast_permission(context.source);
+            state.record_mutation(format!(
+                "extended_cast_zone_warp_later_cast:{}:{turn}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn warp_permanent_kind_matches(
+    kind: crate::extended_cast_zone_keyword_runtime::WarpPermanentKind,
+    source: &PhysicalObject,
+) -> bool {
+    let card_types = &source.characteristics().card_types;
+    match kind {
+        crate::extended_cast_zone_keyword_runtime::WarpPermanentKind::SourcePermanent => {
+            card_types.iter().any(|card_type| {
+                matches!(
+                    card_type,
+                    CardType::Artifact
+                        | CardType::Battle
+                        | CardType::Creature
+                        | CardType::Enchantment
+                        | CardType::Planeswalker
+                )
+            })
+        }
+        crate::extended_cast_zone_keyword_runtime::WarpPermanentKind::Creature => {
+            card_types.contains(&CardType::Creature)
+        }
+        crate::extended_cast_zone_keyword_runtime::WarpPermanentKind::Enchantment => {
+            card_types.contains(&CardType::Enchantment)
+        }
+    }
+}
+
+fn apply_extended_exile_cast_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &ExtendedCastZoneProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let action = context.extended_exile_cast_action.ok_or_else(|| {
+        ExecutionError::Adapter("Foretell or Plot requires an exact exile lifecycle action".into())
+    })?;
+    let turn = context
+        .turn_sequence
+        .ok_or_else(|| ExecutionError::Adapter("a monotonic turn identity is required".into()))?;
+    let is_foretell = matches!(program.kind(), ExtendedCastZoneKind::Foretell(_));
+    match action {
+        ExtendedExileCastAction::Prepare => {
+            let (cost, exact_program, expected_window, timing_legal, face_down) =
+                match program.kind() {
+                    ExtendedCastZoneKind::Foretell(foretell) => (
+                        &foretell.special_action_cost,
+                        foretell.exile_face_down
+                            && foretell.later_turn_required
+                            && foretell.later_cast_uses_normal_timing,
+                        SpecialActionTiming::Foretell,
+                        context.active_player == context.actor,
+                        true,
+                    ),
+                    ExtendedCastZoneKind::Plot(plot) => (
+                        &plot.plot_cost,
+                        plot.special_action_uses_sorcery_timing
+                            && plot.exile_face_up
+                            && plot.later_turn_required
+                            && plot.later_cast_uses_sorcery_timing
+                            && plot.later_cast_without_paying_mana_cost,
+                        SpecialActionTiming::Plot,
+                        context.active_player == context.actor && context.sorcery_timing,
+                        false,
+                    ),
+                    _ => {
+                        return Err(ExecutionError::Adapter(
+                            "extended exile action used with the wrong keyword family".into(),
+                        ));
+                    }
+                };
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !exact_program
+                || context.window != ActionWindow::SpecialAction(expected_window)
+                || !timing_legal
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || source.copy_of.is_some()
+                || source.token
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(cost.exact.clone()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            state
+                .move_object(context.source, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            source.face_down = face_down;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_extended_exile_cast_permission(ExtendedExileCastPermissionRecord {
+                source: context.source,
+                source_incarnation,
+                holder: context.actor,
+                prepared_turn: turn,
+                face_down,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "extended_cast_zone_{}_prepare:{}:{source_incarnation}:{turn}:{}",
+                if is_foretell { "foretell" } else { "plot" },
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        ExtendedExileCastAction::Cast => {
+            let permission = state
+                .extended_exile_cast_permission(context.source)
+                .ok_or_else(|| {
+                    ExecutionError::Adapter("extended exile cast permission is missing".into())
+                })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let timing_legal = match program.kind() {
+                ExtendedCastZoneKind::Foretell(foretell) => {
+                    foretell.later_cast_uses_normal_timing && context.instant_timing
+                }
+                ExtendedCastZoneKind::Plot(plot) => {
+                    plot.later_cast_uses_sorcery_timing
+                        && plot.later_cast_without_paying_mana_cost
+                        && context.sorcery_timing
+                        && context.active_player == context.actor
+                }
+                _ => false,
+            };
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || !timing_legal
+                || turn <= permission.prepared_turn
+                || permission.holder != context.actor
+                || permission.face_down != is_foretell
+                || permission.program_sha256 != program.semantic_digest()
+                || source.zone != Zone::Exile
+                || source.owner != context.actor
+                || source.face_down != permission.face_down
+                || state.object_incarnation(context.source) != Some(permission.source_incarnation)
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            if let ExtendedCastZoneKind::Foretell(foretell) = program.kind() {
+                state
+                    .pay_mana(
+                        context.actor,
+                        &ManaCost(foretell.foretell_cost.exact.clone()),
+                        context.x_value,
+                    )
+                    .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            }
+            let mut source = source;
+            source.face_down = false;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            state.consume_extended_exile_cast_permission(context.source);
+            state.record_mutation(format!(
+                "extended_cast_zone_{}_cast:{}:{turn}:{}",
+                if is_foretell { "foretell" } else { "plot" },
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn apply_suspend_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &AlternateZoneKeywordProgram,
+    suspend: &crate::alternate_zone_cast_keyword_runtime::SuspendProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let action = context.suspend_action.ok_or_else(|| {
+        ExecutionError::Adapter("Suspend requires an exact lifecycle action".into())
+    })?;
+    match action {
+        SuspendAction::ExileFromHand => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let time_counters = match suspend.counters {
+                crate::alternate_zone_cast_keyword_runtime::SuspendCounterAmount::Fixed(amount) => {
+                    if context.x_value != 0 {
+                        return Err(ExecutionError::InvalidAmount(
+                            "fixed Suspend cannot declare X",
+                        ));
+                    }
+                    amount
+                }
+                crate::alternate_zone_cast_keyword_runtime::SuspendCounterAmount::ChosenXAtLeastOne => {
+                    if context.x_value == 0 {
+                        return Err(ExecutionError::InvalidAmount(
+                            "variable Suspend requires X to be at least one",
+                        ));
+                    }
+                    context.x_value
+                }
+            };
+            let mana = suspend
+                .special_action_cost
+                .mana
+                .as_ref()
+                .ok_or(ExecutionError::InvalidAmount("Suspend mana cost is absent"))?;
+            if !suspend.only_from_hand
+                || !suspend.upkeep_removes_one_time_counter
+                || !suspend.last_counter_requires_play_if_able
+                || !suspend.waives_mana_cost
+                || !matches!(
+                    context.window,
+                    ActionWindow::SpecialAction(SpecialActionTiming::Suspend)
+                )
+                || !context.suspend_hand_cast_timing_legal
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+                || source.copy_of.is_some()
+                || source.token
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(mana.exact.clone()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            state
+                .move_object(context.source, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            source.counters.insert("time".into(), time_counters);
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_suspended_card(SuspendedCardRecord {
+                source: context.source,
+                source_incarnation,
+                owner: context.actor,
+                time_counters,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "alternate_zone_suspend:{}:{source_incarnation}:{time_counters}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        SuspendAction::ResolveUpkeepCounterTrigger => {
+            let mut record = state.suspended_card(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("suspended-card record is missing".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let correct_upkeep = matches!(
+                &context.window,
+                ActionWindow::Triggered(TriggerEvent::BeginningOf {
+                    step: Step::Upkeep,
+                    active_player,
+                    ..
+                }) if *active_player == context.actor
+            );
+            if !correct_upkeep
+                || record.owner != context.actor
+                || record.time_counters == 0
+                || record.program_sha256 != program.semantic_digest()
+                || source.zone != Zone::Exile
+                || source.counters.get("time").copied() != Some(record.time_counters)
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            record.time_counters -= 1;
+            let mut source = source;
+            if record.time_counters == 0 {
+                source.counters.remove("time");
+            } else {
+                source.counters.insert("time".into(), record.time_counters);
+            }
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state.register_suspended_card(record.clone());
+            state.record_mutation(format!(
+                "alternate_zone_suspend_remove_time:{}:{}:{}",
+                context.source,
+                record.time_counters,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        SuspendAction::ResolveLastCounterCastTrigger => {
+            let record = state.suspended_card(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("suspended-card record is missing".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            let legal = context.suspend_play_is_legal.ok_or_else(|| {
+                ExecutionError::Adapter("Suspend requires a complete play-legality result".into())
+            })?;
+            if !matches!(context.window, ActionWindow::Triggered(_))
+                || record.owner != context.actor
+                || record.time_counters != 0
+                || record.program_sha256 != program.semantic_digest()
+                || source.zone != Zone::Exile
+                || source.counters.contains_key("time")
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || (legal && !context.alternate_cast_other_costs_paid)
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state.consume_suspended_card(context.source);
+            if !legal {
+                state.record_mutation(format!(
+                    "alternate_zone_suspend_could_not_cast:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            let mut source = source;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if program.source_context().is_creature {
+                state.register_suspend_haste(SuspendHasteRecord {
+                    source: context.source,
+                    source_incarnation,
+                    controller: context.actor,
+                    program_sha256: program.semantic_digest().to_owned(),
+                });
+            }
+            state.record_mutation(format!(
+                "alternate_zone_suspend_cast:{}:{source_incarnation}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        SuspendAction::ResolveCreatureToBattlefield => {
+            let mut record = state
+                .suspend_haste(context.source)
+                .ok_or_else(|| ExecutionError::Adapter("Suspend haste record is missing".into()))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !program.source_context().is_creature
+                || !matches!(context.window, ActionWindow::SpellResolution)
+                || source.zone != Zone::Stack
+                || source.controller != record.controller
+                || record.program_sha256 != program.semantic_digest()
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Battlefield)
+                .map_err(ExecutionError::Adapter)?;
+            record.source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_suspend_haste(record);
+            state.record_mutation(format!(
+                "alternate_zone_suspend_resolve:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        SuspendAction::ControlLost => {
+            let record = state
+                .suspend_haste(context.source)
+                .ok_or_else(|| ExecutionError::Adapter("Suspend haste record is missing".into()))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::Static)
+                || source.zone != Zone::Battlefield
+                || source.controller == record.controller
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state.consume_suspend_haste(context.source);
+            state.record_mutation(format!(
+                "alternate_zone_suspend_control_lost:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn apply_residual_flashback_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &AlternateZoneKeywordProgram,
+    flashback: &crate::alternate_zone_cast_keyword_runtime::ResidualFlashbackProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let action = context.flashback_action.ok_or_else(|| {
+        ExecutionError::Adapter("Flashback requires an exact lifecycle action".into())
+    })?;
+    match action {
+        FlashbackAction::Cast => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::CastingAdditionalCost)
+                || context.cast_from_zone != Some(Zone::Graveyard)
+                || source.zone != Zone::Graveyard
+                || source.owner != context.actor
+                || !context.alternate_cast_other_costs_paid
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            pay_alternate_zone_cost(
+                state,
+                &flashback.alternative_cost,
+                flashback.modifier.clone(),
+                context,
+            )?;
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Stack)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_flashback_stack(FlashbackStackRecord {
+                source: context.source,
+                source_incarnation,
+                caster: context.actor,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "alternate_zone_flashback_cast:{}:{source_incarnation}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        FlashbackAction::StackExit {
+            requested_destination,
+        } => {
+            let record = state.flashback_stack(context.source).ok_or_else(|| {
+                ExecutionError::Adapter("Flashback stack record is missing".into())
+            })?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::Replacement)
+                || requested_destination == Zone::Stack
+                || source.zone != Zone::Stack
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            state.consume_flashback_stack(context.source);
+            state.record_mutation(format!(
+                "alternate_zone_flashback_exile:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn alternate_amount_value(amount: AlternateAmount, x_value: u32) -> u32 {
+    match amount {
+        AlternateAmount::Exact(amount) => amount,
+        AlternateAmount::VariableX => x_value,
+    }
+}
+
+fn alternate_permanent_matches(object: &PhysicalObject, filter: AlternatePermanentFilter) -> bool {
+    let characteristics = object.characteristics();
+    match filter {
+        AlternatePermanentFilter::AnyCreature => {
+            characteristics.card_types.contains(&CardType::Creature)
+        }
+        AlternatePermanentFilter::WhiteCreature => {
+            characteristics.card_types.contains(&CardType::Creature)
+                && characteristics.colors.contains(&Color::White)
+        }
+        AlternatePermanentFilter::Mountain => characteristics
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Mountain")),
+        AlternatePermanentFilter::Land => characteristics.card_types.contains(&CardType::Land),
+        AlternatePermanentFilter::Planeswalker => {
+            characteristics.card_types.contains(&CardType::Planeswalker)
+        }
+    }
+}
+
+fn require_alternate_objects(
+    context: &ExecutionContext,
+    cost_index: usize,
+    expected: Option<usize>,
+    distinct: bool,
+) -> Result<Vec<ObjectId>, ExecutionError> {
+    let key = u8::try_from(cost_index)
+        .map_err(|_| ExecutionError::InvalidAmount("alternate cost index exceeds runtime range"))?;
+    let selected = context.object_choices.get(&key).cloned().ok_or_else(|| {
+        ExecutionError::Adapter(format!(
+            "alternate cost {cost_index} requires complete object choices"
+        ))
+    })?;
+    if expected.is_some_and(|expected| selected.len() != expected) {
+        return Err(ExecutionError::Adapter(format!(
+            "alternate cost {cost_index} has the wrong object count"
+        )));
+    }
+    if distinct && selected.iter().copied().collect::<BTreeSet<_>>().len() != selected.len() {
+        return Err(ExecutionError::Adapter(format!(
+            "alternate cost {cost_index} repeats an object"
+        )));
+    }
+    Ok(selected)
+}
+
+fn commander_reduced_mana_cost<S: OracleStateAdapter>(
+    state: &S,
+    player: PlayerId,
+    mana: &crate::alternate_zone_cast_keyword_runtime::ManaCost,
+    modifier: AlternateFlashbackCostModifier,
+) -> Result<ManaCost, ExecutionError> {
+    let reduction = match modifier {
+        AlternateFlashbackCostModifier::None => 0,
+        AlternateFlashbackCostModifier::ReduceGenericByGreatestOwnedCommanderManaValueOnBattlefieldOrCommandZone => state
+            .object_ids()
+            .into_iter()
+            .filter(|id| state.is_commander(*id))
+            .filter_map(|id| state.object(id))
+            .filter(|object| {
+                object.owner == player
+                    && matches!(object.zone, Zone::Battlefield | Zone::Command)
+            })
+            .map(|object| object.characteristics().mana_value)
+            .max()
+            .unwrap_or(0),
+    };
+    let mut generic = 0_u32;
+    let mut retained = Vec::new();
+    for symbol in mana_symbols(&mana.exact).map_err(ExecutionError::Adapter)? {
+        if let Ok(amount) = symbol.parse::<u32>() {
+            generic = generic
+                .checked_add(amount)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+        } else {
+            retained.push(symbol);
+        }
+    }
+    let generic = generic.saturating_sub(reduction);
+    let mut exact = String::new();
+    if generic > 0 || retained.is_empty() {
+        exact.push_str(&format!("{{{generic}}}"));
+    }
+    for symbol in retained {
+        exact.push('{');
+        exact.push_str(&symbol);
+        exact.push('}');
+    }
+    Ok(ManaCost(exact))
+}
+
+fn reduce_generic_mana_cost(exact_cost: &str, reduction: u32) -> Result<ManaCost, ExecutionError> {
+    let mut generic = 0_u32;
+    let mut retained = Vec::new();
+    for symbol in mana_symbols(exact_cost).map_err(ExecutionError::Adapter)? {
+        if let Ok(amount) = symbol.parse::<u32>() {
+            generic = generic
+                .checked_add(amount)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+        } else {
+            retained.push(symbol);
+        }
+    }
+    let generic = generic.saturating_sub(reduction);
+    let mut exact = String::new();
+    if generic > 0 || retained.is_empty() {
+        exact.push_str(&format!("{{{generic}}}"));
+    }
+    for symbol in retained {
+        exact.push('{');
+        exact.push_str(&symbol);
+        exact.push('}');
+    }
+    Ok(ManaCost(exact))
+}
+
+fn pay_alternate_zone_cost<S: OracleStateAdapter>(
+    state: &mut S,
+    cost: &crate::alternate_zone_cast_keyword_runtime::AlternativeCost,
+    modifier: AlternateFlashbackCostModifier,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if cost.x_constraint == AlternateVariableConstraint::AtLeastOne && context.x_value == 0 {
+        return Err(ExecutionError::InvalidAmount(
+            "alternate cost X must be at least one",
+        ));
+    }
+    let uses_x = cost.additional.iter().any(|additional| {
+        matches!(
+            additional,
+            AlternateAdditionalCost::ExileCardsFromYourGraveyard {
+                amount: AlternateAmount::VariableX,
+                ..
+            } | AlternateAdditionalCost::SacrificeControlledPermanent {
+                amount: AlternateAmount::VariableX,
+                ..
+            } | AlternateAdditionalCost::DiscardCards {
+                amount: AlternateAmount::VariableX,
+            } | AlternateAdditionalCost::RemoveLoyaltyCountersFromControlledPlaneswalkers {
+                amount: AlternateAmount::VariableX,
+                ..
+            }
+        )
+    }) || cost
+        .mana
+        .as_ref()
+        .is_some_and(|mana| mana.exact.contains("{X}"));
+    if !uses_x && context.x_value != 0 {
+        return Err(ExecutionError::InvalidAmount("alternate cost has no X"));
+    }
+    if let Some(mana) = &cost.mana {
+        let payable = commander_reduced_mana_cost(state, context.actor, mana, modifier)?;
+        state
+            .pay_mana(context.actor, &payable, context.x_value)
+            .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+    }
+
+    let has_loyalty_cost = cost.additional.iter().any(|additional| {
+        matches!(
+            additional,
+            AlternateAdditionalCost::RemoveLoyaltyCountersFromControlledPlaneswalkers { .. }
+        )
+    });
+    if !has_loyalty_cost && !context.loyalty_counter_payments.is_empty() {
+        return Err(ExecutionError::Adapter(
+            "alternate cost received unexpected loyalty payment evidence".into(),
+        ));
+    }
+
+    for (cost_index, additional) in cost.additional.iter().enumerate() {
+        match additional {
+            AlternateAdditionalCost::PayLife(amount) => {
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                if player.life < i64::from(*amount) {
+                    return Err(ExecutionError::CostFailed {
+                        index: cost_index,
+                        reason: "cannot pay more life than the player's current total".into(),
+                    });
+                }
+                player.life -= i64::from(*amount);
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+            AlternateAdditionalCost::PayEnergy(amount) => {
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                let available = player.counters.get("energy").copied().unwrap_or(0);
+                if available < *amount {
+                    return Err(ExecutionError::CostFailed {
+                        index: cost_index,
+                        reason: "insufficient energy counters".into(),
+                    });
+                }
+                if available == *amount {
+                    player.counters.remove("energy");
+                } else {
+                    player.counters.insert("energy".into(), available - amount);
+                }
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+            AlternateAdditionalCost::PayRepeatedColorless(amount) => {
+                let exact = "{C}".repeat(*amount as usize);
+                state
+                    .pay_mana(context.actor, &ManaCost(exact), 0)
+                    .map_err(|reason| ExecutionError::CostFailed {
+                        index: cost_index,
+                        reason,
+                    })?;
+            }
+            AlternateAdditionalCost::ExileCardsFromYourGraveyard {
+                amount,
+                filter,
+                other_than_source,
+            } => {
+                let expected = alternate_amount_value(*amount, context.x_value) as usize;
+                let selected = require_alternate_objects(context, cost_index, Some(expected), true)?;
+                for id in &selected {
+                    let object = state.object(*id).ok_or(ExecutionError::MissingObject(*id))?;
+                    let color_matches = *filter == AlternateGraveyardCardFilter::Any
+                        || object.characteristics().colors.contains(&Color::Blue);
+                    if object.zone != Zone::Graveyard
+                        || object.owner != context.actor
+                        || (*other_than_source && *id == context.source)
+                        || !color_matches
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "graveyard exile payment selected an illegal card".into(),
+                        ));
+                    }
+                }
+                for id in selected {
+                    state.move_object(id, Zone::Exile).map_err(ExecutionError::Adapter)?;
+                }
+            }
+            AlternateAdditionalCost::ExileAnyNumberFromYourGraveyardWithCombinedCardTypesAtLeast {
+                distinct_card_types,
+                other_than_source,
+            } => {
+                let selected = require_alternate_objects(context, cost_index, None, true)?;
+                let mut types = BTreeSet::new();
+                for id in &selected {
+                    let object = state.object(*id).ok_or(ExecutionError::MissingObject(*id))?;
+                    if object.zone != Zone::Graveyard
+                        || object.owner != context.actor
+                        || (*other_than_source && *id == context.source)
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "graveyard type payment selected an illegal card".into(),
+                        ));
+                    }
+                    types.extend(object.characteristics().card_types.iter().filter_map(
+                        |card_type| match card_type {
+                            CardType::Artifact => Some("artifact"),
+                            CardType::Battle => Some("battle"),
+                            CardType::Creature => Some("creature"),
+                            CardType::Enchantment => Some("enchantment"),
+                            CardType::Instant => Some("instant"),
+                            CardType::Land => Some("land"),
+                            CardType::Planeswalker => Some("planeswalker"),
+                            CardType::Sorcery => Some("sorcery"),
+                            CardType::Spell | CardType::Permanent => None,
+                        },
+                    ));
+                }
+                if types.len() < *distinct_card_types as usize {
+                    return Err(ExecutionError::Adapter(
+                        "graveyard type payment has too few combined card types".into(),
+                    ));
+                }
+                for id in selected {
+                    state.move_object(id, Zone::Exile).map_err(ExecutionError::Adapter)?;
+                }
+            }
+            AlternateAdditionalCost::ExileControlledPermanent { amount, filter }
+            | AlternateAdditionalCost::TapUntappedControlledPermanent { amount, filter } => {
+                let selected =
+                    require_alternate_objects(context, cost_index, Some(*amount as usize), true)?;
+                let taps = matches!(additional, AlternateAdditionalCost::TapUntappedControlledPermanent { .. });
+                for id in &selected {
+                    let object = state.object(*id).ok_or(ExecutionError::MissingObject(*id))?;
+                    if object.zone != Zone::Battlefield
+                        || object.controller != context.actor
+                        || !alternate_permanent_matches(&object, *filter)
+                        || (taps && object.tapped)
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "controlled permanent payment selected an illegal object".into(),
+                        ));
+                    }
+                }
+                for id in selected {
+                    if taps {
+                        let mut object = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                        object.tapped = true;
+                        state.put_object(object).map_err(ExecutionError::Adapter)?;
+                    } else {
+                        state.move_object(id, Zone::Exile).map_err(ExecutionError::Adapter)?;
+                    }
+                }
+            }
+            AlternateAdditionalCost::SacrificeControlledPermanent { amount, filter } => {
+                let expected = alternate_amount_value(*amount, context.x_value) as usize;
+                let selected = require_alternate_objects(context, cost_index, Some(expected), true)?;
+                for id in &selected {
+                    let object = state.object(*id).ok_or(ExecutionError::MissingObject(*id))?;
+                    if object.zone != Zone::Battlefield
+                        || object.controller != context.actor
+                        || !alternate_permanent_matches(&object, *filter)
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "sacrifice payment selected an illegal permanent".into(),
+                        ));
+                    }
+                }
+                for id in selected {
+                    state.move_object(id, Zone::Graveyard).map_err(ExecutionError::Adapter)?;
+                }
+            }
+            AlternateAdditionalCost::DiscardCards { amount } => {
+                let expected = alternate_amount_value(*amount, context.x_value) as usize;
+                let selected = require_alternate_objects(context, cost_index, Some(expected), true)?;
+                for id in &selected {
+                    let object = state.object(*id).ok_or(ExecutionError::MissingObject(*id))?;
+                    if object.zone != Zone::Hand || object.owner != context.actor {
+                        return Err(ExecutionError::Adapter(
+                            "discard payment selected a card outside the actor's hand".into(),
+                        ));
+                    }
+                }
+                for id in selected {
+                    state.move_object(id, Zone::Graveyard).map_err(ExecutionError::Adapter)?;
+                }
+            }
+            AlternateAdditionalCost::RemoveLoyaltyCountersFromControlledPlaneswalkers {
+                amount,
+                minimum_one,
+            } => {
+                let expected = alternate_amount_value(*amount, context.x_value);
+                if *minimum_one && expected == 0 {
+                    return Err(ExecutionError::InvalidAmount("loyalty payment X must be positive"));
+                }
+                let actual = context
+                    .loyalty_counter_payments
+                    .values()
+                    .try_fold(0_u32, |total, amount| total.checked_add(*amount))
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+                if actual != expected
+                    || context.loyalty_counter_payments.values().any(|amount| *amount == 0)
+                {
+                    return Err(ExecutionError::Adapter(
+                        "loyalty counter payment does not equal the chosen X".into(),
+                    ));
+                }
+                for (id, amount) in &context.loyalty_counter_payments {
+                    let object = state.object(*id).ok_or(ExecutionError::MissingObject(*id))?;
+                    if object.zone != Zone::Battlefield
+                        || object.controller != context.actor
+                        || !object.characteristics().card_types.contains(&CardType::Planeswalker)
+                        || object.counters.get("loyalty").copied().unwrap_or(0) < *amount
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "loyalty payment selected an illegal planeswalker or amount".into(),
+                        ));
+                    }
+                }
+                for (id, amount) in &context.loyalty_counter_payments {
+                    let mut object = state.object(*id).ok_or(ExecutionError::MissingObject(*id))?;
+                    let remaining = object.counters.get("loyalty").copied().unwrap_or(0) - amount;
+                    if remaining == 0 {
+                        object.counters.remove("loyalty");
+                    } else {
+                        object.counters.insert("loyalty".into(), remaining);
+                    }
+                    state.put_object(object).map_err(ExecutionError::Adapter)?;
+                }
+            }
+            AlternateAdditionalCost::BeholdSubtype { amount, subtype } => {
+                let selected =
+                    require_alternate_objects(context, cost_index, Some(*amount as usize), false)?;
+                for id in selected {
+                    let object = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+                    let controlled = object.zone == Zone::Battlefield
+                        && object.controller == context.actor;
+                    let reveal = object.zone == Zone::Hand && object.owner == context.actor;
+                    if (!controlled && !reveal)
+                        || !object
+                            .characteristics()
+                            .subtypes
+                            .iter()
+                            .any(|candidate| candidate.eq_ignore_ascii_case(subtype))
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "behold payment selected an illegal object".into(),
+                        ));
+                    }
+                    if reveal {
+                        let order = state.next_order();
+                        state.register_revealed_card(RevealedCardRecord {
+                            order,
+                            source_identity: context.source,
+                            player: context.actor,
+                            card: id,
+                            as_additional_cost: true,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_madness_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &AlternateZoneKeywordProgram,
+    madness: &crate::alternate_zone_cast_keyword_runtime::MadnessProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let action = context.madness_action.ok_or_else(|| {
+        ExecutionError::Adapter("Madness requires an exact lifecycle action".into())
+    })?;
+    match action {
+        MadnessAction::DiscardReplacement => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::Replacement)
+                || source.zone != Zone::Hand
+                || source.owner != context.actor
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            state
+                .move_object(context.source, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_madness_exile(MadnessExileRecord {
+                source: context.source,
+                source_incarnation,
+                owner: context.actor,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "alternate_zone_madness_discard:{}:{source_incarnation}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        MadnessAction::ResolveTriggerCast | MadnessAction::ResolveTriggerDecline => {
+            let record = state
+                .madness_exile(context.source)
+                .ok_or_else(|| ExecutionError::Adapter("Madness exile record is missing".into()))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(
+                context.window,
+                ActionWindow::Triggered(TriggerEvent::PlayerAction {
+                    player,
+                    action: PlayerActionKind::Discard,
+                    object: Some(object),
+                }) if player == record.owner && object == context.source
+            ) || source.zone != Zone::Exile
+                || state.object_incarnation(context.source) != Some(record.source_incarnation)
+                || record.program_sha256 != program.semantic_digest()
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            if matches!(action, MadnessAction::ResolveTriggerDecline) {
+                state
+                    .move_object(context.source, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.consume_madness_exile(context.source);
+                state.record_mutation(format!(
+                    "alternate_zone_madness_decline:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            if !context.alternate_cast_other_costs_paid {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            let plays_land = matches!(
+                madness.play_kind,
+                crate::alternate_zone_cast_keyword_runtime::MadnessPlayKind::PlayLand
+            );
+            if plays_land {
+                let player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                if context.active_player != context.actor || player.land_plays_remaining == 0 {
+                    return Err(ExecutionError::ActivationRestrictionFailed);
+                }
+            }
+            if let Some(mana) = &madness.alternative_cost.mana {
+                state
+                    .pay_mana(
+                        context.actor,
+                        &ManaCost(mana.exact.clone()),
+                        context.x_value,
+                    )
+                    .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            } else if madness.alternative_cost.additional
+                == [AlternateAdditionalCost::PayRepeatedColorless(6)]
+            {
+                state
+                    .pay_mana(context.actor, &ManaCost("{C}{C}{C}{C}{C}{C}".into()), 0)
+                    .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            } else {
+                return Err(ExecutionError::InvalidAmount(
+                    "Madness cost is outside the production subset",
+                ));
+            }
+            for additional in &madness.alternative_cost.additional {
+                let AlternateAdditionalCost::PayLife(amount) = additional else {
+                    if matches!(additional, AlternateAdditionalCost::PayRepeatedColorless(6)) {
+                        continue;
+                    }
+                    return Err(ExecutionError::InvalidAmount(
+                        "Madness additional cost is outside the production subset",
+                    ));
+                };
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                if player.life < i64::from(*amount) {
+                    return Err(ExecutionError::CostFailed {
+                        index: 1,
+                        reason: "cannot pay more life than the player's current total".into(),
+                    });
+                }
+                player.life -= i64::from(*amount);
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            if plays_land {
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                player.land_plays_remaining -= 1;
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            }
+            state
+                .move_object(
+                    context.source,
+                    if plays_land {
+                        Zone::Battlefield
+                    } else {
+                        Zone::Stack
+                    },
+                )
+                .map_err(ExecutionError::Adapter)?;
+            state.consume_madness_exile(context.source);
+            state.record_mutation(format!(
+                "alternate_zone_madness_cast:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn apply_unearth_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &AlternateZoneKeywordProgram,
+    unearth: &crate::alternate_zone_cast_keyword_runtime::UnearthProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let action = context.unearth_action.ok_or_else(|| {
+        ExecutionError::Adapter("Unearth requires an exact lifecycle action".into())
+    })?;
+    match action {
+        UnearthAction::Activate => {
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if !matches!(context.window, ActionWindow::Activated)
+                || !context.sorcery_timing
+                || source.zone != Zone::Graveyard
+                || source.owner != context.actor
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            if let Some(mana) = &unearth.activation_cost.mana {
+                state
+                    .pay_mana(
+                        context.actor,
+                        &ManaCost(mana.exact.clone()),
+                        context.x_value,
+                    )
+                    .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            } else if unearth.activation_cost.additional == [AlternateAdditionalCost::PayEnergy(8)]
+            {
+                let mut player = state
+                    .player(context.actor)
+                    .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+                let current = player.counters.get("energy").copied().unwrap_or_default();
+                let remaining = current.checked_sub(8).ok_or(ExecutionError::CostFailed {
+                    index: 0,
+                    reason: "player lacks eight energy counters".into(),
+                })?;
+                if remaining == 0 {
+                    player.counters.remove("energy");
+                } else {
+                    player.counters.insert("energy".into(), remaining);
+                }
+                state.put_player(player).map_err(ExecutionError::Adapter)?;
+            } else {
+                return Err(ExecutionError::InvalidAmount(
+                    "Unearth activation cost is outside the production subset",
+                ));
+            }
+            let mut source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            source.controller = context.actor;
+            state.put_object(source).map_err(ExecutionError::Adapter)?;
+            state
+                .move_object(context.source, Zone::Battlefield)
+                .map_err(ExecutionError::Adapter)?;
+            let source_incarnation = state
+                .object_incarnation(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            state.register_unearthed_permanent(UnearthedPermanentRecord {
+                source: context.source,
+                source_incarnation,
+                controller_at_return: context.actor,
+                program_sha256: program.semantic_digest().to_owned(),
+            });
+            state.record_mutation(format!(
+                "alternate_zone_unearth_activate:{}:{source_incarnation}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        UnearthAction::BeginningOfNextEndStep => {
+            if !matches!(
+                context.window,
+                ActionWindow::Triggered(TriggerEvent::BeginningOf {
+                    step: Step::EndStep,
+                    ..
+                })
+            ) {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            exile_unearthed_permanent(state, program, context)
+        }
+        UnearthAction::WouldLeaveBattlefield {
+            requested_destination,
+        } => {
+            if !matches!(context.window, ActionWindow::Replacement)
+                || requested_destination == Zone::Battlefield
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            exile_unearthed_permanent(state, program, context)
+        }
+    }
+}
+
+fn exile_unearthed_permanent<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &AlternateZoneKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let record = state
+        .unearthed_permanent(context.source)
+        .ok_or_else(|| ExecutionError::Adapter("Unearth lifecycle record is missing".into()))?;
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if source.zone != Zone::Battlefield
+        || state.object_incarnation(context.source) != Some(record.source_incarnation)
+        || record.program_sha256 != program.semantic_digest()
+    {
+        return Err(ExecutionError::Adapter(
+            "Unearth lifecycle record does not match the battlefield object".into(),
+        ));
+    }
+    state
+        .move_object(context.source, Zone::Exile)
+        .map_err(ExecutionError::Adapter)?;
+    state.consume_unearthed_permanent(context.source);
+    state.record_mutation(format!(
+        "alternate_zone_unearth_exile:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_oracle_face_modal_line_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &OracleFaceModalLineProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !oracle_face_modal_line_has_contract(program) {
+        return Err(ExecutionError::Adapter(
+            "modal face line has no complete production adapter".into(),
+        ));
+    }
+    let selected = match program.role() {
+        OracleFaceModalLineRole::Header => context
+            .selected_modes
+            .iter()
+            .map(|mode| usize::from(*mode))
+            .collect::<Vec<_>>(),
+        OracleFaceModalLineRole::Branch { branch_index } => vec![usize::from(branch_index)],
+    };
+    if matches!(program.role(), OracleFaceModalLineRole::Header) {
+        program
+            .group()
+            .validate_selection(&selected)
+            .map_err(|error| {
+                ExecutionError::Adapter(format!("invalid modal selection: {error:?}"))
+            })?;
+    }
+
+    let checkpoint = state.checkpoint();
+    let mut repetitions = BTreeMap::<usize, usize>::new();
+    for branch_index in selected {
+        *repetitions.entry(branch_index).or_default() += 1;
+    }
+    for (branch_index, repeat_count) in repetitions {
+        let branch = &program.group().branches()[branch_index];
+        let OracleCompositionChildProgram::Bounded(child) = &branch.child_program else {
+            state.restore(checkpoint);
+            return Err(ExecutionError::Adapter(
+                "modal branch is not an executable bounded child".into(),
+            ));
+        };
+        for _ in 0..repeat_count {
+            let mut child_context = context.clone();
+            child_context.window = ActionWindow::SpellResolution;
+            if let Err(error) = execute_clause(state, child, &child_context) {
+                state.restore(checkpoint);
+                return Err(error);
+            }
+        }
+    }
+    state.record_mutation(format!(
+        "oracle_face_modal:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn oracle_face_modal_line_has_contract(program: &OracleFaceModalLineProgram) -> bool {
+    match program.role() {
+        OracleFaceModalLineRole::Header => program.production_adapter_connected(),
+        OracleFaceModalLineRole::Branch { branch_index } => program
+            .group()
+            .branches()
+            .get(usize::from(branch_index))
+            .is_some_and(|branch| {
+                matches!(
+                    &branch.child_program,
+                    OracleCompositionChildProgram::Bounded(clause)
+                        if matches!(clause.timing(), Timing::SpellResolution)
+                            && clause_has_executable_contract(clause)
+                )
+            }),
+    }
+}
+
+fn apply_oracle_composition_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &crate::bounded_oracle_runtime::OracleCompositionProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "Oracle composition has no complete production adapter".into(),
+        ));
+    }
+    let checkpoint = state.checkpoint();
+    for child in program.children() {
+        let OracleCompositionChildProgram::Bounded(clause) = child.program() else {
+            state.restore(checkpoint);
+            return Err(ExecutionError::Adapter(
+                "Oracle composition child is not executable".into(),
+            ));
+        };
+        if let Err(error) = execute_clause(state, clause, context) {
+            state.restore(checkpoint);
+            return Err(error);
+        }
+    }
+    state.record_mutation(format!(
+        "oracle_composition:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn retained_bullet_child(
+    program: &crate::oracle_clause_composition::RetainedOracleClauseComposition,
+) -> Option<BoundedOracleClause> {
+    let body = program.exact_oracle().strip_prefix("• ")?;
+    if body.is_empty() || body.contains(['\r', '\n']) {
+        return None;
+    }
+    let clause = compile_bounded_oracle_clause(OracleClauseInput {
+        face_index: 0,
+        clause_index: 0,
+        source_name: "Modal branch",
+        source_type_line: "Sorcery",
+        oracle_clause: body,
+    })
+    .ok()?;
+    (!matches!(
+        clause.effects(),
+        [Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::RetainedOracleComposition(_)
+        )]
+    ))
+    .then_some(clause)
+}
+
+fn apply_retained_bullet_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &crate::oracle_clause_composition::RetainedOracleClauseComposition,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let child = retained_bullet_child(program).ok_or_else(|| {
+        ExecutionError::Adapter("retained composition has no exact executable bullet child".into())
+    })?;
+    if !clause_has_executable_contract(&child) {
+        return Err(ExecutionError::Adapter(
+            "retained bullet child has no complete production contract".into(),
+        ));
+    }
+    let checkpoint = state.checkpoint();
+    let mut child_context = context.clone();
+    child_context.window = ActionWindow::SpellResolution;
+    if let Err(error) = execute_clause(state, &child, &child_context) {
+        state.restore(checkpoint);
+        return Err(error);
+    }
+    state.record_mutation(format!(
+        "retained_bullet:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_static_special_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &StaticSpecialKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "static special keyword has no complete production adapter".into(),
+        ));
+    }
+    if program.kind() == StaticSpecialKeywordKind::LivingMetal {
+        if !matches!(context.window, ActionWindow::Static) {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if source.zone != Zone::Battlefield
+            || source.controller != context.actor
+            || !source
+                .characteristics()
+                .subtypes
+                .iter()
+                .any(|subtype| subtype.eq_ignore_ascii_case("Vehicle"))
+        {
+            return Err(ExecutionError::Adapter(
+                "Living metal source is not its controlled battlefield Vehicle".into(),
+            ));
+        }
+        let duration = Duration::WhileCondition(Box::new(Condition::YourTurn));
+        let effect = Effect::SetCharacteristics(SetCharacteristics {
+            object: ObjectRef::Source,
+            colors: None,
+            card_types: Some(vec![CardType::Creature]),
+            subtypes: None,
+            name: None,
+            base_power: None,
+            base_toughness: None,
+            retain_other_card_types: true,
+            retain_other_subtypes: true,
+            retain_other_colors: true,
+            retain_other_names: true,
+            duration: duration.clone(),
+        });
+        let already_installed = state.continuous_effects().iter().any(|record| {
+            record.source_identity == context.source
+                && record.object_identities == [context.source]
+                && record.effect == effect
+                && record.duration == duration
+        });
+        if !already_installed {
+            register_continuous_effect(state, context, vec![context.source], effect, duration);
+            state.record_mutation(format!(
+                "static_special_living_metal:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        return Ok(());
+    }
+    if program.kind() == StaticSpecialKeywordKind::Banding {
+        match context.static_special_action {
+            Some(StaticSpecialAction::InstallBanding) => {
+                if !matches!(context.window, ActionWindow::Static) {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                let incarnation = state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if source.zone != Zone::Battlefield
+                    || source.controller != context.actor
+                    || !object_has_type(&source, CardType::Creature)
+                {
+                    return Err(ExecutionError::Adapter(
+                        "Banding source is not its controlled battlefield creature".into(),
+                    ));
+                }
+                let installed = InstalledBandingProgram {
+                    source_incarnation: incarnation,
+                    controller: context.actor,
+                    program_sha256: program.semantic_digest().to_owned(),
+                };
+                if let Some(existing) = state.installed_banding(context.source) {
+                    if existing != installed {
+                        return Err(ExecutionError::Adapter(
+                            "Banding source has a conflicting installed program".into(),
+                        ));
+                    }
+                    return Ok(());
+                }
+                state.install_banding(context.source, installed);
+                state.record_mutation(format!(
+                    "static_special_banding_install:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            Some(StaticSpecialAction::DeclareBand) => {
+                if context.window
+                    != ActionWindow::SpecialAction(SpecialActionTiming::BandingAttackDeclaration)
+                    || !context.attackers_declared
+                    || !context.banding_evidence_complete
+                {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                let combat_id = context.combat_id.ok_or_else(|| {
+                    ExecutionError::Adapter("Banding requires a current combat identity".into())
+                })?;
+                let defender = context.defending_player.ok_or_else(|| {
+                    ExecutionError::Adapter("Banding requires one exact defender".into())
+                })?;
+                let individually_legal = context
+                    .banding_members_individually_legal
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "Banding requires complete individual attack legality".into(),
+                        )
+                    })?;
+                if !context.banding_members.contains(&context.source)
+                    || context
+                        .banding_members
+                        .iter()
+                        .copied()
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        != context.banding_members.len()
+                {
+                    return Err(ExecutionError::Adapter(
+                        "Banding member selection is duplicate or omits the source".into(),
+                    ));
+                }
+                let mut members = Vec::new();
+                for id in &context.banding_members {
+                    let object = state
+                        .object(*id)
+                        .ok_or(ExecutionError::MissingObject(*id))?;
+                    let incarnation = state
+                        .object_incarnation(*id)
+                        .ok_or(ExecutionError::MissingObject(*id))?;
+                    if object.zone != Zone::Battlefield
+                        || object.controller != context.actor
+                        || !object.attacking
+                        || !object_has_type(&object, CardType::Creature)
+                        || state.attack_target(*id) != Some(SelectedTarget::Player(defender))
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "Banding member is not a legal attacker at the declared defender"
+                                .into(),
+                        ));
+                    }
+                    members.push(AttackBandMemberEvidence {
+                        object: StaticSpecialObjectRef {
+                            object_id: *id,
+                            incarnation_id: incarnation,
+                        },
+                        controller: object.controller,
+                        defender,
+                        declared_as_attacker: true,
+                        attack_declaration_legal_without_banding: individually_legal.contains(id),
+                        has_banding: state
+                            .installed_banding(*id)
+                            .is_some_and(|installed| installed.source_incarnation == incarnation),
+                    });
+                }
+                let band = declare_attack_band(
+                    program,
+                    AttackBandDeclarationEvidence {
+                        combat_id,
+                        attacking_player: context.actor,
+                        members,
+                        complete_attack_declaration: true,
+                    },
+                )
+                .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                state.register_attack_band(context.source, band);
+                state.record_mutation(format!(
+                    "static_special_banding_declare:{}:{}:{}",
+                    context.source,
+                    combat_id,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            Some(StaticSpecialAction::ExpandBandBlocks) => {
+                if context.window
+                    != ActionWindow::SpecialAction(SpecialActionTiming::BandingBlockDeclaration)
+                    || !context.blockers_declared
+                    || !context.banding_evidence_complete
+                {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                let combat_id = context.combat_id.ok_or_else(|| {
+                    ExecutionError::Adapter("Banding requires a current combat identity".into())
+                })?;
+                let supplied = context.banding_block_relations.as_ref().ok_or_else(|| {
+                    ExecutionError::Adapter(
+                        "Banding requires the complete declared block relation set".into(),
+                    )
+                })?;
+                let mut relations = BTreeSet::new();
+                for (attacker, blocker) in supplied {
+                    let attacker_object = state
+                        .object(*attacker)
+                        .ok_or(ExecutionError::MissingObject(*attacker))?;
+                    let blocker_object = state
+                        .object(*blocker)
+                        .ok_or(ExecutionError::MissingObject(*blocker))?;
+                    if !attacker_object.attacking
+                        || !blocker_object.blocking
+                        || !object_has_type(&attacker_object, CardType::Creature)
+                        || !object_has_type(&blocker_object, CardType::Creature)
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "Banding block relation is not between current combat creatures".into(),
+                        ));
+                    }
+                    let relation = BlockRelation {
+                        attacker: StaticSpecialObjectRef {
+                            object_id: *attacker,
+                            incarnation_id: state
+                                .object_incarnation(*attacker)
+                                .ok_or(ExecutionError::MissingObject(*attacker))?,
+                        },
+                        blocker: StaticSpecialObjectRef {
+                            object_id: *blocker,
+                            incarnation_id: state
+                                .object_incarnation(*blocker)
+                                .ok_or(ExecutionError::MissingObject(*blocker))?,
+                        },
+                    };
+                    if !relations.insert(relation) {
+                        return Err(ExecutionError::Adapter(
+                            "Banding block relation set contains a duplicate".into(),
+                        ));
+                    }
+                }
+                for band in state.attack_bands(combat_id) {
+                    relations = expand_band_block_relations(&band, &relations)
+                        .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                }
+                state.set_banding_blocks(combat_id, relations);
+                state.record_mutation(format!(
+                    "static_special_banding_blocks:{}:{}",
+                    combat_id,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            Some(StaticSpecialAction::ValidateBandingDamage) => {
+                if context.window
+                    != ActionWindow::SpecialAction(SpecialActionTiming::BandingDamageAssignment)
+                    || !context.banding_evidence_complete
+                {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                let combat_id = context.combat_id.ok_or_else(|| {
+                    ExecutionError::Adapter("Banding requires a current combat identity".into())
+                })?;
+                let source_id = context.banding_damage_source.ok_or_else(|| {
+                    ExecutionError::Adapter("Banding requires a combat damage source".into())
+                })?;
+                let source = state
+                    .object(source_id)
+                    .ok_or(ExecutionError::MissingObject(source_id))?;
+                let source_ref = StaticSpecialObjectRef {
+                    object_id: source_id,
+                    incarnation_id: state
+                        .object_incarnation(source_id)
+                        .ok_or(ExecutionError::MissingObject(source_id))?,
+                };
+                let relations = state.banding_blocks(combat_id).ok_or_else(|| {
+                    ExecutionError::Adapter("Banding has no complete block closure".into())
+                })?;
+                let opposing_refs = relations
+                    .iter()
+                    .filter_map(|relation| {
+                        if relation.attacker == source_ref {
+                            Some(relation.blocker)
+                        } else if relation.blocker == source_ref {
+                            Some(relation.attacker)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<BTreeSet<_>>();
+                if opposing_refs.is_empty() {
+                    return Err(ExecutionError::Adapter(
+                        "Banding damage source has no opposing combat creatures".into(),
+                    ));
+                }
+                let mut opposing = Vec::new();
+                for object_ref in &opposing_refs {
+                    let object = state
+                        .object(object_ref.object_id)
+                        .ok_or(ExecutionError::MissingObject(object_ref.object_id))?;
+                    opposing.push(CombatCreatureEvidence {
+                        object: *object_ref,
+                        controller: object.controller,
+                        has_banding: state.installed_banding(object_ref.object_id).is_some_and(
+                            |installed| installed.source_incarnation == object_ref.incarnation_id,
+                        ),
+                        in_current_combat: object.attacking || object.blocking,
+                    });
+                }
+                let expected_assigner = banding_damage_assignment_player(
+                    program,
+                    &BandingDamageChoiceEvidence {
+                        damage_source: source_ref,
+                        damage_source_controller: source.controller,
+                        opposing_creatures: opposing,
+                        block_relations: relations,
+                        combat_evidence_complete: true,
+                    },
+                )
+                .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                let assigning_player =
+                    context.banding_damage_assigning_player.ok_or_else(|| {
+                        ExecutionError::Adapter("Banding requires the assigning player".into())
+                    })?;
+                let total = context.banding_total_combat_damage.ok_or_else(|| {
+                    ExecutionError::Adapter("Banding requires total combat damage".into())
+                })?;
+                let assignments = context
+                    .banding_damage_assignments
+                    .iter()
+                    .map(|(recipient, amount)| {
+                        let incarnation_id = state
+                            .object_incarnation(*recipient)
+                            .ok_or(ExecutionError::MissingObject(*recipient))?;
+                        Ok(BandingCombatDamageAssignment {
+                            recipient: StaticSpecialObjectRef {
+                                object_id: *recipient,
+                                incarnation_id,
+                            },
+                            amount: *amount,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
+                validate_banding_combat_damage_division(
+                    assigning_player,
+                    expected_assigner,
+                    total,
+                    &opposing_refs,
+                    &assignments,
+                )
+                .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                state.register_validated_banding_damage(ValidatedBandingDamageRecord {
+                    combat_id,
+                    damage_source: source_id,
+                    assigning_player,
+                    assignments: context.banding_damage_assignments.clone(),
+                });
+                state.record_mutation(format!(
+                    "static_special_banding_damage:{}:{}:{}",
+                    combat_id,
+                    source_id,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            _ => {
+                return Err(ExecutionError::Adapter(
+                    "Banding requires an exact install, declaration, block, or damage action"
+                        .into(),
+                ));
+            }
+        }
+    }
+    if program.kind() == StaticSpecialKeywordKind::Phasing {
+        match context.static_special_action {
+            Some(StaticSpecialAction::InstallPhasing) => {
+                if !matches!(context.window, ActionWindow::Static) {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                let incarnation = state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if source.zone != Zone::Battlefield || source.controller != context.actor {
+                    return Err(ExecutionError::Adapter(
+                        "Phasing source is not its controlled battlefield permanent".into(),
+                    ));
+                }
+                let installed = InstalledPhasingProgram {
+                    source_incarnation: incarnation,
+                    controller: context.actor,
+                    program_sha256: program.semantic_digest().to_owned(),
+                };
+                if let Some(existing) = state.installed_phasing(context.source) {
+                    if existing != installed {
+                        return Err(ExecutionError::Adapter(
+                            "Phasing source has a conflicting installed program".into(),
+                        ));
+                    }
+                    return Ok(());
+                }
+                state.install_phasing(context.source, installed);
+                state.record_mutation(format!(
+                    "static_special_phasing_install:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            Some(StaticSpecialAction::ResolvePhasingUntap) => {
+                if context.window != ActionWindow::SpecialAction(SpecialActionTiming::PhasingUntap)
+                    || context.actor != context.active_player
+                    || !context.phasing_state_complete
+                {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                let turn = context.turn_sequence.ok_or_else(|| {
+                    ExecutionError::Adapter("Phasing requires a current turn identity".into())
+                })?;
+                let installed = state.installed_phasing(context.source).ok_or_else(|| {
+                    ExecutionError::Adapter("Phasing program was not installed".into())
+                })?;
+                if installed.program_sha256 != program.semantic_digest() {
+                    return Err(ExecutionError::Adapter(
+                        "Phasing program evidence is stale".into(),
+                    ));
+                }
+                if state.phasing_boundary_was_processed(context.active_player, turn) {
+                    return Ok(());
+                }
+                let raw_objects = state.phasing_objects();
+                let raw_attachments = state.phasing_attachments();
+                let attached_to = raw_attachments
+                    .into_iter()
+                    .map(|attachment| (attachment.source, attachment.target))
+                    .collect::<BTreeMap<_, _>>();
+                let mut permanents = BTreeMap::new();
+                for object in raw_objects
+                    .iter()
+                    .filter(|object| object.zone == Zone::Battlefield)
+                {
+                    let incarnation = state
+                        .object_incarnation(object.id)
+                        .ok_or(ExecutionError::MissingObject(object.id))?;
+                    let object_ref = StaticSpecialObjectRef {
+                        object_id: object.id,
+                        incarnation_id: incarnation,
+                    };
+                    let attachment = attached_to
+                        .get(&object.id)
+                        .map(|target| {
+                            state
+                                .object_incarnation(*target)
+                                .map(|incarnation_id| StaticSpecialObjectRef {
+                                    object_id: *target,
+                                    incarnation_id,
+                                })
+                                .ok_or(ExecutionError::MissingObject(*target))
+                        })
+                        .transpose()?;
+                    let has_phasing = state
+                        .installed_phasing(object.id)
+                        .is_some_and(|installed| installed.source_incarnation == incarnation);
+                    permanents.insert(
+                        object_ref,
+                        PhasePermanentEvidence {
+                            object: object_ref,
+                            controller: object.controller,
+                            has_phasing,
+                            status: state.phase_status(object.id),
+                            attached_to: attachment,
+                            in_combat: object.attacking || object.blocking,
+                            is_token: object.token,
+                            counters: object.counters.clone(),
+                        },
+                    );
+                }
+                let mut world = PhasingWorld {
+                    permanents,
+                    battlefield_set_complete: true,
+                    attachment_graph_complete: true,
+                    controller_evidence_complete: true,
+                };
+                let plan = plan_untap_phasing(program, context.active_player, &world)
+                    .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                let receipt = apply_untap_phasing_plan(plan, &mut world)
+                    .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                if receipt.zone_change_events_created != 0
+                    || receipt.enters_or_leaves_triggers_created != 0
+                {
+                    return Err(ExecutionError::Adapter(
+                        "Phasing incorrectly produced zone-change events".into(),
+                    ));
+                }
+                for permanent in world.permanents.values() {
+                    state.set_phase_status(permanent.object.object_id, permanent.status);
+                    if receipt.removed_from_combat.contains(&permanent.object) {
+                        let mut physical = raw_objects
+                            .iter()
+                            .find(|object| object.id == permanent.object.object_id)
+                            .cloned()
+                            .ok_or(ExecutionError::MissingObject(permanent.object.object_id))?;
+                        physical.attacking = false;
+                        physical.blocking = false;
+                        state
+                            .put_object(physical)
+                            .map_err(ExecutionError::Adapter)?;
+                    }
+                }
+                state.mark_phasing_boundary_processed(context.active_player, turn);
+                state.record_mutation(format!(
+                    "static_special_phasing_untap:{}:{}:{}:{}",
+                    context.active_player,
+                    turn,
+                    receipt.phased_out.len(),
+                    receipt.phased_in.len()
+                ));
+                return Ok(());
+            }
+            _ => {
+                return Err(ExecutionError::Adapter(
+                    "Phasing requires installation or an exact untap boundary".into(),
+                ));
+            }
+        }
+    }
+    if program.kind() == StaticSpecialKeywordKind::Training {
+        let ActionWindow::Triggered(TriggerEvent::ObjectAttacked { object }) = &context.window
+        else {
+            return Err(ExecutionError::TimingMismatch);
+        };
+        if *object != context.source || !context.attackers_declared || context.combat_id.is_none() {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if source.zone != Zone::Battlefield
+            || source.controller != context.actor
+            || !source.attacking
+            || !object_has_type(&source, CardType::Creature)
+        {
+            return Ok(());
+        }
+        let source_power = effective_object(state, context.source, context)?
+            .characteristics()
+            .power;
+        let mut has_larger_attacker = false;
+        for id in state.object_ids() {
+            if id == context.source {
+                continue;
+            }
+            let candidate = state.object(id).ok_or(ExecutionError::MissingObject(id))?;
+            if candidate.zone == Zone::Battlefield
+                && candidate.controller == source.controller
+                && candidate.attacking
+                && object_has_type(&candidate, CardType::Creature)
+                && effective_object(state, id, context)?
+                    .characteristics()
+                    .power
+                    > source_power
+            {
+                has_larger_attacker = true;
+                break;
+            }
+        }
+        if has_larger_attacker {
+            apply_put_counter(
+                state,
+                &ObjectRef::Source,
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(1),
+                context,
+            )?;
+            state.record_mutation(format!(
+                "static_special_training:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        return Ok(());
+    }
+    if program.kind() == StaticSpecialKeywordKind::Enlist {
+        let ActionWindow::Triggered(TriggerEvent::ObjectAttacked { object }) = &context.window
+        else {
+            return Err(ExecutionError::TimingMismatch);
+        };
+        if *object != context.source {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        match context.static_special_action {
+            Some(StaticSpecialAction::DeclareEnlist) => {
+                if state.pending_enlist(context.source).is_some() {
+                    return Err(ExecutionError::Adapter(
+                        "Enlist declaration already has a pending trigger".into(),
+                    ));
+                }
+                let combat_id = context.combat_id.ok_or_else(|| {
+                    ExecutionError::Adapter("Enlist requires a current combat identity".into())
+                })?;
+                let turn_id = context.turn_sequence.ok_or_else(|| {
+                    ExecutionError::Adapter("Enlist requires a current turn identity".into())
+                })?;
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                let source_incarnation = state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                let source_power = i32::try_from(
+                    effective_object(state, context.source, context)?
+                        .characteristics()
+                        .power,
+                )
+                .map_err(|_| ExecutionError::InvalidAmount("Enlist source power overflow"))?;
+                let helper = if let Some(helper_id) = context.enlist_helper {
+                    let helper = state
+                        .object(helper_id)
+                        .ok_or(ExecutionError::MissingObject(helper_id))?;
+                    let helper_incarnation = state
+                        .object_incarnation(helper_id)
+                        .ok_or(ExecutionError::MissingObject(helper_id))?;
+                    let controlled_since = context
+                        .enlist_helper_controlled_since_turn_began
+                        .ok_or_else(|| {
+                            ExecutionError::Adapter(
+                                "Enlist requires complete helper control-history evidence".into(),
+                            )
+                        })?;
+                    let effective = effective_object(state, helper_id, context)?;
+                    Some(EnlistHelperEvidence {
+                        object: StaticSpecialObjectRef {
+                            object_id: helper_id,
+                            incarnation_id: helper_incarnation,
+                        },
+                        controller: helper.controller,
+                        is_creature: object_has_type(&effective, CardType::Creature),
+                        is_attacking: helper.attacking,
+                        tapped: helper.tapped,
+                        controlled_continuously_since_turn_began: controlled_since,
+                        has_haste: effective
+                            .characteristics()
+                            .keywords
+                            .contains(&Keyword::Haste),
+                        current_power: i32::try_from(effective.characteristics().power).map_err(
+                            |_| ExecutionError::InvalidAmount("Enlist helper power overflow"),
+                        )?,
+                        power_evidence_complete: true,
+                    })
+                } else {
+                    None
+                };
+                let receipt = apply_enlist_during_attack_declaration(
+                    program,
+                    state.next_order(),
+                    EnlistAttackDeclarationInput {
+                        event_id: state.next_order(),
+                        combat_id,
+                        turn_id,
+                        source: DeclaredAttackerEvidence {
+                            object: StaticSpecialObjectRef {
+                                object_id: context.source,
+                                incarnation_id: source_incarnation,
+                            },
+                            controller: source.controller,
+                            declared_in_this_attack_declaration: source.attacking,
+                            current_power: source_power,
+                            power_evidence_complete: true,
+                        },
+                        helper,
+                        attack_declaration_complete: context.attackers_declared,
+                    },
+                )
+                .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                if let Some(helper) = receipt.tapped_helper {
+                    let mut object = state
+                        .object(helper.object_id)
+                        .ok_or(ExecutionError::MissingObject(helper.object_id))?;
+                    object.tapped = true;
+                    state.put_object(object).map_err(ExecutionError::Adapter)?;
+                }
+                if let Some(trigger) = receipt.pending_trigger {
+                    state.register_pending_enlist(context.source, trigger);
+                }
+                state.record_mutation(format!(
+                    "static_special_enlist_declare:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            Some(StaticSpecialAction::ResolveEnlist) => {
+                let trigger = state.pending_enlist(context.source).ok_or_else(|| {
+                    ExecutionError::Adapter("Enlist has no pending reflexive trigger".into())
+                })?;
+                let source_current = state.object(context.source).and_then(|source| {
+                    (source.zone == Zone::Battlefield
+                        && state.object_incarnation(context.source)
+                            == Some(trigger.source.incarnation_id))
+                    .then_some(trigger.source)
+                });
+                let helper_current = match state.object(trigger.helper.object_id) {
+                    Some(helper)
+                        if helper.zone == Zone::Battlefield
+                            && state.object_incarnation(trigger.helper.object_id)
+                                == Some(trigger.helper.incarnation_id) =>
+                    {
+                        let effective = effective_object(state, trigger.helper.object_id, context)?;
+                        Some((
+                            trigger.helper,
+                            i32::try_from(effective.characteristics().power).map_err(|_| {
+                                ExecutionError::InvalidAmount("Enlist helper power overflow")
+                            })?,
+                        ))
+                    }
+                    _ => None,
+                };
+                let modifier = resolve_enlist_trigger(
+                    program,
+                    trigger,
+                    EnlistResolutionEvidence {
+                        source_current,
+                        helper_current,
+                        helper_lki_available: context.enlist_helper_lki_available,
+                    },
+                )
+                .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                if let Some(modifier) = modifier {
+                    let (operation, power) = if modifier.power_delta < 0 {
+                        (
+                            PowerToughnessOperation::Subtract,
+                            modifier.power_delta.unsigned_abs(),
+                        )
+                    } else {
+                        (PowerToughnessOperation::Add, modifier.power_delta as u32)
+                    };
+                    apply_power_toughness_change(
+                        state,
+                        &PowerToughnessChange {
+                            objects: ObjectRef::Source,
+                            operation,
+                            power: Amount::Constant(power),
+                            toughness: Amount::Constant(0),
+                            duration: Duration::UntilEndOfTurn,
+                        },
+                        context,
+                    )?;
+                }
+                state.consume_pending_enlist(context.source);
+                state.record_mutation(format!(
+                    "static_special_enlist_resolve:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            _ => {
+                return Err(ExecutionError::Adapter(
+                    "Enlist requires an exact declaration or resolution action".into(),
+                ));
+            }
+        }
+    }
+    if program.kind() == StaticSpecialKeywordKind::DoubleTeam {
+        if context.static_special_action != Some(StaticSpecialAction::ResolveDoubleTeam) {
+            return Err(ExecutionError::Adapter(
+                "Double team requires its exact attack-trigger resolution action".into(),
+            ));
+        }
+        let ActionWindow::Triggered(TriggerEvent::ObjectAttacked { object }) = &context.window
+        else {
+            return Err(ExecutionError::TimingMismatch);
+        };
+        if *object != context.source || state.double_team_was_perpetually_removed(context.source) {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let lki = context.last_known_source.as_ref().ok_or_else(|| {
+            ExecutionError::Adapter("Double team requires complete attack-event LKI".into())
+        })?;
+        if lki.id != context.source
+            || lki.controller != context.actor
+            || lki.zone != Zone::Battlefield
+            || !lki.attacking
+            || !object_has_type(lki, CardType::Creature)
+        {
+            return Err(ExecutionError::Adapter(
+                "Double team attack-event LKI is invalid".into(),
+            ));
+        }
+        if !context.digital_service_available || !context.stable_card_identity_complete {
+            return Err(ExecutionError::Adapter(
+                "Double team requires digital conjure and stable identity services".into(),
+            ));
+        }
+        let digital_source = DigitalCardState {
+            card_id: context.source,
+            owner: lki.owner,
+            controller: lki.controller,
+            zone: DigitalZone::Battlefield,
+            definition_digest: format!("physical-origin:{}", lki.origin_id),
+            copiable_definition: format!(
+                "{}:{}:{}",
+                lki.origin_id,
+                lki.active_face,
+                program.semantic_digest()
+            ),
+            perpetual_modifications: Vec::new(),
+            has_double_team: true,
+        };
+        let trigger = create_double_team_trigger(
+            program,
+            state.next_order(),
+            DoubleTeamAttackEvent {
+                event_id: state.next_order(),
+                source_card_id: context.source,
+                source_controller: context.actor,
+                source_was_declared_as_attacker: true,
+                source_had_double_team: true,
+                source_lki: digital_source.clone(),
+                evidence_complete: true,
+            },
+        )
+        .map_err(|error| ExecutionError::Adapter(error.to_string()))?
+        .ok_or_else(|| ExecutionError::Adapter("Double team did not create its trigger".into()))?;
+        let conjured_id = state.allocate_object_id();
+        let mut digital_state = DigitalGameState {
+            cards: BTreeMap::from([(context.source, digital_source)]),
+            next_card_id: conjured_id,
+            digital_service_available: true,
+            stable_card_identity_complete: true,
+        };
+        let receipt = resolve_double_team_trigger(program, trigger, &mut digital_state)
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+        if receipt.conjured_card_id != conjured_id
+            || !receipt.source_keyword_removed
+            || !receipt.duplicate_keyword_removed
+        {
+            return Err(ExecutionError::Adapter(
+                "Double team returned an incomplete perpetual-modification receipt".into(),
+            ));
+        }
+        let mut duplicate = (**context.last_known_source.as_ref().expect("validated LKI")).clone();
+        duplicate.id = conjured_id;
+        duplicate.origin_id = conjured_id;
+        duplicate.copy_of = None;
+        duplicate.owner = context.actor;
+        duplicate.controller = context.actor;
+        duplicate.zone = Zone::Hand;
+        duplicate.token = false;
+        duplicate.tapped = false;
+        duplicate.attacking = false;
+        duplicate.blocking = false;
+        duplicate.face_down = false;
+        duplicate.counters.clear();
+        state
+            .insert_physical_object(duplicate)
+            .map_err(ExecutionError::Adapter)?;
+        state.mark_double_team_perpetually_removed(context.source);
+        state.mark_double_team_perpetually_removed(conjured_id);
+        state.record_mutation(format!(
+            "static_special_double_team:{}:{}:{}",
+            context.source,
+            conjured_id,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if matches!(
+        program.kind(),
+        StaticSpecialKeywordKind::Agenda {
+            secret_name_count: 1 | 2
+        }
+    ) {
+        match context.static_special_action {
+            Some(StaticSpecialAction::PrepareAgenda) => {
+                if !matches!(context.window, ActionWindow::Static) {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                if state.agenda_state(context.source).is_some() {
+                    return Err(ExecutionError::Adapter(
+                        "agenda preparation cannot be replayed".into(),
+                    ));
+                }
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                let incarnation = state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                if source.owner != context.actor
+                    || source.controller != context.actor
+                    || source.zone != Zone::Command
+                    || source.token
+                {
+                    return Err(ExecutionError::Adapter(
+                        "agenda source is not its owned command-zone conspiracy".into(),
+                    ));
+                }
+                let legal_names = context.agenda_legal_card_names.clone().ok_or_else(|| {
+                    ExecutionError::Adapter(
+                        "agenda preparation requires a complete legal card-name catalog".into(),
+                    )
+                })?;
+                let nonce = context
+                    .agenda_private_commitment_nonce
+                    .clone()
+                    .ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "agenda preparation requires a private commitment nonce".into(),
+                        )
+                    })?;
+                let (private, public) = prepare_agenda(
+                    program,
+                    AgendaPreparationInput {
+                        source: StaticSpecialObjectRef {
+                            object_id: context.source,
+                            incarnation_id: incarnation,
+                        },
+                        owner: context.actor,
+                        source_is_conspiracy: true,
+                        phase: GamePreparationPhase::PregameProcedures,
+                        chosen_names: context.agenda_chosen_names.clone(),
+                        private_commitment_nonce: nonce,
+                    },
+                    &CardNameCatalogEvidence {
+                        legal_names,
+                        catalog_complete: true,
+                    },
+                )
+                .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                let mut source = source;
+                source.face_down = true;
+                state.put_object(source).map_err(ExecutionError::Adapter)?;
+                state.register_agenda_state(
+                    context.source,
+                    AgendaStateRecord {
+                        program_sha256: program.semantic_digest().to_owned(),
+                        private,
+                        public,
+                    },
+                );
+                state.record_mutation(format!(
+                    "static_special_agenda_prepare:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            Some(StaticSpecialAction::RevealAgenda) => {
+                if context.window != ActionWindow::SpecialAction(SpecialActionTiming::RevealAgenda)
+                {
+                    return Err(ExecutionError::TimingMismatch);
+                }
+                let source = state
+                    .object(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                let incarnation = state
+                    .object_incarnation(context.source)
+                    .ok_or(ExecutionError::MissingObject(context.source))?;
+                let mut record = state.agenda_state(context.source).ok_or_else(|| {
+                    ExecutionError::Adapter("agenda has no prepared private state".into())
+                })?;
+                if source.zone != Zone::Command
+                    || source.controller != context.actor
+                    || !source.face_down
+                    || record.program_sha256 != program.semantic_digest()
+                    || record.private.source.object_id != context.source
+                    || record.private.source.incarnation_id != incarnation
+                {
+                    return Err(ExecutionError::Adapter(
+                        "agenda reveal evidence is stale or illegal".into(),
+                    ));
+                }
+                reveal_agenda(program, &record.private, &mut record.public)
+                    .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+                let mut source = source;
+                source.face_down = false;
+                state.put_object(source).map_err(ExecutionError::Adapter)?;
+                state.register_agenda_state(context.source, record);
+                state.record_mutation(format!(
+                    "static_special_agenda_reveal:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            Some(StaticSpecialAction::DraftFaceUp) => {
+                return Err(ExecutionError::Adapter(
+                    "agenda received a draft-only action".into(),
+                ));
+            }
+            Some(StaticSpecialAction::DeclareEnlist | StaticSpecialAction::ResolveEnlist) => {
+                return Err(ExecutionError::Adapter(
+                    "agenda received an Enlist-only action".into(),
+                ));
+            }
+            Some(StaticSpecialAction::ResolveDoubleTeam) => {
+                return Err(ExecutionError::Adapter(
+                    "agenda received a Double-team-only action".into(),
+                ));
+            }
+            Some(
+                StaticSpecialAction::InstallPhasing | StaticSpecialAction::ResolvePhasingUntap,
+            ) => {
+                return Err(ExecutionError::Adapter(
+                    "agenda received a Phasing-only action".into(),
+                ));
+            }
+            Some(
+                StaticSpecialAction::InstallBanding
+                | StaticSpecialAction::DeclareBand
+                | StaticSpecialAction::ExpandBandBlocks
+                | StaticSpecialAction::ValidateBandingDamage,
+            ) => {
+                return Err(ExecutionError::Adapter(
+                    "agenda received a Banding-only action".into(),
+                ));
+            }
+            None => {
+                return Err(ExecutionError::Adapter(
+                    "agenda requires an exact preparation or reveal action".into(),
+                ));
+            }
+        }
+    }
+    if program.kind() == StaticSpecialKeywordKind::DraftFaceUp {
+        if context.static_special_action != Some(StaticSpecialAction::DraftFaceUp)
+            || context.window != ActionWindow::SpecialAction(SpecialActionTiming::DraftPick)
+        {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        if state.face_up_draft(context.source).is_some() {
+            return Err(ExecutionError::Adapter(
+                "face-up draft instruction cannot be replayed".into(),
+            ));
+        }
+        let source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if source.owner != context.actor || source.token {
+            return Err(ExecutionError::Adapter(
+                "face-up draft source is not the actor's physical card".into(),
+            ));
+        }
+        let available_pick_ids = context.draft_available_pick_ids.clone().ok_or_else(|| {
+            ExecutionError::Adapter("face-up draft requires a complete available-pick set".into())
+        })?;
+        let mut draft = DraftState {
+            cards: BTreeMap::from([(
+                context.source,
+                DraftCardState {
+                    card_id: context.source,
+                    drafted_by: None,
+                    visibility: DraftCardVisibility::HiddenFromOtherDrafters,
+                },
+            )]),
+            current_drafter: context.actor,
+            available_pick_ids,
+            available_pick_set_complete: true,
+            draft_in_progress: context.draft_in_progress,
+        };
+        let receipt = draft_card_face_up(program, context.source, &mut draft)
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+        if !receipt.visible_to_all_drafters || receipt.drafted_by != context.actor {
+            return Err(ExecutionError::Adapter(
+                "face-up draft runtime returned an incomplete visibility receipt".into(),
+            ));
+        }
+        state.register_face_up_draft(FaceUpDraftRecord {
+            card: context.source,
+            drafted_by: context.actor,
+            program_sha256: program.semantic_digest().to_owned(),
+        });
+        state.record_mutation(format!(
+            "static_special_draft_face_up:{}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    let StaticSpecialKeywordKind::EntryAttachment { token } = program.kind() else {
+        return Err(ExecutionError::Adapter(
+            "static special keyword family is not executable".into(),
+        ));
+    };
+    let ActionWindow::Triggered(TriggerEvent::ObjectEntered { object }) = &context.window else {
+        return Err(ExecutionError::TimingMismatch);
+    };
+    if *object != context.source {
+        return Err(ExecutionError::TimingMismatch);
+    }
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if source.zone != Zone::Battlefield
+        || source.controller != context.actor
+        || !source
+            .characteristics()
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Equipment"))
+    {
+        return Err(ExecutionError::Adapter(
+            "entry attachment source is not its entering Equipment".into(),
+        ));
+    }
+
+    let (power, toughness, colors, subtype) = match token {
+        EntryAttachmentTokenKind::ColorlessHeroOneOne => (1, 1, Vec::new(), "Hero"),
+        EntryAttachmentTokenKind::RedRebelTwoTwo => (2, 2, vec![Color::Red], "Rebel"),
+    };
+    apply_effect(
+        state,
+        &Effect::CreateTokenAndAttachSource {
+            creation: TokenCreation {
+                player: PlayerRef::You,
+                amount: Amount::Constant(1),
+                specification: TokenSpecification::Defined(Box::new(TokenDefinition {
+                    name: None,
+                    power: Some(Amount::Constant(power)),
+                    toughness: Some(Amount::Constant(toughness)),
+                    colors,
+                    card_types: vec![CardType::Creature],
+                    subtypes: vec![subtype.to_owned()],
+                    keywords: Vec::new(),
+                    abilities: Vec::new(),
+                })),
+                tapped: false,
+                attacking: false,
+            },
+            attachment: ObjectRef::Source,
+            kind: AttachmentKind::Equipment,
+        },
+        context,
+    )?;
+    state.record_mutation(format!(
+        "static_special_entry_attachment:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_targeting_protection_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &TargetingProtectionProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let source_incarnation = state
+        .object_incarnation(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let source_ref = ProtectionObjectRef {
+        object_id: context.source,
+        incarnation_id: source_incarnation,
+    };
+    let (protected, protected_controller, granting_aura) = match program.recipient() {
+        crate::targeting_protection_runtime::ProtectionRecipient::SourceObject => (
+            ProtectedEntity::Object(source_ref),
+            Some(source.controller),
+            None,
+        ),
+        crate::targeting_protection_runtime::ProtectionRecipient::ControllerPlayer => (
+            ProtectedEntity::Player(context.actor),
+            Some(context.actor),
+            None,
+        ),
+        crate::targeting_protection_runtime::ProtectionRecipient::EnchantedCreature => {
+            let attachment = state.attachment(context.source).ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "enchanted-creature protection requires the current granting Aura attachment"
+                        .into(),
+                )
+            })?;
+            let target = state
+                .object(attachment.target)
+                .ok_or(ExecutionError::MissingObject(attachment.target))?;
+            let target_ref = protection_object_ref(state, attachment.target)?;
+            (
+                ProtectedEntity::Object(target_ref),
+                Some(target.controller),
+                Some(protection_attachment_snapshot(
+                    state,
+                    attachment,
+                    source.controller,
+                )?),
+            )
+        }
+        crate::targeting_protection_runtime::ProtectionRecipient::TargetCreature
+        | crate::targeting_protection_runtime::ProtectionRecipient::TargetCreatureYouControl => {
+            let selected = context
+                .targets
+                .values()
+                .flatten()
+                .filter_map(|target| match target {
+                    SelectedTarget::Object(object) => Some(*object),
+                    SelectedTarget::Player(_) => None,
+                })
+                .collect::<BTreeSet<_>>();
+            let selected = selected.into_iter().collect::<Vec<_>>();
+            let [target_id] = selected.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "target-creature protection requires exactly one selected object",
+                ));
+            };
+            let target = state
+                .object(*target_id)
+                .ok_or(ExecutionError::MissingObject(*target_id))?;
+            if target.zone != Zone::Battlefield
+                || !target
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "target-creature protection requires a battlefield creature",
+                ));
+            }
+            (
+                ProtectedEntity::Object(protection_object_ref(state, *target_id)?),
+                Some(target.controller),
+                None,
+            )
+        }
+    };
+    let controlled_attachments = if matches!(
+        program.attachment_exception(),
+        crate::targeting_protection_runtime::AttachmentExceptionPolicy::ControlledAurasAndEquipmentAlreadyAttached
+    ) {
+        let ProtectedEntity::Object(protected_object) = protected else {
+            return Err(ExecutionError::InvalidAmount(
+                "attachment exceptions require an object recipient",
+            ));
+        };
+        state
+            .phasing_attachments()
+            .into_iter()
+            .filter(|attachment| attachment.target == protected_object.object_id)
+            .filter_map(|attachment| {
+                let source = state.object(attachment.source)?;
+                (source.controller == context.actor)
+                    .then(|| protection_attachment_snapshot(state, attachment, source.controller))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    let installed = install_targeting_protection(
+        program,
+        ProtectionInstallationInput {
+            effect_controller: context.actor,
+            protected,
+            protected_controller,
+            choices: ProtectionChoices {
+                chosen_color: context.chosen_color.and_then(protection_color),
+                chosen_player: None,
+            },
+            granting_aura,
+            controlled_auras_and_equipment_already_attached: controlled_attachments,
+        },
+    )
+    .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    state.install_targeting_protection(InstalledTargetingProtectionRecord {
+        source: context.source,
+        source_incarnation,
+        installed_turn: context.turn_sequence,
+        protection: installed,
+    });
+    state.record_mutation(format!(
+        "targeting_protection_install:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn protection_object_ref<S: OracleStateAdapter>(
+    state: &S,
+    object: ObjectId,
+) -> Result<ProtectionObjectRef, ExecutionError> {
+    Ok(ProtectionObjectRef {
+        object_id: object,
+        incarnation_id: state
+            .object_incarnation(object)
+            .ok_or(ExecutionError::MissingObject(object))?,
+    })
+}
+
+fn protection_attachment_snapshot<S: OracleStateAdapter>(
+    state: &S,
+    attachment: AttachmentRecord,
+    controller: PlayerId,
+) -> Result<ProtectionAttachmentSnapshot, ExecutionError> {
+    Ok(ProtectionAttachmentSnapshot {
+        source: protection_object_ref(state, attachment.source)?,
+        kind: match attachment.kind {
+            AttachmentKind::Aura => ProtectionAttachmentKind::Aura,
+            AttachmentKind::Equipment => ProtectionAttachmentKind::Equipment,
+        },
+        controller,
+        attached_to: protection_object_ref(state, attachment.target)?,
+    })
+}
+
+fn protection_color(color: Color) -> Option<ProtectionManaColor> {
+    match color {
+        Color::White => Some(ProtectionManaColor::White),
+        Color::Blue => Some(ProtectionManaColor::Blue),
+        Color::Black => Some(ProtectionManaColor::Black),
+        Color::Red => Some(ProtectionManaColor::Red),
+        Color::Green => Some(ProtectionManaColor::Green),
+        Color::Colorless => None,
+    }
+}
+
+fn protection_zone(zone: Zone) -> ProtectionObjectZone {
+    match zone {
+        Zone::Battlefield => ProtectionObjectZone::Battlefield,
+        Zone::Stack => ProtectionObjectZone::Stack,
+        Zone::Graveyard => ProtectionObjectZone::Graveyard,
+        Zone::Exile => ProtectionObjectZone::Exile,
+        Zone::Hand => ProtectionObjectZone::Hand,
+        Zone::Library => ProtectionObjectZone::Library,
+        Zone::Command => ProtectionObjectZone::Command,
+        Zone::Merged => unreachable!("merged components are not independent objects"),
+    }
+}
+
+fn protection_source_kind(window: &ActionWindow) -> ProtectionSourceKind {
+    match window {
+        ActionWindow::CastingAdditionalCost | ActionWindow::SpellResolution => {
+            ProtectionSourceKind::Spell
+        }
+        ActionWindow::Activated => ProtectionSourceKind::ActivatedAbility,
+        ActionWindow::Triggered(_) => ProtectionSourceKind::TriggeredAbility,
+        ActionWindow::Static | ActionWindow::Replacement => ProtectionSourceKind::StaticAbility,
+        _ => ProtectionSourceKind::Object,
+    }
+}
+
+fn protection_source_snapshot<S: OracleStateAdapter>(
+    state: &S,
+    object: ObjectId,
+    effect_controller: PlayerId,
+    context: &ExecutionContext,
+) -> Result<ProtectionSourceSnapshot, ExecutionError> {
+    let physical = state
+        .object(object)
+        .or_else(|| {
+            context
+                .last_known_source
+                .as_deref()
+                .filter(|candidate| candidate.id == object)
+                .cloned()
+        })
+        .ok_or(ExecutionError::MissingObject(object))?;
+    let effective = if state.object(object).is_some() {
+        effective_object(state, object, context)?
+    } else {
+        physical.clone()
+    };
+    let characteristics = effective.characteristics();
+    let printed = physical.characteristics();
+    let modified = characteristics.power != printed.power
+        || characteristics.toughness != printed.toughness
+        || characteristics.abilities != printed.abilities
+        || characteristics.keywords != printed.keywords
+        || physical.counters.values().any(|amount| *amount > 0)
+        || state
+            .phasing_attachments()
+            .iter()
+            .any(|attachment| attachment.target == object);
+    Ok(ProtectionSourceSnapshot {
+        source_object: Some(protection_object_ref(state, object)?),
+        effect_controller,
+        effect_kind: protection_source_kind(&context.window),
+        characteristics: Some(ProtectionSourceCharacteristics {
+            name: characteristics.names.first().cloned().unwrap_or_default(),
+            colors: characteristics
+                .colors
+                .iter()
+                .filter_map(|color| protection_color(*color))
+                .collect(),
+            card_types: characteristics
+                .card_types
+                .iter()
+                .map(|kind| format!("{kind:?}"))
+                .collect(),
+            subtypes: characteristics.subtypes.iter().cloned().collect(),
+            supertypes: characteristics
+                .supertypes
+                .iter()
+                .map(|kind| format!("{kind:?}"))
+                .collect(),
+            mana_value: Some(characteristics.mana_value),
+            zone: protection_zone(effective.zone),
+            counters: physical.counters.clone(),
+            modified_from_printed: Some(modified),
+            rules_text_line_count: context
+                .protection_rules_text_line_counts
+                .get(&object)
+                .copied(),
+            causes_die_roll: context.protection_causes_die_roll.get(&object).copied(),
+        }),
+    })
+}
+
+fn protection_query_context<S: OracleStateAdapter>(
+    state: &S,
+    protected: ProtectedEntity,
+    context: &ExecutionContext,
+) -> Result<ProtectionQueryContext, ExecutionError> {
+    let protected_controller = match protected {
+        ProtectedEntity::Player(player) => player,
+        ProtectedEntity::Object(object) => {
+            state
+                .object(object.object_id)
+                .ok_or(ExecutionError::MissingObject(object.object_id))?
+                .controller
+        }
+    };
+    let protected_object_colors = match protected {
+        ProtectedEntity::Object(object) => Some(
+            effective_object(state, object.object_id, context)?
+                .characteristics()
+                .colors
+                .iter()
+                .filter_map(|color| protection_color(*color))
+                .collect(),
+        ),
+        ProtectedEntity::Player(_) => None,
+    };
+    let mut permanent_colors_by_controller = BTreeMap::new();
+    for player in state.player_ids() {
+        let colors = state
+            .object_ids()
+            .into_iter()
+            .filter_map(|object| state.object(object))
+            .filter(|object| object.zone == Zone::Battlefield && object.controller == player)
+            .flat_map(|object| object.characteristics().colors.clone())
+            .filter_map(protection_color)
+            .collect();
+        permanent_colors_by_controller.insert(player, colors);
+    }
+    Ok(ProtectionQueryContext {
+        opponents_of_protected_controller: state
+            .player_ids()
+            .into_iter()
+            .filter(|player| *player != protected_controller)
+            .collect(),
+        protected_object_colors,
+        permanent_colors_by_controller,
+    })
+}
+
+fn active_targeting_protections<S: OracleStateAdapter>(
+    state: &S,
+    context: &ExecutionContext,
+) -> Vec<InstalledTargetingProtectionRecord> {
+    let mut protections = state
+        .installed_targeting_protections()
+        .into_iter()
+        .filter(|record| match record.protection.duration() {
+            ProtectionDuration::WhileSourceAbilityApplies => {
+                state
+                    .object(record.source)
+                    .is_some_and(|source| source.zone == Zone::Battlefield)
+                    && state.object_incarnation(record.source) == Some(record.source_incarnation)
+            }
+            ProtectionDuration::UntilEndOfTurn => {
+                record.installed_turn.is_some() && record.installed_turn == context.turn_sequence
+            }
+        })
+        .collect::<Vec<_>>();
+    for source in state.object_ids() {
+        let Some(source_object) = state.object(source) else {
+            continue;
+        };
+        let Some(source_incarnation) = state.object_incarnation(source) else {
+            continue;
+        };
+        for child in active_level_children(state, source) {
+            let LevelChildKind::KeywordLine(keywords) = &child.kind else {
+                continue;
+            };
+            if !keywords
+                .iter()
+                .any(|keyword| matches!(keyword, LevelKeywordAbility::Protection(_)))
+            {
+                continue;
+            }
+            let Some(program) = compile_targeting_protection_program(&child.exact_source) else {
+                continue;
+            };
+            let protected = ProtectedEntity::Object(ProtectionObjectRef {
+                object_id: source,
+                incarnation_id: source_incarnation,
+            });
+            let Ok(protection) = install_targeting_protection(
+                &program,
+                ProtectionInstallationInput {
+                    effect_controller: source_object.controller,
+                    protected,
+                    protected_controller: Some(source_object.controller),
+                    choices: ProtectionChoices {
+                        chosen_color: None,
+                        chosen_player: None,
+                    },
+                    granting_aura: None,
+                    controlled_auras_and_equipment_already_attached: Vec::new(),
+                },
+            ) else {
+                continue;
+            };
+            protections.push(InstalledTargetingProtectionRecord {
+                source,
+                source_incarnation,
+                installed_turn: context.turn_sequence,
+                protection,
+            });
+        }
+    }
+    protections
+}
+
+fn protection_allows_attachment<S: OracleStateAdapter>(
+    state: &S,
+    attachment: AttachmentRecord,
+    context: &ExecutionContext,
+) -> Result<bool, ExecutionError> {
+    let source = state
+        .object(attachment.source)
+        .ok_or(ExecutionError::MissingObject(attachment.source))?;
+    let attachment_snapshot = protection_attachment_snapshot(state, attachment, source.controller)?;
+    let mut source_snapshot =
+        protection_source_snapshot(state, attachment.source, source.controller, context)?;
+    source_snapshot.effect_kind = ProtectionSourceKind::Object;
+    for record in active_targeting_protections(state, context) {
+        let ProtectedEntity::Object(protected) = record.protection.protected() else {
+            continue;
+        };
+        if protected.object_id != attachment.target
+            || state.object_incarnation(attachment.target) != Some(protected.incarnation_id)
+        {
+            continue;
+        }
+        let query = protection_query_context(state, record.protection.protected(), context)?;
+        if matches!(
+            protection_attachment_decision(
+                &record.protection,
+                attachment_snapshot,
+                &source_snapshot,
+                &query,
+            )
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?,
+            ProtectionAttachmentDecision::ForbiddenByProtection
+        ) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn apply_creature_counter_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CreatureCounterKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "creature counter keyword has no complete production adapter".into(),
+        ));
+    }
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    if matches!(program.kind(), CreatureCounterKeywordKind::ResidualEvolve) {
+        let ActionWindow::Triggered(TriggerEvent::ObjectEntered { object }) = &context.window
+        else {
+            return Err(ExecutionError::TimingMismatch);
+        };
+        if *object == context.source || source.zone != Zone::Battlefield {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let entering = effective_object(state, *object, context)?;
+        let evolving = effective_object(state, context.source, context)?;
+        if entering.zone != Zone::Battlefield
+            || entering.controller != source.controller
+            || !entering
+                .characteristics()
+                .card_types
+                .contains(&CardType::Creature)
+            || (entering.characteristics().power <= evolving.characteristics().power
+                && entering.characteristics().toughness <= evolving.characteristics().toughness)
+        {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        apply_put_counter(
+            state,
+            &ObjectRef::Source,
+            &CounterKind::PlusOnePlusOne,
+            &Amount::Constant(1),
+            context,
+        )?;
+        state.record_mutation(format!(
+            "creature_counter_evolve:{}:{}:{}",
+            context.source,
+            object,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::Amplify {
+        counters_per_revealed_card,
+        matching_creature_types,
+    } = program.kind()
+    {
+        if !matches!(context.window, ActionWindow::Replacement)
+            || source.zone != Zone::Stack
+            || source.controller != context.actor
+        {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let revealed = context.object_choices.get(&0).ok_or_else(|| {
+            ExecutionError::Adapter("Amplify requires a complete reveal selection".into())
+        })?;
+        let simultaneous = context
+            .simultaneously_entering_objects
+            .as_ref()
+            .ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "Amplify requires a complete simultaneous-entry boundary".into(),
+                )
+            })?;
+        let unique = revealed.iter().copied().collect::<BTreeSet<_>>();
+        if unique.len() != revealed.len()
+            || unique.contains(&context.source)
+            || !unique.is_disjoint(simultaneous)
+        {
+            return Err(ExecutionError::Adapter(
+                "Amplify reveal is duplicate, self-referential, or entering simultaneously".into(),
+            ));
+        }
+        for card_id in &unique {
+            let card = state
+                .object(*card_id)
+                .ok_or(ExecutionError::MissingObject(*card_id))?;
+            let shares_type = card.characteristics().subtypes.iter().any(|subtype| {
+                matching_creature_types
+                    .iter()
+                    .any(|expected| subtype.eq_ignore_ascii_case(expected))
+            });
+            if card.zone != Zone::Hand || card.owner != context.actor || !shares_type {
+                return Err(ExecutionError::Adapter(
+                    "Amplify revealed a card outside the actor's hand or without a shared creature type"
+                        .into(),
+                ));
+            }
+        }
+        let count = u32::try_from(unique.len())
+            .map_err(|_| ExecutionError::InvalidAmount("Amplify reveal count overflow"))?;
+        let amount = count
+            .checked_mul(*counters_per_revealed_card)
+            .ok_or(ExecutionError::InvalidAmount("Amplify counter overflow"))?;
+        if amount > 0 {
+            apply_put_counter(
+                state,
+                &ObjectRef::Source,
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(amount),
+                context,
+            )?;
+        }
+        state.record_mutation(format!(
+            "creature_counter_amplify:{}:{count}:{amount}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::CastColorEntryCounters { counter, .. } = program.kind() {
+        if !matches!(context.window, ActionWindow::Replacement)
+            || source.zone != Zone::Stack
+            || source.controller != context.actor
+        {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let colors = context
+            .mana_colors_spent_to_cast_source
+            .as_ref()
+            .ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "cast-color entry counters require complete cast payment evidence".into(),
+                )
+            })?;
+        if colors.contains(&Color::Colorless) {
+            return Err(ExecutionError::Adapter(
+                "cast-color entry counters accept only colored mana evidence".into(),
+            ));
+        }
+        let distinct = colors.iter().copied().collect::<BTreeSet<_>>();
+        if distinct.len() != colors.len() {
+            return Err(ExecutionError::Adapter(
+                "cast-color entry counter evidence contains duplicate colors".into(),
+            ));
+        }
+        let amount = u32::try_from(distinct.len())
+            .map_err(|_| ExecutionError::InvalidAmount("cast color count overflow"))?;
+        let counter = match counter {
+            EntryCounterKind::PlusOnePlusOne => CounterKind::PlusOnePlusOne,
+            EntryCounterKind::Charge => CounterKind::Named("charge".into()),
+        };
+        if amount > 0 {
+            apply_put_counter(
+                state,
+                &ObjectRef::Source,
+                &counter,
+                &Amount::Constant(amount),
+                context,
+            )?;
+        }
+        state.record_mutation(format!(
+            "creature_counter_cast_colors:{}:{}:{}",
+            context.source,
+            amount,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::Bolster { counters } = program.kind() {
+        if matches!(
+            context.window,
+            ActionWindow::Static | ActionWindow::Replacement
+        ) {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let choices = context.object_choices.get(&0).ok_or_else(|| {
+            ExecutionError::Adapter("Bolster requires a complete creature choice".into())
+        })?;
+        let [chosen] = choices.as_slice() else {
+            return Err(ExecutionError::Adapter(
+                "Bolster requires exactly one chosen creature".into(),
+            ));
+        };
+        let mut eligible = Vec::new();
+        for object_id in state.object_ids() {
+            let object = effective_object(state, object_id, context)?;
+            if object.zone == Zone::Battlefield
+                && object.controller == context.actor
+                && object
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                eligible.push((object_id, object.characteristics().toughness));
+            }
+        }
+        let minimum = eligible
+            .iter()
+            .map(|(_, toughness)| *toughness)
+            .min()
+            .ok_or_else(|| ExecutionError::Adapter("Bolster has no eligible creature".into()))?;
+        if !eligible
+            .iter()
+            .any(|(object, toughness)| object == chosen && *toughness == minimum)
+        {
+            return Err(ExecutionError::Adapter(
+                "Bolster choice is not tied for least effective toughness".into(),
+            ));
+        }
+        apply_put_counter(
+            state,
+            &ObjectRef::ObjectIdentity(*chosen),
+            &CounterKind::PlusOnePlusOne,
+            &Amount::Constant(*counters),
+            context,
+        )?;
+        state.record_mutation(format!(
+            "creature_counter_bolster:{}:{}:{}",
+            context.source,
+            counters,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::Modular { counters } = program.kind() {
+        if matches!(context.window, ActionWindow::Replacement) {
+            if source.zone != Zone::Stack || source.controller != context.actor {
+                return Err(ExecutionError::TimingMismatch);
+            }
+            let amount = match counters {
+                CounterAmount::Fixed(amount) => *amount,
+                CounterAmount::BoundX => context.x_value,
+                CounterAmount::Sunburst => {
+                    let colors = context
+                        .mana_colors_spent_to_cast_source
+                        .as_ref()
+                        .ok_or_else(|| {
+                            ExecutionError::Adapter(
+                                "Modular sunburst requires complete cast payment evidence".into(),
+                            )
+                        })?;
+                    if colors.contains(&Color::Colorless)
+                        || colors.iter().copied().collect::<BTreeSet<_>>().len() != colors.len()
+                    {
+                        return Err(ExecutionError::Adapter(
+                            "Modular sunburst cast-color evidence is invalid".into(),
+                        ));
+                    }
+                    u32::try_from(colors.len())
+                        .map_err(|_| ExecutionError::InvalidAmount("Modular cast color overflow"))?
+                }
+            };
+            if amount > 0 {
+                apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &CounterKind::PlusOnePlusOne,
+                    &Amount::Constant(amount),
+                    context,
+                )?;
+            }
+            state.record_mutation(format!(
+                "creature_counter_modular_entry:{}:{amount}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            return Ok(());
+        }
+        let ActionWindow::Triggered(TriggerEvent::ObjectEvent {
+            object,
+            event: ObjectEventKind::Dies,
+        }) = &context.window
+        else {
+            return Err(ExecutionError::TimingMismatch);
+        };
+        if *object != context.source {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let last_known = context.last_known_source.as_deref().ok_or_else(|| {
+            ExecutionError::Adapter("Modular death requires last-known source evidence".into())
+        })?;
+        if last_known.id != context.source || last_known.zone != Zone::Battlefield {
+            return Err(ExecutionError::Adapter(
+                "Modular last-known source evidence is stale".into(),
+            ));
+        }
+        if context.optional_effect_declined {
+            return Ok(());
+        }
+        let choices = context.object_choices.get(&0).ok_or_else(|| {
+            ExecutionError::Adapter("Modular requires its locked artifact-creature target".into())
+        })?;
+        let [target] = choices.as_slice() else {
+            return Err(ExecutionError::Adapter(
+                "Modular requires exactly one target".into(),
+            ));
+        };
+        let target_object = state
+            .object(*target)
+            .ok_or(ExecutionError::MissingObject(*target))?;
+        if target_object.zone != Zone::Battlefield
+            || !target_object
+                .characteristics()
+                .card_types
+                .contains(&CardType::Artifact)
+            || !target_object
+                .characteristics()
+                .card_types
+                .contains(&CardType::Creature)
+        {
+            return Err(ExecutionError::Adapter(
+                "Modular target is not an artifact creature".into(),
+            ));
+        }
+        let amount = last_known.counters.get("+1/+1").copied().unwrap_or(0);
+        if amount > 0 {
+            apply_put_counter(
+                state,
+                &ObjectRef::ObjectIdentity(*target),
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(amount),
+                context,
+            )?;
+        }
+        state.record_mutation(format!(
+            "creature_counter_modular_death:{}:{}:{amount}:{}",
+            context.source,
+            target,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::Graft { counters } = program.kind() {
+        if matches!(context.window, ActionWindow::Replacement) {
+            if source.zone != Zone::Stack || source.controller != context.actor {
+                return Err(ExecutionError::TimingMismatch);
+            }
+            apply_put_counter(
+                state,
+                &ObjectRef::Source,
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(*counters),
+                context,
+            )?;
+            state.record_mutation(format!(
+                "creature_counter_graft_entry:{}:{}:{}",
+                context.source,
+                counters,
+                program.semantic_digest()
+            ));
+            return Ok(());
+        }
+        let ActionWindow::Triggered(TriggerEvent::ObjectEntered { object }) = &context.window
+        else {
+            return Err(ExecutionError::TimingMismatch);
+        };
+        if *object == context.source {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let entering = state
+            .object(*object)
+            .ok_or(ExecutionError::MissingObject(*object))?;
+        if source.zone != Zone::Battlefield
+            || entering.zone != Zone::Battlefield
+            || !entering
+                .characteristics()
+                .card_types
+                .contains(&CardType::Creature)
+            || source.counters.get("+1/+1").copied().unwrap_or(0) == 0
+        {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        if context.optional_effect_declined {
+            return Ok(());
+        }
+        apply_remove_counter(
+            state,
+            &ObjectRef::Source,
+            &CounterKind::PlusOnePlusOne,
+            &Amount::Constant(1),
+            context,
+        )?;
+        apply_put_counter(
+            state,
+            &ObjectRef::ObjectIdentity(*object),
+            &CounterKind::PlusOnePlusOne,
+            &Amount::Constant(1),
+            context,
+        )?;
+        state.record_mutation(format!(
+            "creature_counter_graft_transfer:{}:{}:{}",
+            context.source,
+            object,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::Tribute { counters } = program.kind() {
+        if !matches!(context.window, ActionWindow::Replacement)
+            || source.zone != Zone::Stack
+            || source.controller != context.actor
+        {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let opponents = context.player_choices.get(&0).ok_or_else(|| {
+            ExecutionError::Adapter("Tribute requires its chosen opponent".into())
+        })?;
+        let [opponent] = opponents.as_slice() else {
+            return Err(ExecutionError::Adapter(
+                "Tribute requires exactly one chosen opponent".into(),
+            ));
+        };
+        if *opponent == context.actor || state.player(*opponent).is_none() {
+            return Err(ExecutionError::Adapter(
+                "Tribute chooser is not an opponent".into(),
+            ));
+        }
+        let paid = match context.selected_modes.as_slice() {
+            [0] => true,
+            [1] => false,
+            _ => {
+                return Err(ExecutionError::Adapter(
+                    "Tribute requires one accept-or-decline decision".into(),
+                ));
+            }
+        };
+        if paid {
+            apply_put_counter(
+                state,
+                &ObjectRef::Source,
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(*counters),
+                context,
+            )?;
+        }
+        state.record_tribute_paid(context.source, paid);
+        state.record_mutation(format!(
+            "creature_counter_tribute:{}:{}:{}:{}",
+            context.source,
+            opponent,
+            paid,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::ResidualRenown { counters } = program.kind() {
+        let ActionWindow::Triggered(TriggerEvent::CombatDamageToPlayer {
+            source: damage_source,
+            ..
+        }) = &context.window
+        else {
+            return Err(ExecutionError::TimingMismatch);
+        };
+        if *damage_source != context.source
+            || source.zone != Zone::Battlefield
+            || source.controller != context.actor
+        {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let incarnation = state
+            .object_incarnation(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if !state.is_renowned(context.source, incarnation) {
+            apply_put_counter(
+                state,
+                &ObjectRef::Source,
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(*counters),
+                context,
+            )?;
+            state.mark_renowned(context.source, incarnation);
+            state.record_mutation(format!(
+                "creature_counter_renowned:{}:{incarnation}:{}:{}",
+                context.source,
+                counters,
+                program.semantic_digest()
+            ));
+        }
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::Devour {
+        counters_per_sacrifice,
+        quality,
+    } = program.kind()
+    {
+        if !matches!(context.window, ActionWindow::Replacement)
+            || source.zone != Zone::Stack
+            || source.controller != context.actor
+            || !source
+                .characteristics()
+                .card_types
+                .contains(&CardType::Creature)
+        {
+            return Err(ExecutionError::TimingMismatch);
+        }
+        let sacrifices = context.object_choices.get(&0).ok_or_else(|| {
+            ExecutionError::Adapter("Devour requires a complete sacrifice selection".into())
+        })?;
+        let unique = sacrifices.iter().copied().collect::<BTreeSet<_>>();
+        if unique.len() != sacrifices.len() || unique.contains(&context.source) {
+            return Err(ExecutionError::Adapter(
+                "Devour sacrifice selection is duplicate or contains its source".into(),
+            ));
+        }
+        for sacrifice in &unique {
+            let permanent = state
+                .object(*sacrifice)
+                .ok_or(ExecutionError::MissingObject(*sacrifice))?;
+            let matches_quality = match quality {
+                DevourQuality::Creature => permanent
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature),
+                DevourQuality::CardType(expected) => {
+                    let expected = match expected {
+                        CreatureCounterCardType::Artifact => Some(CardType::Artifact),
+                        CreatureCounterCardType::Battle => Some(CardType::Battle),
+                        CreatureCounterCardType::Creature => Some(CardType::Creature),
+                        CreatureCounterCardType::Enchantment => Some(CardType::Enchantment),
+                        CreatureCounterCardType::Instant => Some(CardType::Instant),
+                        CreatureCounterCardType::Kindred => None,
+                        CreatureCounterCardType::Land => Some(CardType::Land),
+                        CreatureCounterCardType::Planeswalker => Some(CardType::Planeswalker),
+                        CreatureCounterCardType::Sorcery => Some(CardType::Sorcery),
+                    };
+                    expected.is_some_and(|expected| {
+                        permanent.characteristics().card_types.contains(&expected)
+                    })
+                }
+                DevourQuality::Subtype(expected) => permanent
+                    .characteristics()
+                    .subtypes
+                    .iter()
+                    .any(|subtype| subtype.eq_ignore_ascii_case(expected)),
+            };
+            if permanent.zone != Zone::Battlefield
+                || permanent.controller != context.actor
+                || !matches_quality
+            {
+                return Err(ExecutionError::Adapter(
+                    "Devour selected an ineligible controlled permanent".into(),
+                ));
+            }
+        }
+        for sacrifice in &unique {
+            state
+                .move_object(*sacrifice, Zone::Graveyard)
+                .map_err(ExecutionError::Adapter)?;
+        }
+        let count = u32::try_from(unique.len())
+            .map_err(|_| ExecutionError::InvalidAmount("Devour selection overflow"))?;
+        let amount = count
+            .checked_mul(*counters_per_sacrifice)
+            .ok_or(ExecutionError::InvalidAmount("Devour counter overflow"))?;
+        if amount > 0 {
+            apply_put_counter(
+                state,
+                &ObjectRef::Source,
+                &CounterKind::PlusOnePlusOne,
+                &Amount::Constant(amount),
+                context,
+            )?;
+        }
+        state.record_mutation(format!(
+            "creature_counter_devour:{}:{count}:{amount}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    if let CreatureCounterKeywordKind::Monstrosity {
+        activation_cost,
+        counters,
+    } = program.kind()
+    {
+        if !matches!(context.window, ActionWindow::Activated)
+            || source.zone != Zone::Battlefield
+            || source.controller != context.actor
+            || !source
+                .characteristics()
+                .card_types
+                .contains(&CardType::Creature)
+        {
+            return Err(ExecutionError::ActivationRestrictionFailed);
+        }
+        state
+            .pay_mana(
+                context.actor,
+                &ManaCost(activation_cost.exact.clone()),
+                context.x_value,
+            )
+            .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+        let incarnation = state
+            .object_incarnation(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        if !state.is_monstrous(context.source, incarnation) {
+            let amount = match counters {
+                CounterAmount::Fixed(amount) => *amount,
+                CounterAmount::BoundX => context.x_value,
+                CounterAmount::Sunburst => {
+                    return Err(ExecutionError::Adapter(
+                        "monstrosity cannot use cast-color counter evidence".into(),
+                    ));
+                }
+            };
+            if amount > 0 {
+                apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &CounterKind::PlusOnePlusOne,
+                    &Amount::Constant(amount),
+                    context,
+                )?;
+            }
+            state.mark_monstrous(context.source, incarnation);
+            state.record_mutation(format!(
+                "creature_counter_monstrous:{}:{incarnation}:{amount}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+        }
+        return Ok(());
+    }
+    if source.zone != Zone::Battlefield
+        || source.controller != context.actor
+        || !source
+            .characteristics()
+            .card_types
+            .contains(&CardType::Creature)
+    {
+        return Err(ExecutionError::Adapter(
+            "creature counter source is not its controlled battlefield creature".into(),
+        ));
+    }
+
+    match program.kind() {
+        CreatureCounterKeywordKind::Adapt {
+            activation_cost,
+            counters,
+        } => {
+            if !matches!(context.window, ActionWindow::Activated) {
+                return Err(ExecutionError::TimingMismatch);
+            }
+            state
+                .pay_mana(
+                    context.actor,
+                    &ManaCost(activation_cost.exact.clone()),
+                    context.x_value,
+                )
+                .map_err(|reason| ExecutionError::CostFailed { index: 0, reason })?;
+            if source.counters.get("+1/+1").copied().unwrap_or_default() == 0 {
+                apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &CounterKind::PlusOnePlusOne,
+                    &Amount::Constant(*counters),
+                    context,
+                )?;
+            }
+            state.record_mutation(format!(
+                "creature_counter_adapt:{}:{}:{}",
+                context.source,
+                counters,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CreatureCounterKeywordKind::Fabricate { counters_or_tokens } => {
+            let ActionWindow::Triggered(TriggerEvent::ObjectEntered { object }) = &context.window
+            else {
+                return Err(ExecutionError::TimingMismatch);
+            };
+            if *object != context.source {
+                return Err(ExecutionError::TimingMismatch);
+            }
+            match context.selected_modes.as_slice() {
+                [0] => apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &CounterKind::PlusOnePlusOne,
+                    &Amount::Constant(*counters_or_tokens),
+                    context,
+                )?,
+                [1] => {
+                    apply_create_token(
+                        state,
+                        &TokenCreation {
+                            player: PlayerRef::You,
+                            amount: Amount::Constant(*counters_or_tokens),
+                            specification: TokenSpecification::Defined(Box::new(TokenDefinition {
+                                name: None,
+                                power: Some(Amount::Constant(1)),
+                                toughness: Some(Amount::Constant(1)),
+                                colors: Vec::new(),
+                                card_types: vec![CardType::Artifact, CardType::Creature],
+                                subtypes: vec!["Servo".to_owned()],
+                                keywords: Vec::new(),
+                                abilities: Vec::new(),
+                            })),
+                            tapped: false,
+                            attacking: false,
+                        },
+                        context,
+                    )?;
+                }
+                _ => {
+                    return Err(ExecutionError::InvalidAmount(
+                        "Fabricate requires exactly one counters-or-Servos choice",
+                    ));
+                }
+            }
+            state.record_mutation(format!(
+                "creature_counter_fabricate:{}:{}:{}",
+                context.source,
+                counters_or_tokens,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        _ => Err(ExecutionError::Adapter(
+            "creature counter keyword family is not executable".into(),
+        )),
+    }
+}
+
+fn apply_level_progression_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &LevelProgressionProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "level progression program has no complete production adapter".into(),
+        ));
+    }
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let incarnation = state
+        .object_incarnation(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    match context.level_progression_action {
+        Some(LevelProgressionAction::Activate { pending_id }) => {
+            if source.zone != Zone::Battlefield
+                || source.controller != context.actor
+                || context.active_player != context.actor
+                || !context.sorcery_timing
+            {
+                return Err(ExecutionError::ActivationRestrictionFailed);
+            }
+            for component in &program.level_up().cost.components {
+                let LevelCostComponent::Mana(cost) = component else {
+                    return Err(ExecutionError::Adapter(
+                        "connected level progression cost is not mana-only".into(),
+                    ));
+                };
+                state
+                    .pay_mana(
+                        context.actor,
+                        &ManaCost(cost.exact.clone()),
+                        context.x_value,
+                    )
+                    .map_err(ExecutionError::Adapter)?;
+            }
+            state
+                .register_pending_level_progression(PendingLevelProgressionAction {
+                    pending_id,
+                    source: context.source,
+                    source_incarnation: incarnation,
+                    controller: context.actor,
+                    program_sha256: program.semantic_sha256().to_owned(),
+                })
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "level_up_activated:{}:{incarnation}:{pending_id}",
+                context.source
+            ));
+            Ok(())
+        }
+        Some(LevelProgressionAction::Resolve { pending_id }) => {
+            let pending = state.consume_pending_level_progression(pending_id).ok_or(
+                ExecutionError::InvalidAmount("level progression pending action is unavailable"),
+            )?;
+            if pending.source != context.source
+                || pending.program_sha256 != program.semantic_sha256()
+            {
+                return Err(ExecutionError::Adapter(
+                    "level progression pending action does not match this program".into(),
+                ));
+            }
+            if source.zone != Zone::Battlefield || incarnation != pending.source_incarnation {
+                state.record_mutation(format!(
+                    "level_up_source_missing:{}:{pending_id}",
+                    context.source
+                ));
+                return Ok(());
+            }
+            apply_put_counter(
+                state,
+                &ObjectRef::Source,
+                &CounterKind::Named("level".into()),
+                &Amount::Constant(1),
+                context,
+            )?;
+            state.record_mutation(format!(
+                "level_up_resolved:{}:{incarnation}:{pending_id}",
+                context.source
+            ));
+            Ok(())
+        }
+        None if matches!(context.window, ActionWindow::Static) => {
+            let existing = state.level_progression_program(context.source);
+            if existing.as_ref().is_none_or(|installed| {
+                installed.source_incarnation != incarnation
+                    || installed.program.semantic_sha256() != program.semantic_sha256()
+            }) {
+                let order = state.next_order();
+                state.install_level_progression_program(
+                    context.source,
+                    InstalledLevelProgressionProgram {
+                        order,
+                        source_incarnation: incarnation,
+                        address: context.executing_clause_address.ok_or_else(|| {
+                            ExecutionError::Adapter(
+                                "level progression installation is missing its clause address"
+                                    .into(),
+                            )
+                        })?,
+                        program: program.clone(),
+                    },
+                );
+            }
+            Ok(())
+        }
+        None => Err(ExecutionError::InvalidAmount(
+            "level progression requires an activation, resolution, or static installation action",
+        )),
+    }
+}
+
+fn apply_combat_trigger_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &crate::combat_trigger_keyword_runtime::CombatTriggerKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "combat keyword has no complete production adapter".into(),
+        ));
+    }
+    match program.kind() {
+        CombatTriggerKeywordKind::Afflict { amount } => {
+            let defending_player =
+                context
+                    .defending_player
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "Afflict is missing the combat defending player",
+                    ))?;
+            change_life(state, defending_player, -i64::from(*amount))?;
+            state.record_mutation(format!(
+                "combat_trigger_afflict:{}:{defending_player}:{amount}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatTriggerKeywordKind::Annihilator { amount } => {
+            let defending_player =
+                context
+                    .defending_player
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "Annihilator is missing the combat defending player",
+                    ))?;
+            let mut eligible = state
+                .object_ids()
+                .into_iter()
+                .filter(|object| {
+                    state.object(*object).is_some_and(|object| {
+                        object.zone == Zone::Battlefield && object.controller == defending_player
+                    })
+                })
+                .collect::<Vec<_>>();
+            eligible.sort_unstable();
+            let required = usize::try_from(*amount)
+                .unwrap_or(usize::MAX)
+                .min(eligible.len());
+            let chosen = context
+                .per_player_object_choices
+                .get(&defending_player)
+                .cloned()
+                .unwrap_or_default();
+            let unique = chosen.iter().copied().collect::<BTreeSet<_>>();
+            if chosen.len() != required
+                || unique.len() != chosen.len()
+                || !chosen.iter().all(|object| eligible.contains(object))
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "Annihilator sacrifice choice is incomplete or illegal",
+                ));
+            }
+            for object in chosen {
+                let destination = death_destination(state, object, context)?;
+                state
+                    .move_object(object, destination)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!(
+                    "combat_trigger_annihilator:{}:{defending_player}:{object}",
+                    context.source
+                ));
+            }
+            Ok(())
+        }
+        CombatTriggerKeywordKind::BattleCry => {
+            let mut attackers = ObjectFilter::default();
+            attackers.card_types.push(CardType::Creature);
+            attackers.zones = vec![Zone::Battlefield];
+            attackers.attacking = Some(true);
+            attackers.other_than_source = true;
+            apply_power_toughness_change(
+                state,
+                &PowerToughnessChange {
+                    objects: ObjectRef::EachMatching(attackers),
+                    operation: PowerToughnessOperation::Add,
+                    power: Amount::Constant(1),
+                    toughness: Amount::Constant(0),
+                    duration: Duration::UntilEndOfTurn,
+                },
+                context,
+            )?;
+            state.record_mutation(format!(
+                "combat_trigger_battle_cry:{}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatTriggerKeywordKind::Dethrone => {
+            let defending_player =
+                context
+                    .defending_player
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "Dethrone is missing the attacked player",
+                    ))?;
+            let attacked_life = state
+                .player(defending_player)
+                .ok_or(ExecutionError::MissingPlayer(defending_player))?
+                .life;
+            let maximum_life = state
+                .player_ids()
+                .into_iter()
+                .map(|player| {
+                    state
+                        .player(player)
+                        .map(|state| state.life)
+                        .ok_or(ExecutionError::MissingPlayer(player))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .max()
+                .ok_or(ExecutionError::InvalidAmount(
+                    "Dethrone has no complete player state",
+                ))?;
+            if attacked_life == maximum_life {
+                apply_put_counter(
+                    state,
+                    &ObjectRef::Source,
+                    &CounterKind::PlusOnePlusOne,
+                    &Amount::Constant(1),
+                    context,
+                )?;
+            }
+            state.record_mutation(format!(
+                "combat_trigger_dethrone:{}:{defending_player}:{}",
+                context.source,
+                attacked_life == maximum_life
+            ));
+            Ok(())
+        }
+        CombatTriggerKeywordKind::Ingest => {
+            let ActionWindow::Triggered(TriggerEvent::CombatDamageToPlayer {
+                source, player, ..
+            }) = &context.window
+            else {
+                return Err(ExecutionError::TimingMismatch);
+            };
+            if *source != context.source {
+                return Err(ExecutionError::TimingMismatch);
+            }
+            let damaged_player = state
+                .player(*player)
+                .ok_or(ExecutionError::MissingPlayer(*player))?;
+            let Some(top) = damaged_player.library.first().copied() else {
+                state.record_mutation(format!(
+                    "combat_trigger_ingest_empty:{}:{player}",
+                    context.source
+                ));
+                return Ok(());
+            };
+            state
+                .move_object(top, Zone::Exile)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "combat_trigger_ingest:{}:{player}:{top}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatTriggerKeywordKind::Firebending { amount } => {
+            let combat_id = context.combat_id.ok_or(ExecutionError::InvalidAmount(
+                "Firebending is missing the current combat identity",
+            ))?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if source.zone != Zone::Battlefield || !source.attacking {
+                return Err(ExecutionError::TimingMismatch);
+            }
+            let ids = state
+                .add_expiring_combat_mana(
+                    source.controller,
+                    Color::Red,
+                    *amount,
+                    combat_id,
+                    context.source,
+                )
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "combat_trigger_firebending:{}:{}:{combat_id}:{ids:?}:{}",
+                context.source,
+                amount,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatTriggerKeywordKind::Melee => {
+            let attacked = context.opponents_attacked_this_combat.as_ref().ok_or(
+                ExecutionError::InvalidAmount(
+                    "Melee is missing the complete current-combat opponent set",
+                ),
+            )?;
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if source.zone != Zone::Battlefield || !source.attacking {
+                return Err(ExecutionError::TimingMismatch);
+            }
+            let current_opponents = state
+                .player_ids()
+                .into_iter()
+                .filter(|player| *player != source.controller)
+                .collect::<BTreeSet<_>>();
+            if !attacked.is_subset(&current_opponents) {
+                return Err(ExecutionError::InvalidAmount(
+                    "Melee opponent set contains a player who is not a current opponent",
+                ));
+            }
+            let amount =
+                u32::try_from(attacked.len()).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            apply_power_toughness_change(
+                state,
+                &PowerToughnessChange {
+                    objects: ObjectRef::Source,
+                    operation: PowerToughnessOperation::Add,
+                    power: Amount::Constant(amount),
+                    toughness: Amount::Constant(amount),
+                    duration: Duration::UntilEndOfTurn,
+                },
+                context,
+            )?;
+            state.record_mutation(format!(
+                "combat_trigger_melee:{}:{amount}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatTriggerKeywordKind::Provoke => {
+            let combat_id = context.combat_id.ok_or(ExecutionError::InvalidAmount(
+                "Provoke is missing the current combat identity",
+            ))?;
+            let defending_player =
+                context
+                    .defending_player
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "Provoke is missing the combat defending player",
+                    ))?;
+            let target = context
+                .combat_keyword_target
+                .ok_or(ExecutionError::MissingTarget { id: 0 })?;
+            let target = state
+                .object(target)
+                .ok_or(ExecutionError::MissingObject(target))?;
+            if target.zone != Zone::Battlefield
+                || target.controller != defending_player
+                || !object_has_type(&target, CardType::Creature)
+                || targeting_protection_blocks(
+                    state,
+                    &[SelectedTarget::Object(target.id)],
+                    context,
+                )?
+            {
+                return Err(ExecutionError::IllegalTarget { id: 0 });
+            }
+            if context.optional_effect_declined {
+                state.record_mutation(format!(
+                    "combat_trigger_provoke_declined:{}:{}",
+                    context.source,
+                    program.semantic_digest()
+                ));
+                return Ok(());
+            }
+            attempt_direct_untap(state, target.id)?;
+            let order = state.next_order();
+            state.register_restriction(RestrictionRecord {
+                order,
+                source_identity: context.source,
+                restriction: Restriction::MustBlockIfAble {
+                    blockers: ObjectRef::ObjectIdentity(target.id),
+                    attacker: Some(ObjectRef::Source),
+                    duration: Duration::UntilEndOfCombat(combat_id),
+                },
+            });
+            state.record_mutation(format!(
+                "combat_trigger_provoke:{}:{}:{combat_id}:{}",
+                context.source,
+                target.id,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        CombatTriggerKeywordKind::Rampage { amount } => {
+            let blockers =
+                context
+                    .source_blockers
+                    .as_ref()
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "Rampage is missing the complete blocker group",
+                    ))?;
+            let unique = blockers.iter().copied().collect::<BTreeSet<_>>();
+            if unique.len() != blockers.len() {
+                return Err(ExecutionError::InvalidAmount(
+                    "Rampage blocker group contains a duplicate object",
+                ));
+            }
+            let source = state
+                .object(context.source)
+                .ok_or(ExecutionError::MissingObject(context.source))?;
+            if source.zone != Zone::Battlefield || !source.attacking {
+                return Err(ExecutionError::TimingMismatch);
+            }
+            for blocker in blockers {
+                let blocker = state
+                    .object(*blocker)
+                    .ok_or(ExecutionError::MissingObject(*blocker))?;
+                if blocker.zone != Zone::Battlefield
+                    || !blocker.blocking
+                    || !object_has_type(&blocker, CardType::Creature)
+                    || blocker.controller == source.controller
+                {
+                    return Err(ExecutionError::InvalidAmount(
+                        "Rampage blocker group contains an illegal current blocker",
+                    ));
+                }
+            }
+            let beyond_first = blockers.len().saturating_sub(1);
+            let beyond_first =
+                u32::try_from(beyond_first).map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            let delta = amount
+                .checked_mul(beyond_first)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            if delta > 0 {
+                apply_power_toughness_change(
+                    state,
+                    &PowerToughnessChange {
+                        objects: ObjectRef::Source,
+                        operation: PowerToughnessOperation::Add,
+                        power: Amount::Constant(delta),
+                        toughness: Amount::Constant(delta),
+                        duration: Duration::UntilEndOfTurn,
+                    },
+                    context,
+                )?;
+            }
+            state.record_mutation(format!(
+                "combat_trigger_rampage:{}:{delta}:{}",
+                context.source,
+                program.semantic_digest()
+            ));
+            Ok(())
+        }
+        _ => Err(ExecutionError::Adapter(
+            "combat keyword family is retained without a production adapter".into(),
+        )),
+    }
+}
+
+fn apply_library_access_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &LibraryAccessProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let source_zone = if source.zone == Zone::Battlefield {
+        LibraryAccessSourceZone::Battlefield
+    } else {
+        LibraryAccessSourceZone::Other
+    };
+    let mut access = synchronized_library_access_state(state)?;
+    access
+        .activate(
+            context.source,
+            source.controller,
+            source_zone,
+            program.clone(),
+        )
+        .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    state
+        .put_library_access_state(access)
+        .map_err(ExecutionError::Adapter)?;
+    state.record_mutation(format!(
+        "library_access_activate:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_common_action_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CommonActionProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let source = state
+        .object(context.source)
+        .or_else(|| context.last_known_source.as_deref().cloned())
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let source_reference = CommonObjectRef {
+        object_id: context.source,
+        incarnation_id: context.source,
+    };
+    let pending = PendingCommonAction {
+        trigger_id: None,
+        controller: u16::from(source.controller),
+        source: Some(source_reference),
+        program_digest: program.semantic_digest().to_owned(),
+        kind: program.kind().clone(),
+    };
+    let mut procedures = synchronized_common_procedure_state(state)?;
+    let choices = &context.common_action_choices;
+    match program.kind() {
+        CommonActionKind::GainEnergy { .. } => {
+            resolve_gain_energy(&pending, choices.dynamic_amount, &mut procedures)
+                .map_err(common_action_error)?;
+        }
+        CommonActionKind::TakeInitiative => {
+            resolve_take_initiative(&pending, &mut procedures).map_err(common_action_error)?;
+            let choice = choices.dungeon_venture.ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "take the initiative requires an exact Undercity choice".into(),
+                )
+            })?;
+            resolve_pending_undercity_venture(choice, &mut procedures)
+                .map_err(common_action_error)?;
+        }
+        CommonActionKind::Explore { .. } => {
+            let input = choices.explore.clone().ok_or_else(|| {
+                ExecutionError::Adapter("explore requires exact target and card choices".into())
+            })?;
+            resolve_explore(&pending, input, &mut procedures).map_err(common_action_error)?;
+        }
+        CommonActionKind::Learn => {
+            let choice = choices.learn.ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "learn requires an explicit choice, including decline".into(),
+                )
+            })?;
+            resolve_learn(&pending, choice, &mut procedures).map_err(common_action_error)?;
+        }
+        CommonActionKind::Investigate { .. } => {
+            resolve_investigate(&pending, choices.dynamic_amount, &mut procedures)
+                .map_err(common_action_error)?;
+        }
+        CommonActionKind::Support { .. } => {
+            let input = choices.support.clone().ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "support requires exact targets and counter outcomes".into(),
+                )
+            })?;
+            resolve_support(&pending, input, &mut procedures).map_err(common_action_error)?;
+        }
+        CommonActionKind::RingTemptsYou => {
+            let input = choices.ring_temptation.ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "the Ring tempts you requires an exact bearer choice".into(),
+                )
+            })?;
+            resolve_ring_tempts_you(&pending, input, &mut procedures)
+                .map_err(common_action_error)?;
+        }
+        CommonActionKind::VentureIntoDungeon => {
+            let choice = choices.dungeon_venture.ok_or_else(|| {
+                ExecutionError::Adapter("venture requires an exact dungeon or room choice".into())
+            })?;
+            resolve_venture_into_dungeon(&pending, choice, &mut procedures)
+                .map_err(common_action_error)?;
+        }
+        CommonActionKind::BecomeMonarch => {
+            resolve_become_monarch(&pending, &mut procedures).map_err(common_action_error)?;
+        }
+        CommonActionKind::Proliferate => {
+            let chosen = choices.proliferate.clone().ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "proliferate requires an explicit selection, including none".into(),
+                )
+            })?;
+            resolve_proliferate(&pending, chosen, &mut procedures).map_err(common_action_error)?;
+        }
+        CommonActionKind::Amass { .. } => {
+            let input = choices.amass.ok_or_else(|| {
+                ExecutionError::Adapter("amass requires exact Army and amount choices".into())
+            })?;
+            resolve_amass(&pending, input, &mut procedures).map_err(common_action_error)?;
+        }
+        CommonActionKind::OpenAttraction => {
+            resolve_open_attraction(&pending, &mut procedures).map_err(common_action_error)?;
+        }
+        CommonActionKind::ClashWithOpponent => {
+            let input = choices.clash.ok_or_else(|| {
+                ExecutionError::Adapter(
+                    "clash requires an exact opponent and bottom choices".into(),
+                )
+            })?;
+            resolve_clash(&pending, input, &mut procedures).map_err(common_action_error)?;
+        }
+    }
+    commit_common_procedure_state(state, procedures)?;
+    state.record_mutation(format!(
+        "common_action:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_combat_restriction_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CombatRestrictionProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let source_zone = if source.zone == Zone::Battlefield {
+        RestrictionSourceZone::Battlefield
+    } else {
+        RestrictionSourceZone::Other
+    };
+    let source_reference = CombatRestrictionObjectRef {
+        object_id: context.source,
+        incarnation_id: context.source,
+    };
+    let mut runtime = state.combat_restriction_runtime();
+    runtime.unbind_source(source_reference);
+    runtime
+        .bind(program.clone(), source_reference, source_zone)
+        .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    state
+        .put_combat_restriction_runtime(runtime)
+        .map_err(ExecutionError::Adapter)?;
+    state.record_mutation(format!(
+        "combat_restriction_activate:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_regeneration_action_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &RegenerationActionProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let source = state
+        .object(context.source)
+        .or_else(|| context.last_known_source.as_deref().cloned())
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let mut runtime = synchronized_regeneration_runtime_state(state)?;
+    let source_reference = RegenerationObjectReference {
+        object: RegenerationObjectId(context.source),
+        incarnation: RegenerationIncarnationId(context.source),
+    };
+    match program.kind() {
+        RegenerationActionKind::StaticDestructionReplacement(_) => {
+            install_static_regeneration_replacement(&mut runtime, program, source_reference)
+                .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+        }
+        RegenerationActionKind::StandaloneResolution(_) => {
+            let target = context
+                .targets
+                .values()
+                .flatten()
+                .find_map(|target| match target {
+                    SelectedTarget::Object(id) => Some(RegenerationObjectReference {
+                        object: RegenerationObjectId(*id),
+                        incarnation: RegenerationIncarnationId(*id),
+                    }),
+                    SelectedTarget::Player(_) => None,
+                });
+            resolve_regeneration_instruction(
+                &mut runtime,
+                program,
+                RegenerationPlayerId(u16::from(source.controller)),
+                source_reference,
+                target,
+            )
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+        }
+        RegenerationActionKind::Activated(_) | RegenerationActionKind::Triggered(_) => {
+            return Err(ExecutionError::Adapter(
+                "regeneration activation or trigger requires the pending action lifecycle".into(),
+            ));
+        }
+    }
+    commit_regeneration_runtime_state(state, runtime)?;
+    state.record_mutation(format!(
+        "regeneration_action:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_object_state_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &ObjectStateClauseProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    state
+        .object(context.source)
+        .or_else(|| context.last_known_source.as_deref().cloned())
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    state.record_mutation(format!(
+        "object_state_rule:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn residual_card_type(kind: ResidualCardType) -> CardType {
+    match kind {
+        ResidualCardType::Artifact => CardType::Artifact,
+        ResidualCardType::Battle => CardType::Battle,
+        ResidualCardType::Creature | ResidualCardType::Kindred => CardType::Creature,
+        ResidualCardType::Enchantment => CardType::Enchantment,
+        ResidualCardType::Instant => CardType::Instant,
+        ResidualCardType::Land => CardType::Land,
+        ResidualCardType::Planeswalker => CardType::Planeswalker,
+        ResidualCardType::Sorcery => CardType::Sorcery,
+    }
+}
+
+fn affinity_object_filter(filter: &ResidualAffinityFilter) -> Option<ObjectFilter> {
+    let mut bounded = ObjectFilter {
+        zones: vec![Zone::Battlefield],
+        ..ObjectFilter::default()
+    };
+    match filter {
+        ResidualAffinityFilter::CardType(kind) => {
+            bounded.card_types.push(residual_card_type(*kind));
+        }
+        ResidualAffinityFilter::AllCardTypes(kinds) => {
+            bounded.card_types = kinds.iter().copied().map(residual_card_type).collect();
+        }
+        ResidualAffinityFilter::CreatureType(subtype)
+        | ResidualAffinityFilter::PermanentSubtype(subtype) => {
+            bounded.subtypes.push(subtype.clone());
+        }
+        ResidualAffinityFilter::BasicLandType(subtype) => {
+            bounded.card_types.push(CardType::Land);
+            bounded.subtypes.push(subtype.clone());
+        }
+        ResidualAffinityFilter::HistoricPermanent => bounded.historic = true,
+        ResidualAffinityFilter::OutlawPermanent => {
+            bounded.subtypes = ["Assassin", "Mercenary", "Pirate", "Rogue", "Warlock"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            bounded.subtype_match_any = true;
+        }
+        ResidualAffinityFilter::SnowLand => {
+            bounded.card_types.push(CardType::Land);
+            bounded.supertypes.push(Supertype::Snow);
+        }
+        ResidualAffinityFilter::TokenPermanent => bounded.token = Some(true),
+        ResidualAffinityFilter::PermanentWithAffinity => bounded.has_affinity = true,
+    }
+    Some(bounded)
+}
+
+fn apply_residual_cost_keyword_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &ResidualCostKeywordProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let ResidualCostKeywordKind::Affinity(affinity) = program.kind() else {
+        return Err(ExecutionError::Adapter(
+            "Ward requires the target-trigger payment lifecycle".into(),
+        ));
+    };
+    let filter = affinity_object_filter(&affinity.filter).ok_or_else(|| {
+        ExecutionError::Adapter("affinity for permanents with affinity is not live".into())
+    })?;
+    let order = state.next_order();
+    state.register_spell_reduction(SpellReductionRecord {
+        order,
+        source_identity: context.source,
+        object: ObjectRef::Source,
+        mana: ManaCost(format!(
+            "{{{}}}",
+            affinity.generic_reduction_per_counted_permanent
+        )),
+        per: CountExpression::MatchingObjects {
+            player: PlayerRef::You,
+            filter,
+        },
+        maximum_reduction: None,
+        condition: None,
+    });
+    state.record_mutation(format!(
+        "affinity_reduction:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn oracle_action_zone(zone: Zone) -> OracleActionZone {
+    match zone {
+        Zone::Library => OracleActionZone::Library,
+        Zone::Hand => OracleActionZone::Hand,
+        Zone::Battlefield => OracleActionZone::Battlefield,
+        Zone::Graveyard => OracleActionZone::Graveyard,
+        Zone::Exile => OracleActionZone::Exile,
+        Zone::Command => OracleActionZone::Command,
+        Zone::Stack => OracleActionZone::Stack,
+        Zone::Merged => unreachable!("merged components are not independent objects"),
+    }
+}
+
+fn bounded_oracle_action_zone(zone: OracleActionZone) -> Zone {
+    match zone {
+        OracleActionZone::Library => Zone::Library,
+        OracleActionZone::Hand => Zone::Hand,
+        OracleActionZone::Battlefield => Zone::Battlefield,
+        OracleActionZone::Graveyard => Zone::Graveyard,
+        OracleActionZone::Exile => Zone::Exile,
+        OracleActionZone::Command => Zone::Command,
+        OracleActionZone::Stack => Zone::Stack,
+    }
+}
+
+fn oracle_action_card_type(kind: CardType) -> Option<OracleActionCardType> {
+    match kind {
+        CardType::Artifact => Some(OracleActionCardType::Artifact),
+        CardType::Battle => Some(OracleActionCardType::Battle),
+        CardType::Creature => Some(OracleActionCardType::Creature),
+        CardType::Enchantment => Some(OracleActionCardType::Enchantment),
+        CardType::Instant => Some(OracleActionCardType::Instant),
+        CardType::Land => Some(OracleActionCardType::Land),
+        CardType::Planeswalker => Some(OracleActionCardType::Planeswalker),
+        CardType::Sorcery => Some(OracleActionCardType::Sorcery),
+        CardType::Spell | CardType::Permanent => None,
+    }
+}
+
+fn bounded_oracle_action_card_type(kind: OracleActionCardType) -> CardType {
+    match kind {
+        OracleActionCardType::Artifact => CardType::Artifact,
+        OracleActionCardType::Battle => CardType::Battle,
+        OracleActionCardType::Creature | OracleActionCardType::Kindred => CardType::Creature,
+        OracleActionCardType::Enchantment => CardType::Enchantment,
+        OracleActionCardType::Instant => CardType::Instant,
+        OracleActionCardType::Land => CardType::Land,
+        OracleActionCardType::Planeswalker => CardType::Planeswalker,
+        OracleActionCardType::Sorcery => CardType::Sorcery,
+    }
+}
+
+fn oracle_action_color(color: Color) -> OracleActionColor {
+    match color {
+        Color::White => OracleActionColor::White,
+        Color::Blue => OracleActionColor::Blue,
+        Color::Black => OracleActionColor::Black,
+        Color::Red => OracleActionColor::Red,
+        Color::Green => OracleActionColor::Green,
+        Color::Colorless => OracleActionColor::Colorless,
+    }
+}
+
+fn bounded_oracle_action_color(color: OracleActionColor) -> Color {
+    match color {
+        OracleActionColor::White => Color::White,
+        OracleActionColor::Blue => Color::Blue,
+        OracleActionColor::Black => Color::Black,
+        OracleActionColor::Red => Color::Red,
+        OracleActionColor::Green => Color::Green,
+        OracleActionColor::Colorless => Color::Colorless,
+    }
+}
+
+fn oracle_action_keyword(keyword: &Keyword) -> Option<OracleActionKeyword> {
+    match keyword {
+        Keyword::Deathtouch => Some(OracleActionKeyword::Deathtouch),
+        Keyword::Defender => Some(OracleActionKeyword::Defender),
+        Keyword::DoubleStrike => Some(OracleActionKeyword::DoubleStrike),
+        Keyword::FirstStrike => Some(OracleActionKeyword::FirstStrike),
+        Keyword::Flying => Some(OracleActionKeyword::Flying),
+        Keyword::Haste => Some(OracleActionKeyword::Haste),
+        Keyword::Hexproof => Some(OracleActionKeyword::Hexproof),
+        Keyword::Indestructible => Some(OracleActionKeyword::Indestructible),
+        Keyword::Lifelink => Some(OracleActionKeyword::Lifelink),
+        Keyword::Menace => Some(OracleActionKeyword::Menace),
+        Keyword::Reach => Some(OracleActionKeyword::Reach),
+        Keyword::Trample => Some(OracleActionKeyword::Trample),
+        Keyword::Vigilance => Some(OracleActionKeyword::Vigilance),
+        Keyword::Ward(_) => Some(OracleActionKeyword::Ward),
+        Keyword::Shadow | Keyword::Shroud => None,
+    }
+}
+
+fn synchronized_oracle_action_world<S: OracleStateAdapter>(
+    state: &S,
+) -> Result<OracleActionWorldState, ExecutionError> {
+    let prior = state.oracle_action_world_state();
+    let mut world = OracleActionWorldState {
+        continuous_effects: prior.continuous_effects,
+        damage_prevention_shields: prior.damage_prevention_shields,
+        damage_events: prior.damage_events,
+        visibility_events: prior.visibility_events,
+        zone_moves: prior.zone_moves,
+        battlefield_evidence_complete: true,
+        hidden_zone_evidence_complete: true,
+        no_applicable_replacement_effects: state.replacements().is_empty()
+            && state.damage_modifiers().is_empty(),
+        ..OracleActionWorldState::default()
+    };
+    let player_ids = state.player_ids();
+    for player_id in &player_ids {
+        let player = state
+            .player(*player_id)
+            .ok_or(ExecutionError::MissingPlayer(*player_id))?;
+        let action_player = u16::from(*player_id);
+        world.players.insert(
+            action_player,
+            OracleActionPlayerState {
+                life: player.life,
+                poison_counters: player.counters.get("poison").copied().unwrap_or(0),
+                draws_from_empty_library: 0,
+            },
+        );
+        world.opponents.insert(
+            action_player,
+            player_ids
+                .iter()
+                .copied()
+                .filter(|other| other != player_id)
+                .map(u16::from)
+                .collect(),
+        );
+    }
+    let mut maximum_id = 0;
+    for object_id in state.object_ids() {
+        let object = state
+            .object(object_id)
+            .ok_or(ExecutionError::MissingObject(object_id))?;
+        maximum_id = maximum_id.max(object_id);
+        let characteristics = object.characteristics();
+        let reference = OracleActionObjectRef {
+            object_id,
+            incarnation_id: OracleActionIncarnationId(object_id),
+        };
+        world.objects.insert(
+            reference,
+            OracleActionGameObject {
+                reference,
+                owner: u16::from(object.owner),
+                controller: u16::from(if matches!(object.zone, Zone::Battlefield | Zone::Stack) {
+                    object.controller
+                } else {
+                    object.owner
+                }),
+                zone: oracle_action_zone(object.zone),
+                card_types: characteristics
+                    .card_types
+                    .iter()
+                    .copied()
+                    .filter_map(oracle_action_card_type)
+                    .collect(),
+                supertypes: characteristics
+                    .supertypes
+                    .iter()
+                    .map(|kind| format!("{kind:?}"))
+                    .collect(),
+                colors: characteristics
+                    .colors
+                    .iter()
+                    .copied()
+                    .map(oracle_action_color)
+                    .collect(),
+                subtypes: characteristics.subtypes.iter().cloned().collect(),
+                base_power: i32::try_from(characteristics.power).ok(),
+                base_toughness: i32::try_from(characteristics.toughness).ok(),
+                base_loyalty: object.counters.get("loyalty").copied(),
+                base_defense: object.counters.get("defense").copied(),
+                tapped: object.tapped,
+                attacking: object.attacking,
+                blocking: object.blocking,
+                marked_damage: object.counters.get("damage").copied().unwrap_or(0),
+                deathtouch_damage: false,
+                counters: object.counters.clone(),
+                intrinsic_keywords: characteristics
+                    .keywords
+                    .iter()
+                    .filter_map(oracle_action_keyword)
+                    .collect(),
+                is_token: object.token,
+                copiable_values: None,
+            },
+        );
+    }
+    for player_id in player_ids {
+        let player = state
+            .player(player_id)
+            .ok_or(ExecutionError::MissingPlayer(player_id))?;
+        world.libraries.insert(
+            u16::from(player_id),
+            player
+                .library
+                .iter()
+                .rev()
+                .map(|id| OracleActionObjectRef {
+                    object_id: *id,
+                    incarnation_id: OracleActionIncarnationId(*id),
+                })
+                .collect(),
+        );
+    }
+    world.next_object_id = maximum_id.saturating_add(1);
+    Ok(world)
+}
+
+#[derive(Clone)]
+struct OracleActionHostProjection {
+    world: OracleActionWorldState,
+}
+
+impl OracleActionStateAdapter for OracleActionHostProjection {
+    fn action_world(&self) -> &OracleActionWorldState {
+        &self.world
+    }
+
+    fn action_world_mut(&mut self) -> &mut OracleActionWorldState {
+        &mut self.world
+    }
+}
+
+fn oracle_action_bindings(
+    program: &OracleActionProgram,
+    state: &impl OracleStateAdapter,
+    context: &ExecutionContext,
+) -> OracleActionBindings {
+    fn collect_action_ids(
+        node: &OracleActionNode,
+        ids: &mut Vec<crate::oracle_action_algebra_runtime::ActionId>,
+    ) {
+        ids.push(node.id);
+        match &node.kind {
+            OracleActionKind::Optional { action, .. } => collect_action_ids(action, ids),
+            OracleActionKind::Conditional {
+                if_true, if_false, ..
+            } => {
+                collect_action_ids(if_true, ids);
+                if let Some(if_false) = if_false {
+                    collect_action_ids(if_false, ids);
+                }
+            }
+            OracleActionKind::OrderedSequence { actions, .. } => {
+                for action in actions {
+                    collect_action_ids(action, ids);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut action_ids = Vec::new();
+    collect_action_ids(program.root(), &mut action_ids);
+    let reference = |id| OracleActionObjectRef {
+        object_id: id,
+        incarnation_id: OracleActionIncarnationId(id),
+    };
+    let mut bindings = OracleActionBindings {
+        controller: u16::from(context.actor),
+        source: Some(reference(context.source)),
+        that_player: context.that_player.map(u16::from),
+        chosen_player: context
+            .player_choices
+            .values()
+            .flatten()
+            .next()
+            .copied()
+            .map(u16::from),
+        that_object: context.that_objects.values().next().copied().map(reference),
+        ..OracleActionBindings::default()
+    };
+    if let Some(attachment) = state.attachment(context.source) {
+        bindings.enchanted_object = Some(reference(attachment.target));
+        bindings.equipped_object = Some(reference(attachment.target));
+    }
+    for action in &action_ids {
+        let mut player_targets = Vec::new();
+        for (slot, targets) in &context.targets {
+            let objects = targets
+                .iter()
+                .filter_map(|target| match target {
+                    SelectedTarget::Object(id) => Some(reference(*id)),
+                    SelectedTarget::Player(_) => None,
+                })
+                .collect::<Vec<_>>();
+            if !objects.is_empty() {
+                bindings.object_targets.insert((*action, *slot), objects);
+            }
+            player_targets.extend(targets.iter().filter_map(|target| match target {
+                SelectedTarget::Player(id) => Some(u16::from(*id)),
+                SelectedTarget::Object(_) => None,
+            }));
+        }
+        if !player_targets.is_empty() {
+            bindings
+                .player_targets
+                .insert(*action, player_targets.clone());
+        }
+    }
+    for action in &action_ids {
+        for objects in context.object_choices.values() {
+            let selected = objects.iter().copied().map(reference).collect::<Vec<_>>();
+            bindings
+                .object_choices
+                .insert((*action, u16::from(context.actor)), selected.clone());
+            bindings
+                .card_choices
+                .insert((*action, u16::from(context.actor)), selected);
+        }
+    }
+    bindings
+        .variable_amounts
+        .insert(OracleActionVariableAmount::X, context.x_value);
+    if let Some(amount) = context.chosen_amount {
+        bindings
+            .variable_amounts
+            .insert(OracleActionVariableAmount::ThatMany, amount);
+    }
+    for action in &action_ids {
+        bindings
+            .optional_choices
+            .insert(*action, !context.optional_effect_declined);
+    }
+    if let Some(target) = context.targets.values().flatten().next() {
+        for action in action_ids {
+            bindings.any_targets.insert(
+                action,
+                match target {
+                    SelectedTarget::Player(id) => ResolvedAnyTarget::Player(u16::from(*id)),
+                    SelectedTarget::Object(id) => ResolvedAnyTarget::Object(reference(*id)),
+                },
+            );
+        }
+    }
+    bindings
+}
+
+fn commit_oracle_action_world<S: OracleStateAdapter>(
+    state: &mut S,
+    world: OracleActionWorldState,
+) -> Result<(), ExecutionError> {
+    for (player_id, action_player) in &world.players {
+        let player_id = u8::try_from(*player_id)
+            .map_err(|_| ExecutionError::Adapter("oracle action player id overflow".into()))?;
+        let mut player = state
+            .player(player_id)
+            .ok_or(ExecutionError::MissingPlayer(player_id))?;
+        player.life = action_player.life;
+        if action_player.poison_counters == 0 {
+            player.counters.remove("poison");
+        } else {
+            player
+                .counters
+                .insert("poison".into(), action_player.poison_counters);
+        }
+        player.library = world
+            .libraries
+            .get(&u16::from(player_id))
+            .into_iter()
+            .flatten()
+            .rev()
+            .map(|reference| reference.object_id)
+            .collect();
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+    }
+    for action_object in world.objects.values() {
+        let owner = u8::try_from(action_object.owner)
+            .map_err(|_| ExecutionError::Adapter("oracle action owner id overflow".into()))?;
+        let controller = u8::try_from(action_object.controller)
+            .map_err(|_| ExecutionError::Adapter("oracle action controller id overflow".into()))?;
+        let mut object =
+            state
+                .object(action_object.reference.object_id)
+                .unwrap_or(PhysicalObject {
+                    id: action_object.reference.object_id,
+                    origin_id: action_object.reference.object_id,
+                    copy_of: None,
+                    owner,
+                    controller,
+                    zone: bounded_oracle_action_zone(action_object.zone),
+                    token: action_object.is_token,
+                    tapped: action_object.tapped,
+                    attacking: action_object.attacking,
+                    blocking: action_object.blocking,
+                    prepared: false,
+                    face_down: false,
+                    active_face: 0,
+                    class_level: 0,
+                    front: ObjectCharacteristics {
+                        names: action_object
+                            .copiable_values
+                            .as_ref()
+                            .map(|values| vec![values.name.clone()])
+                            .unwrap_or_default(),
+                        card_types: action_object
+                            .card_types
+                            .iter()
+                            .copied()
+                            .map(bounded_oracle_action_card_type)
+                            .collect(),
+                        supertypes: Vec::new(),
+                        subtypes: action_object.subtypes.iter().cloned().collect(),
+                        colors: action_object
+                            .colors
+                            .iter()
+                            .copied()
+                            .map(bounded_oracle_action_color)
+                            .collect(),
+                        mana_value: 0,
+                        power: i64::from(action_object.base_power.unwrap_or(0)),
+                        toughness: i64::from(action_object.base_toughness.unwrap_or(0)),
+                        keywords: Vec::new(),
+                        abilities: Vec::new(),
+                    },
+                    back: None,
+                    counters: BTreeMap::new(),
+                });
+        object.owner = owner;
+        object.controller = controller;
+        object.zone = bounded_oracle_action_zone(action_object.zone);
+        object.token = action_object.is_token;
+        object.tapped = action_object.tapped;
+        object.attacking = action_object.attacking;
+        object.blocking = action_object.blocking;
+        object.counters = action_object.counters.clone();
+        if action_object.marked_damage > 0 {
+            object
+                .counters
+                .insert("damage".into(), action_object.marked_damage);
+        } else {
+            object.counters.remove("damage");
+        }
+        if state.object(object.id).is_some() {
+            state.put_object(object).map_err(ExecutionError::Adapter)?;
+        } else {
+            state
+                .insert_physical_object(object)
+                .map_err(ExecutionError::Adapter)?;
+        }
+    }
+    // Zone insertion helpers may maintain the host library list. Reapply the
+    // authoritative action-world ordering after every object commit.
+    for player_id in world.players.keys() {
+        let bounded_player_id = u8::try_from(*player_id)
+            .map_err(|_| ExecutionError::Adapter("oracle action player id overflow".into()))?;
+        let mut player = state
+            .player(bounded_player_id)
+            .ok_or(ExecutionError::MissingPlayer(bounded_player_id))?;
+        player.library = world
+            .libraries
+            .get(player_id)
+            .into_iter()
+            .flatten()
+            .rev()
+            .map(|reference| reference.object_id)
+            .collect();
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+    }
+    state
+        .put_oracle_action_world_state(world)
+        .map_err(ExecutionError::Adapter)
+}
+
+fn apply_oracle_action_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &OracleActionProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let world = synchronized_oracle_action_world(state)?;
+    let prior_continuous_effects = world.continuous_effects.len();
+    let bindings = oracle_action_bindings(program, state, context);
+    let mut projection = OracleActionHostProjection { world };
+    execute_oracle_action_program_transactionally(program, &bindings, &mut projection)
+        .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    commit_oracle_action_continuous_effects(
+        state,
+        &projection.world.continuous_effects[prior_continuous_effects..],
+        context.source,
+    )?;
+    commit_oracle_action_world(state, projection.world)?;
+    state.record_mutation(format!(
+        "oracle_action:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn commit_oracle_action_continuous_effects<S: OracleStateAdapter>(
+    state: &mut S,
+    effects: &[OracleActionContinuousEffect],
+    source_identity: ObjectId,
+) -> Result<(), ExecutionError> {
+    for effect in effects {
+        let (objects, bounded_effect, duration) = match effect {
+            OracleActionContinuousEffect::PowerToughness {
+                objects,
+                power,
+                toughness,
+                duration,
+                ..
+            } => {
+                let duration = bounded_oracle_action_duration(*duration)?;
+                let (operation, power_amount, toughness_amount) = match (*power, *toughness) {
+                    (power, toughness) if power >= 0 && toughness >= 0 => (
+                        PowerToughnessOperation::Add,
+                        power.unsigned_abs(),
+                        toughness.unsigned_abs(),
+                    ),
+                    (power, toughness) if power <= 0 && toughness <= 0 => (
+                        PowerToughnessOperation::Subtract,
+                        power.unsigned_abs(),
+                        toughness.unsigned_abs(),
+                    ),
+                    (power, toughness) if power >= 0 => (
+                        PowerToughnessOperation::AddPowerSubtractToughness,
+                        power.unsigned_abs(),
+                        toughness.unsigned_abs(),
+                    ),
+                    (power, toughness) => (
+                        PowerToughnessOperation::SubtractPowerAddToughness,
+                        power.unsigned_abs(),
+                        toughness.unsigned_abs(),
+                    ),
+                };
+                (
+                    objects,
+                    Effect::ModifyPowerToughness(PowerToughnessChange {
+                        objects: ObjectRef::ObjectIdentity(source_identity),
+                        operation,
+                        power: Amount::Constant(power_amount),
+                        toughness: Amount::Constant(toughness_amount),
+                        duration: duration.clone(),
+                    }),
+                    duration,
+                )
+            }
+            OracleActionContinuousEffect::Keywords {
+                objects,
+                operation,
+                keywords,
+                duration,
+                ..
+            } => {
+                let duration = bounded_oracle_action_duration(*duration)?;
+                let keywords = keywords
+                    .iter()
+                    .copied()
+                    .map(bounded_oracle_action_keyword)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let object = ObjectRef::ObjectIdentity(source_identity);
+                let effect = match operation {
+                    OracleActionKeywordOperation::Grant => Effect::GrantKeyword {
+                        objects: object,
+                        keywords,
+                        duration: duration.clone(),
+                    },
+                    OracleActionKeywordOperation::Lose => Effect::RemoveKeyword {
+                        objects: object,
+                        keywords,
+                        duration: duration.clone(),
+                    },
+                };
+                (objects, effect, duration)
+            }
+        };
+        for object in objects {
+            let mut per_object = bounded_effect.clone();
+            match &mut per_object {
+                Effect::ModifyPowerToughness(change) => {
+                    change.objects = ObjectRef::ObjectIdentity(object.object_id)
+                }
+                Effect::GrantKeyword { objects, .. } | Effect::RemoveKeyword { objects, .. } => {
+                    *objects = ObjectRef::ObjectIdentity(object.object_id)
+                }
+                _ => unreachable!("oracle continuous projection is closed"),
+            }
+            let order = state.next_order();
+            state.register_continuous(ContinuousEffectRecord {
+                order,
+                source_identity,
+                object_identities: vec![object.object_id],
+                effect: per_object,
+                duration: duration.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn bounded_oracle_action_duration(
+    duration: OracleActionDuration,
+) -> Result<Duration, ExecutionError> {
+    match duration {
+        OracleActionDuration::ThisTurn => Ok(Duration::ThisTurn),
+        OracleActionDuration::UntilEndOfTurn => Ok(Duration::UntilEndOfTurn),
+        OracleActionDuration::UntilYourNextTurn => Ok(Duration::UntilEndOfNextTurn),
+        _ => Err(ExecutionError::Adapter(
+            "oracle action duration has no exact bounded projection".into(),
+        )),
+    }
+}
+
+fn bounded_oracle_action_keyword(keyword: OracleActionKeyword) -> Result<Keyword, ExecutionError> {
+    match keyword {
+        OracleActionKeyword::Deathtouch => Ok(Keyword::Deathtouch),
+        OracleActionKeyword::Defender => Ok(Keyword::Defender),
+        OracleActionKeyword::DoubleStrike => Ok(Keyword::DoubleStrike),
+        OracleActionKeyword::FirstStrike => Ok(Keyword::FirstStrike),
+        OracleActionKeyword::Flying => Ok(Keyword::Flying),
+        OracleActionKeyword::Haste => Ok(Keyword::Haste),
+        OracleActionKeyword::Hexproof => Ok(Keyword::Hexproof),
+        OracleActionKeyword::Indestructible => Ok(Keyword::Indestructible),
+        OracleActionKeyword::Lifelink => Ok(Keyword::Lifelink),
+        OracleActionKeyword::Menace => Ok(Keyword::Menace),
+        OracleActionKeyword::Reach => Ok(Keyword::Reach),
+        OracleActionKeyword::Trample => Ok(Keyword::Trample),
+        OracleActionKeyword::Vigilance => Ok(Keyword::Vigilance),
+        OracleActionKeyword::Flash
+        | OracleActionKeyword::Infect
+        | OracleActionKeyword::Ward
+        | OracleActionKeyword::Wither => Err(ExecutionError::Adapter(
+            "oracle action keyword has no exact bounded projection".into(),
+        )),
+    }
+}
+
+fn oracle_turn_step(step: &Step) -> (OracleTurnPhase, OracleTurnStep) {
+    match step {
+        Step::Upkeep => (OracleTurnPhase::Beginning, OracleTurnStep::Upkeep),
+        Step::DrawStep => (OracleTurnPhase::Beginning, OracleTurnStep::Draw),
+        Step::FirstMainPhase => (OracleTurnPhase::PrecombatMain, OracleTurnStep::Draw),
+        Step::PostcombatMainPhase => (OracleTurnPhase::PostcombatMain, OracleTurnStep::Draw),
+        Step::EndStep => (OracleTurnPhase::Ending, OracleTurnStep::End),
+        Step::Combat => (OracleTurnPhase::Combat, OracleTurnStep::BeginningOfCombat),
+        Step::UntapStep => (OracleTurnPhase::Beginning, OracleTurnStep::Untap),
+    }
+}
+
+fn oracle_ability_zone(zone: Zone) -> OracleAbilityZone {
+    match zone {
+        Zone::Library => OracleAbilityZone::Library,
+        Zone::Hand => OracleAbilityZone::Hand,
+        Zone::Battlefield => OracleAbilityZone::Battlefield,
+        Zone::Graveyard => OracleAbilityZone::Graveyard,
+        Zone::Exile => OracleAbilityZone::Exile,
+        Zone::Command => OracleAbilityZone::Command,
+        Zone::Stack => OracleAbilityZone::Stack,
+        Zone::Merged => unreachable!("merged components are not independent objects"),
+    }
+}
+
+fn oracle_trigger_snapshot(
+    world: &OracleActionWorldState,
+    object_id: ObjectId,
+    zone_before: OracleAbilityZone,
+    zone_after: OracleAbilityZone,
+) -> Result<TriggerObjectSnapshot, ExecutionError> {
+    let object = world
+        .objects
+        .values()
+        .find(|object| object.reference.object_id == object_id)
+        .ok_or(ExecutionError::MissingObject(object_id))?;
+    Ok(TriggerObjectSnapshot {
+        reference: object.reference,
+        owner: object.owner,
+        controller: object.controller,
+        zone_before,
+        zone_after,
+        card_types: object.card_types.clone(),
+        subtypes: object.subtypes.clone(),
+        tapped: object.tapped,
+        attachments: BTreeSet::new(),
+    })
+}
+
+fn oracle_ability_trigger_event(
+    world: &OracleActionWorldState,
+    context: &ExecutionContext,
+    envelope: &OracleParsedAbilityEnvelope,
+) -> Result<OracleAbilityTriggerEvent, ExecutionError> {
+    let ActionWindow::Triggered(event) = &context.window else {
+        return Err(ExecutionError::TimingMismatch);
+    };
+    let battlefield_snapshot = |id| {
+        oracle_trigger_snapshot(
+            world,
+            id,
+            OracleAbilityZone::Battlefield,
+            OracleAbilityZone::Battlefield,
+        )
+    };
+    match event {
+        TriggerEvent::ObjectEntered { object } => Ok(OracleAbilityTriggerEvent::ZoneChanged {
+            object: oracle_trigger_snapshot(
+                world,
+                *object,
+                OracleAbilityZone::Hand,
+                OracleAbilityZone::Battlefield,
+            )?,
+        }),
+        TriggerEvent::ObjectAttacked { object } => Ok(OracleAbilityTriggerEvent::Attacked {
+            object: battlefield_snapshot(*object)?,
+            alone: context.source_attacking_alone,
+            defender: context
+                .defending_player
+                .map(|player| OracleAttackDefender::Player(u16::from(player))),
+        }),
+        TriggerEvent::PlayerAction {
+            player,
+            action: PlayerActionKind::Attack,
+            ..
+        } => Ok(OracleAbilityTriggerEvent::PlayerAttacked {
+            player: u16::from(*player),
+        }),
+        TriggerEvent::LifeGained { player, amount } => Ok(OracleAbilityTriggerEvent::LifeGained {
+            player: u16::from(*player),
+            amount: *amount,
+        }),
+        TriggerEvent::CardDrawn {
+            player,
+            occurrence_this_turn,
+            ..
+        } => Ok(OracleAbilityTriggerEvent::CardDrawn {
+            player: u16::from(*player),
+            occurrence_this_turn: *occurrence_this_turn,
+        }),
+        TriggerEvent::ObjectEvent { object, event }
+            if matches!(
+                event,
+                ObjectEventKind::Dies
+                    | ObjectEventKind::PutIntoGraveyardFromBattlefield
+                    | ObjectEventKind::LeavesBattlefield
+            ) =>
+        {
+            let OracleParsedAbilityEnvelope::Triggered(trigger) = envelope else {
+                return Err(ExecutionError::TimingMismatch);
+            };
+            let zone_after = match (&trigger.predicate, event) {
+                (OracleTriggerPredicate::Dies { .. }, ObjectEventKind::Dies)
+                | (
+                    OracleTriggerPredicate::Dies { .. },
+                    ObjectEventKind::PutIntoGraveyardFromBattlefield,
+                ) => OracleAbilityZone::Graveyard,
+                (
+                    OracleTriggerPredicate::LeavesBattlefield { .. },
+                    ObjectEventKind::LeavesBattlefield,
+                ) => {
+                    let object = world
+                        .objects
+                        .values()
+                        .find(|candidate| candidate.reference.object_id == *object)
+                        .ok_or(ExecutionError::MissingObject(*object))?;
+                    oracle_ability_zone(bounded_oracle_action_zone(object.zone))
+                }
+                _ => {
+                    return Err(ExecutionError::Adapter(
+                        "object event does not match the compiled zone-change trigger".into(),
+                    ));
+                }
+            };
+            Ok(OracleAbilityTriggerEvent::ZoneChanged {
+                object: oracle_trigger_snapshot(
+                    world,
+                    *object,
+                    OracleAbilityZone::Battlefield,
+                    zone_after,
+                )?,
+            })
+        }
+        TriggerEvent::ObjectBlocked { blocker, blocked } => {
+            let OracleParsedAbilityEnvelope::Triggered(trigger) = envelope else {
+                return Err(ExecutionError::TimingMismatch);
+            };
+            let OracleTriggerPredicate::Blocks { became_blocked, .. } = &trigger.predicate else {
+                return Err(ExecutionError::Adapter(
+                    "block event does not match the compiled block trigger".into(),
+                ));
+            };
+            Ok(OracleAbilityTriggerEvent::Blocked {
+                object: battlefield_snapshot(if *became_blocked { *blocked } else { *blocker })?,
+                became_blocked: *became_blocked,
+            })
+        }
+        TriggerEvent::ObjectEvent {
+            object,
+            event: ObjectEventKind::BecomesTapped,
+        } => Ok(OracleAbilityTriggerEvent::OrientationChanged {
+            object: battlefield_snapshot(*object)?,
+            tapped: true,
+        }),
+        TriggerEvent::BecameTarget {
+            object,
+            controller,
+            source,
+        } => {
+            let cause_source = world
+                .objects
+                .values()
+                .find(|candidate| candidate.reference.object_id == *source)
+                .ok_or(ExecutionError::MissingObject(*source))?;
+            Ok(OracleAbilityTriggerEvent::BecameTarget {
+                object: battlefield_snapshot(*object)?,
+                cause: OracleTargetingCause {
+                    kind: if cause_source.zone == OracleActionZone::Stack {
+                        OracleTargetingCauseKind::Spell
+                    } else {
+                        OracleTargetingCauseKind::Ability
+                    },
+                    controller: u16::from(*controller),
+                    source: Some(cause_source.reference),
+                },
+            })
+        }
+        TriggerEvent::SpellCast { player, spell, .. } => Ok(OracleAbilityTriggerEvent::Spell {
+            spell: oracle_trigger_snapshot(
+                world,
+                *spell,
+                oracle_ability_zone(context.cast_from_zone.unwrap_or(Zone::Hand)),
+                OracleAbilityZone::Stack,
+            )?,
+            player: u16::from(*player),
+            mode: OracleSpellEventMode::Cast,
+            cast_from: context.cast_from_zone.map(oracle_ability_zone),
+        }),
+        TriggerEvent::CombatDamageToPlayer { source, player, .. } => {
+            Ok(OracleAbilityTriggerEvent::CombatDamage {
+                source: battlefield_snapshot(*source)?,
+                recipient: OracleCombatDamageRecipient::Player(u16::from(*player)),
+            })
+        }
+        TriggerEvent::DamageToPlayer {
+            source,
+            player,
+            amount,
+            combat,
+        } => Ok(OracleAbilityTriggerEvent::Damage {
+            source: battlefield_snapshot(*source)?,
+            recipient: OracleDamageRecipient::Player(u16::from(*player)),
+            amount: *amount,
+            combat: *combat,
+        }),
+        TriggerEvent::DamageToObject {
+            source,
+            object,
+            amount,
+            combat,
+        } => Ok(OracleAbilityTriggerEvent::Damage {
+            source: battlefield_snapshot(*source)?,
+            recipient: OracleDamageRecipient::Object(OracleActionObjectRef {
+                object_id: *object,
+                incarnation_id: OracleActionIncarnationId(*object),
+            }),
+            amount: *amount,
+            combat: *combat,
+        }),
+        TriggerEvent::BeginningOf {
+            step,
+            active_player,
+            ..
+        } => {
+            let (_, step) = oracle_turn_step(step);
+            Ok(OracleAbilityTriggerEvent::StepOrPhase {
+                boundary: OracleStepBoundary::Beginning,
+                phase: None,
+                step: Some(step),
+                active_player: u16::from(*active_player),
+            })
+        }
+        _ => Err(ExecutionError::Adapter(
+            "trigger event lacks exact ability-envelope evidence".into(),
+        )),
+    }
+}
+
+fn oracle_ability_mana_resource(source: &str) -> Option<OracleAbilityManaResource> {
+    match source {
+        "W" => Some(OracleAbilityManaResource::White),
+        "U" => Some(OracleAbilityManaResource::Blue),
+        "B" => Some(OracleAbilityManaResource::Black),
+        "R" => Some(OracleAbilityManaResource::Red),
+        "G" => Some(OracleAbilityManaResource::Green),
+        "C" => Some(OracleAbilityManaResource::Colorless),
+        _ => None,
+    }
+}
+
+fn prepare_oracle_ability_activation<S: OracleStateAdapter>(
+    state: &S,
+    runtime: &mut AbilityEnvelopeRuntimeState<OracleActionHostProjection>,
+    parsed: &OracleParsedAbilityEnvelope,
+    context: &ExecutionContext,
+) -> Result<(AbilityActivationPayment, BTreeMap<u64, Option<Color>>), ExecutionError> {
+    let player = state
+        .player(context.actor)
+        .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+    let resources = [
+        (Color::White, OracleAbilityManaResource::White),
+        (Color::Blue, OracleAbilityManaResource::Blue),
+        (Color::Black, OracleAbilityManaResource::Black),
+        (Color::Red, OracleAbilityManaResource::Red),
+        (Color::Green, OracleAbilityManaResource::Green),
+        (Color::Colorless, OracleAbilityManaResource::Colorless),
+    ];
+    let mut pool = BTreeMap::new();
+    let mut origins = BTreeMap::new();
+    let mut next_id = 1u64;
+    for (color, resource) in resources {
+        for _ in 0..player.mana.colored[color_index(color)] {
+            pool.insert(
+                next_id,
+                OracleAbilityManaUnit {
+                    id: next_id,
+                    resource,
+                    snow: false,
+                    spend_restrictions_satisfied: true,
+                },
+            );
+            origins.insert(next_id, Some(color));
+            next_id += 1;
+        }
+    }
+    for _ in 0..player.mana.unrestricted {
+        pool.insert(
+            next_id,
+            OracleAbilityManaUnit {
+                id: next_id,
+                resource: OracleAbilityManaResource::Colorless,
+                snow: false,
+                spend_restrictions_satisfied: true,
+            },
+        );
+        origins.insert(next_id, None);
+        next_id += 1;
+    }
+    let mut available = pool.values().copied().collect::<Vec<_>>();
+    let take_resource = |available: &mut Vec<OracleAbilityManaUnit>, resource| {
+        available
+            .iter()
+            .position(|unit| unit.resource == resource)
+            .map(|index| available.remove(index).id)
+    };
+    let take_any = |available: &mut Vec<OracleAbilityManaUnit>| {
+        (!available.is_empty()).then(|| available.remove(0).id)
+    };
+    let OracleParsedAbilityEnvelope::Activated(envelope) = parsed else {
+        return Err(ExecutionError::TimingMismatch);
+    };
+    let mut payment = AbilityActivationPayment::default();
+    for (cost_index, cost) in envelope.costs.iter().enumerate() {
+        match cost {
+            OracleActivationCost::Mana(cost) => {
+                for (symbol_index, symbol) in cost.symbols.iter().enumerate() {
+                    match symbol {
+                        OracleAbilityManaSymbol::Generic(amount) => {
+                            for _ in 0..*amount {
+                                payment.mana_units.push(take_any(&mut available).ok_or_else(
+                                    || ExecutionError::CostFailed {
+                                        index: cost_index,
+                                        reason: "insufficient generic mana".into(),
+                                    },
+                                )?);
+                            }
+                        }
+                        OracleAbilityManaSymbol::X => {
+                            payment.x_value = Some(context.x_value);
+                            for _ in 0..context.x_value {
+                                payment.mana_units.push(take_any(&mut available).ok_or_else(
+                                    || ExecutionError::CostFailed {
+                                        index: cost_index,
+                                        reason: "insufficient mana for X".into(),
+                                    },
+                                )?);
+                            }
+                        }
+                        OracleAbilityManaSymbol::White
+                        | OracleAbilityManaSymbol::Blue
+                        | OracleAbilityManaSymbol::Black
+                        | OracleAbilityManaSymbol::Red
+                        | OracleAbilityManaSymbol::Green
+                        | OracleAbilityManaSymbol::Colorless => {
+                            let resource = match symbol {
+                                OracleAbilityManaSymbol::White => OracleAbilityManaResource::White,
+                                OracleAbilityManaSymbol::Blue => OracleAbilityManaResource::Blue,
+                                OracleAbilityManaSymbol::Black => OracleAbilityManaResource::Black,
+                                OracleAbilityManaSymbol::Red => OracleAbilityManaResource::Red,
+                                OracleAbilityManaSymbol::Green => OracleAbilityManaResource::Green,
+                                _ => OracleAbilityManaResource::Colorless,
+                            };
+                            payment.mana_units.push(
+                                take_resource(&mut available, resource).ok_or_else(|| {
+                                    ExecutionError::CostFailed {
+                                        index: cost_index,
+                                        reason: "required colored mana is unavailable".into(),
+                                    }
+                                })?,
+                            );
+                        }
+                        OracleAbilityManaSymbol::Hybrid(first, second) => {
+                            let first_resource = oracle_ability_mana_resource(first);
+                            let second_resource = oracle_ability_mana_resource(second);
+                            let selected = first_resource
+                                .and_then(|resource| take_resource(&mut available, resource))
+                                .or_else(|| {
+                                    second_resource.and_then(|resource| {
+                                        take_resource(&mut available, resource)
+                                    })
+                                });
+                            if let Some(selected) = selected {
+                                payment.mana_units.push(selected);
+                            } else if first == "2" || second == "2" {
+                                for _ in 0..2 {
+                                    payment.mana_units.push(take_any(&mut available).ok_or_else(
+                                        || ExecutionError::CostFailed {
+                                            index: cost_index,
+                                            reason: "hybrid mana is unavailable".into(),
+                                        },
+                                    )?);
+                                }
+                            } else {
+                                return Err(ExecutionError::CostFailed {
+                                    index: cost_index,
+                                    reason: "hybrid mana is unavailable".into(),
+                                });
+                            }
+                        }
+                        OracleAbilityManaSymbol::Phyrexian(color) => {
+                            if let Some(selected) = oracle_ability_mana_resource(color)
+                                .and_then(|resource| take_resource(&mut available, resource))
+                            {
+                                payment.mana_units.push(selected);
+                            } else {
+                                payment.phyrexian_life_symbol_indices.insert(symbol_index);
+                            }
+                        }
+                        OracleAbilityManaSymbol::Snow => {
+                            return Err(ExecutionError::CostFailed {
+                                index: cost_index,
+                                reason: "snow mana evidence is unavailable".into(),
+                            });
+                        }
+                    }
+                }
+            }
+            OracleActivationCost::Sacrifice(object_cost) => {
+                if matches!(
+                    object_cost.amount,
+                    crate::oracle_ability_envelope_runtime::CostAmount::X
+                ) {
+                    payment.x_value = Some(context.x_value);
+                }
+                if let Some(objects) = context.object_choices.get(&(cost_index as u8)) {
+                    payment.object_selections.insert(
+                        cost_index,
+                        objects
+                            .iter()
+                            .map(|id| OracleActionObjectRef {
+                                object_id: *id,
+                                incarnation_id: OracleActionIncarnationId(*id),
+                            })
+                            .collect(),
+                    );
+                }
+            }
+            OracleActivationCost::TapObjects { amount, .. } => {
+                if matches!(
+                    amount,
+                    crate::oracle_ability_envelope_runtime::CostAmount::X
+                ) {
+                    payment.x_value = Some(context.x_value);
+                }
+                if let Some(objects) = context.object_choices.get(&(cost_index as u8)) {
+                    payment.object_selections.insert(
+                        cost_index,
+                        objects
+                            .iter()
+                            .map(|id| OracleActionObjectRef {
+                                object_id: *id,
+                                incarnation_id: OracleActionIncarnationId(*id),
+                            })
+                            .collect(),
+                    );
+                }
+            }
+            OracleActivationCost::Discard(card) | OracleActivationCost::Exile(card) => {
+                if matches!(
+                    card.amount,
+                    crate::oracle_ability_envelope_runtime::CostAmount::X
+                ) {
+                    payment.x_value = Some(context.x_value);
+                }
+                if let Some(objects) = context.object_choices.get(&(cost_index as u8)) {
+                    payment.card_selections.insert(
+                        cost_index,
+                        objects
+                            .iter()
+                            .map(|id| OracleActionObjectRef {
+                                object_id: *id,
+                                incarnation_id: OracleActionIncarnationId(*id),
+                            })
+                            .collect(),
+                    );
+                }
+                if card.random {
+                    payment.random_selection_proven.insert(cost_index);
+                }
+            }
+            OracleActivationCost::RemoveCounters { amount, .. } => {
+                if matches!(
+                    amount,
+                    crate::oracle_ability_envelope_runtime::CostAmount::X
+                ) {
+                    payment.x_value = Some(context.x_value);
+                }
+            }
+            OracleActivationCost::TapSource
+            | OracleActivationCost::UntapSource
+            | OracleActivationCost::PayLife(_) => {}
+        }
+    }
+    runtime.mana_pools.insert(u16::from(context.actor), pool);
+    runtime.tap_cost_legality_complete = true;
+    if state.object(context.source).is_some_and(|source| {
+        source.prepared || source.characteristics().keywords.contains(&Keyword::Haste)
+    }) {
+        runtime
+            .tap_symbol_eligible_creatures
+            .insert(OracleActionObjectRef {
+                object_id: context.source,
+                incarnation_id: OracleActionIncarnationId(context.source),
+            });
+    }
+    Ok((payment, origins))
+}
+
+fn apply_oracle_ability_envelope_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &OracleAbilityEnvelopeProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let world = synchronized_oracle_action_world(state)?;
+    let projection = OracleActionHostProjection { world };
+    let mut runtime = AbilityEnvelopeRuntimeState::new(projection);
+    runtime.active_player = u16::from(context.active_player);
+    runtime.priority_player = u16::from(context.actor);
+    if let Some(step) = &context.current_step {
+        let (phase, step) = oracle_turn_step(step);
+        runtime.phase = phase;
+        runtime.step = Some(step);
+    }
+    runtime.attackers_declared = context.attackers_declared;
+    runtime.stack_empty = context.sorcery_timing;
+    let source = OracleActionObjectRef {
+        object_id: context.source,
+        incarnation_id: OracleActionIncarnationId(context.source),
+    };
+    if context.card_was_kicked {
+        runtime.kicked_sources.insert(source);
+    }
+    let (pending_id, mana_origins) = match program.envelope() {
+        OracleParsedAbilityEnvelope::Triggered(_) => {
+            let event = oracle_ability_trigger_event(
+                runtime.action_state.action_world(),
+                context,
+                program.envelope(),
+            )?;
+            let trigger = begin_ability_trigger(
+                &mut runtime,
+                program,
+                u16::from(context.actor),
+                source,
+                &event,
+            )
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+            (trigger.pending.id, BTreeMap::new())
+        }
+        OracleParsedAbilityEnvelope::Activated(_) => {
+            let (payment, origins) = prepare_oracle_ability_activation(
+                state,
+                &mut runtime,
+                program.envelope(),
+                context,
+            )?;
+            let activation = begin_ability_activation(
+                &mut runtime,
+                program,
+                u16::from(context.actor),
+                source,
+                &payment,
+            )
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+            (activation.pending.id, origins)
+        }
+    };
+    let bindings = oracle_action_bindings(program.body(), state, context);
+    resolve_pending_ability(&mut runtime, program, pending_id, &bindings)
+        .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    let remaining_mana = runtime
+        .mana_pools
+        .get(&u16::from(context.actor))
+        .cloned()
+        .unwrap_or_default();
+    commit_oracle_action_world(state, runtime.action_state.world)?;
+    if !mana_origins.is_empty() {
+        let mut player = state
+            .player(context.actor)
+            .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+        for (id, origin) in mana_origins {
+            if remaining_mana.contains_key(&id) {
+                continue;
+            }
+            match origin {
+                Some(color) => {
+                    let amount = &mut player.mana.colored[color_index(color)];
+                    *amount = amount
+                        .checked_sub(1)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                }
+                None => {
+                    player.mana.unrestricted = player
+                        .mana
+                        .unrestricted
+                        .checked_sub(1)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                }
+            }
+        }
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+    }
+    state.record_mutation(format!(
+        "oracle_ability_envelope:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn apply_linked_oracle_ability_envelope_program<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &crate::bounded_oracle_runtime::LinkedOracleAbilityEnvelopeProgram,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !program.production_adapter_connected() {
+        return Err(ExecutionError::Adapter(
+            "linked ability envelope has no complete production contract".into(),
+        ));
+    }
+    let world = synchronized_oracle_action_world(state)?;
+    let projection = OracleActionHostProjection { world };
+    let mut runtime = AbilityEnvelopeRuntimeState::new(projection);
+    runtime.active_player = u16::from(context.active_player);
+    runtime.priority_player = u16::from(context.actor);
+    if let Some(step) = &context.current_step {
+        let (phase, step) = oracle_turn_step(step);
+        runtime.phase = phase;
+        runtime.step = Some(step);
+    }
+    runtime.attackers_declared = context.attackers_declared;
+    runtime.stack_empty = context.sorcery_timing;
+    let source = OracleActionObjectRef {
+        object_id: context.source,
+        incarnation_id: OracleActionIncarnationId(context.source),
+    };
+    if context.card_was_kicked {
+        runtime.kicked_sources.insert(source);
+    }
+    let envelope = program.envelope();
+    let mana_origins = match envelope.envelope() {
+        OracleParsedAbilityEnvelope::Triggered(_) => {
+            let event = oracle_ability_trigger_event(
+                runtime.action_state.action_world(),
+                context,
+                program.envelope().envelope(),
+            )?;
+            begin_typed_ability_trigger(
+                &mut runtime,
+                envelope.envelope(),
+                program.semantic_digest(),
+                u16::from(context.actor),
+                source,
+                &event,
+            )
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+            BTreeMap::new()
+        }
+        OracleParsedAbilityEnvelope::Activated(_) => {
+            let (payment, origins) = prepare_oracle_ability_activation(
+                state,
+                &mut runtime,
+                envelope.envelope(),
+                context,
+            )?;
+            begin_typed_ability_activation(
+                &mut runtime,
+                envelope.envelope(),
+                program.semantic_digest(),
+                u16::from(context.actor),
+                source,
+                &payment,
+            )
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+            origins
+        }
+    };
+    let remaining_mana = runtime
+        .mana_pools
+        .get(&u16::from(context.actor))
+        .cloned()
+        .unwrap_or_default();
+    commit_oracle_action_world(state, runtime.action_state.world)?;
+    if !mana_origins.is_empty() {
+        let mut player = state
+            .player(context.actor)
+            .ok_or(ExecutionError::MissingPlayer(context.actor))?;
+        for (id, origin) in mana_origins {
+            if remaining_mana.contains_key(&id) {
+                continue;
+            }
+            match origin {
+                Some(color) => {
+                    let amount = &mut player.mana.colored[color_index(color)];
+                    *amount = amount
+                        .checked_sub(1)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                }
+                None => {
+                    player.mana.unrestricted = player
+                        .mana
+                        .unrestricted
+                        .checked_sub(1)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                }
+            }
+        }
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+    }
+
+    let mut body_context = context.clone();
+    body_context.window = ActionWindow::SpellResolution;
+    body_context.executing_clause_address = Some(program.body().address());
+    execute_linked_ability_body(state, program.body(), &body_context)?;
+    state.record_mutation(format!(
+        "oracle_ability_envelope_linked:{}:{}",
+        context.source,
+        program.semantic_digest()
+    ));
+    Ok(())
+}
+
+fn execute_linked_ability_body<S: OracleStateAdapter>(
+    state: &mut S,
+    body: &BoundedOracleClause,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    if !clause_has_executable_contract(body)
+        || !matches!(
+            body.timing(),
+            Timing::SpellResolution | Timing::TypedStandaloneProgram
+        )
+        || body.activation_restriction().is_some()
+    {
+        return Err(ExecutionError::Adapter(
+            "linked ability body has no complete resolution contract".into(),
+        ));
+    }
+    if !timing_matches(state, body.timing(), context)? {
+        return Err(ExecutionError::TimingMismatch);
+    }
+    validate_targets(state, body.targets(), context)?;
+    for (index, condition) in body.conditions().iter().enumerate() {
+        if !condition_holds(state, condition, context)? {
+            return Err(ExecutionError::ConditionFailed { index });
+        }
+    }
+    for (index, cost) in body.costs().iter().enumerate() {
+        pay_cost(state, cost, context).map_err(|error| match error {
+            ExecutionError::CostFailed { .. } => error,
+            _ => ExecutionError::CostFailed {
+                index,
+                reason: error.to_string(),
+            },
+        })?;
+    }
+    for effect in body.effects() {
+        apply_effect(state, effect, context)?;
+    }
+    Ok(())
+}
+
+fn regeneration_zone(zone: Zone) -> RegenerationZone {
+    match zone {
+        Zone::Library => RegenerationZone::Library,
+        Zone::Hand => RegenerationZone::Hand,
+        Zone::Battlefield => RegenerationZone::Battlefield,
+        Zone::Graveyard => RegenerationZone::Graveyard,
+        Zone::Exile => RegenerationZone::Exile,
+        Zone::Stack => RegenerationZone::Stack,
+        Zone::Command => RegenerationZone::Command,
+        Zone::Merged => unreachable!("merged components are not independent objects"),
+    }
+}
+
+fn bounded_regeneration_zone(zone: RegenerationZone) -> Zone {
+    match zone {
+        RegenerationZone::Library => Zone::Library,
+        RegenerationZone::Hand => Zone::Hand,
+        RegenerationZone::Battlefield => Zone::Battlefield,
+        RegenerationZone::Graveyard => Zone::Graveyard,
+        RegenerationZone::Exile => Zone::Exile,
+        RegenerationZone::Stack => Zone::Stack,
+        RegenerationZone::Command => Zone::Command,
+    }
+}
+
+fn regeneration_color(color: Color) -> RegenerationManaColor {
+    match color {
+        Color::White => RegenerationManaColor::White,
+        Color::Blue => RegenerationManaColor::Blue,
+        Color::Black => RegenerationManaColor::Black,
+        Color::Red => RegenerationManaColor::Red,
+        Color::Green => RegenerationManaColor::Green,
+        Color::Colorless => RegenerationManaColor::Colorless,
+    }
+}
+
+fn regeneration_characteristics(
+    characteristics: &ObjectCharacteristics,
+) -> RegenerationCharacteristics {
+    RegenerationCharacteristics {
+        name: characteristics.names.first().cloned(),
+        card_types: characteristics
+            .card_types
+            .iter()
+            .filter_map(|kind| match kind {
+                CardType::Artifact => Some(RegenerationCardType::Artifact),
+                CardType::Battle => Some(RegenerationCardType::Battle),
+                CardType::Creature => Some(RegenerationCardType::Creature),
+                CardType::Enchantment => Some(RegenerationCardType::Enchantment),
+                CardType::Instant => Some(RegenerationCardType::Instant),
+                CardType::Land => Some(RegenerationCardType::Land),
+                CardType::Planeswalker => Some(RegenerationCardType::Planeswalker),
+                CardType::Sorcery => Some(RegenerationCardType::Sorcery),
+                CardType::Spell | CardType::Permanent => None,
+            })
+            .collect(),
+        supertypes: characteristics
+            .supertypes
+            .iter()
+            .map(|kind| format!("{kind:?}").to_ascii_lowercase())
+            .collect(),
+        subtypes: characteristics.subtypes.iter().cloned().collect(),
+        colors: characteristics
+            .colors
+            .iter()
+            .copied()
+            .map(regeneration_color)
+            .collect(),
+        mana_value: characteristics.mana_value,
+        power: i32::try_from(characteristics.power).ok(),
+        toughness: i32::try_from(characteristics.toughness).ok(),
+        oracle_text: None,
+    }
+}
+
+fn regeneration_combat_keyword(keyword: &Keyword) -> Option<RegenerationCombatKeyword> {
+    match keyword {
+        Keyword::Deathtouch => Some(RegenerationCombatKeyword::Deathtouch),
+        Keyword::Defender => Some(RegenerationCombatKeyword::Defender),
+        Keyword::DoubleStrike => Some(RegenerationCombatKeyword::DoubleStrike),
+        Keyword::FirstStrike => Some(RegenerationCombatKeyword::FirstStrike),
+        Keyword::Flying => Some(RegenerationCombatKeyword::Flying),
+        Keyword::Haste => Some(RegenerationCombatKeyword::Haste),
+        Keyword::Indestructible => Some(RegenerationCombatKeyword::Indestructible),
+        Keyword::Lifelink => Some(RegenerationCombatKeyword::Lifelink),
+        Keyword::Menace => Some(RegenerationCombatKeyword::Menace),
+        Keyword::Reach => Some(RegenerationCombatKeyword::Reach),
+        Keyword::Shadow => Some(RegenerationCombatKeyword::Shadow),
+        Keyword::Trample => Some(RegenerationCombatKeyword::Trample),
+        Keyword::Vigilance => Some(RegenerationCombatKeyword::Vigilance),
+        Keyword::Hexproof | Keyword::Shroud | Keyword::Ward(_) => None,
+    }
+}
+
+pub(crate) fn synchronized_regeneration_runtime_state<S: OracleStateAdapter>(
+    state: &S,
+) -> Result<RegenerationRuntimeState, ExecutionError> {
+    let mut runtime = state.regeneration_runtime_state();
+    let prior_game = runtime.game.clone();
+    let mut game = crate::keyword_rules_runtime::KeywordGameState::default();
+    for player_id in state.player_ids() {
+        let player = state
+            .player(player_id)
+            .ok_or(ExecutionError::MissingPlayer(player_id))?;
+        let mut projected = RegenerationPlayer::new(
+            RegenerationPlayerId(u16::from(player_id)),
+            i32::try_from(player.life).unwrap_or(if player.life.is_negative() {
+                i32::MIN
+            } else {
+                i32::MAX
+            }),
+        );
+        let mut expiring_by_color = [0u32; 6];
+        for unit in &player.expiring_mana {
+            if unit.id & REGENERATION_SYNTHETIC_MANA_TAG != 0 {
+                return Err(ExecutionError::Adapter(
+                    "host mana identity collides with regeneration projection namespace".into(),
+                ));
+            }
+            expiring_by_color[color_index(unit.color)] =
+                expiring_by_color[color_index(unit.color)].saturating_add(1);
+            projected.mana_pool.push(RegenerationManaUnit {
+                id: RegenerationManaUnitId(unit.id),
+                color: regeneration_color(unit.color),
+                from_snow_source: state.object(unit.source_identity).is_some_and(|source| {
+                    source
+                        .characteristics()
+                        .supertypes
+                        .contains(&crate::bounded_oracle_runtime::Supertype::Snow)
+                }),
+            });
+        }
+        for (color_index, amount) in player.mana.colored.iter().copied().enumerate() {
+            let untracked = amount.saturating_sub(expiring_by_color[color_index]);
+            for ordinal in 0..untracked {
+                projected.mana_pool.push(RegenerationManaUnit {
+                    id: RegenerationManaUnitId(regeneration_synthetic_mana_id(
+                        player_id,
+                        color_index as u8,
+                        ordinal,
+                    )),
+                    color: regeneration_mana_color_from_index(color_index),
+                    from_snow_source: false,
+                });
+            }
+        }
+        for ordinal in 0..player.mana.unrestricted {
+            projected.mana_pool.push(RegenerationManaUnit {
+                id: RegenerationManaUnitId(regeneration_synthetic_mana_id(
+                    player_id,
+                    REGENERATION_UNRESTRICTED_MANA_CLASS,
+                    ordinal,
+                )),
+                color: RegenerationManaColor::Colorless,
+                from_snow_source: false,
+            });
+        }
+        game.add_player(projected)
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    }
+    for object_id in state.object_ids() {
+        let object = state
+            .object(object_id)
+            .ok_or(ExecutionError::MissingObject(object_id))?;
+        let mut projected = RegenerationObject::new(
+            RegenerationObjectId(object.id),
+            RegenerationPlayerId(u16::from(object.owner)),
+            RegenerationPlayerId(u16::from(object.controller)),
+            regeneration_zone(object.zone),
+            regeneration_characteristics(object.characteristics()),
+        );
+        projected.is_token = object.token;
+        projected.tapped = object.tapped;
+        projected.attacking = object.attacking;
+        projected.blocking = object.blocking;
+        projected.face_down = object.face_down;
+        projected.damage_marked = object.counters.get("damage").copied().unwrap_or(0);
+        projected.counters = object.counters.clone();
+        projected.combat_keywords = object
+            .characteristics()
+            .keywords
+            .iter()
+            .filter_map(regeneration_combat_keyword)
+            .collect();
+        projected.has_hexproof = object
+            .characteristics()
+            .keywords
+            .contains(&Keyword::Hexproof);
+        projected.has_shroud = object.characteristics().keywords.contains(&Keyword::Shroud);
+        if let Some(prior) = prior_game.objects.get(&RegenerationObjectId(object_id)) {
+            projected.regeneration_shields = prior.regeneration_shields;
+            projected.static_regeneration = prior.static_regeneration;
+        }
+        game.insert_object(projected)
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    }
+    runtime.game = game;
+    for object_id in state.object_ids() {
+        runtime
+            .register_incarnation(
+                RegenerationObjectId(object_id),
+                RegenerationIncarnationId(object_id),
+            )
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    }
+    Ok(runtime)
+}
+
+pub(crate) fn commit_regeneration_runtime_state<S: OracleStateAdapter>(
+    state: &mut S,
+    runtime: RegenerationRuntimeState,
+) -> Result<(), ExecutionError> {
+    for projected in runtime.game.players.values() {
+        let player_id = u8::try_from(projected.id.0)
+            .map_err(|_| ExecutionError::Adapter("regeneration player id overflow".into()))?;
+        let mut player = state
+            .player(player_id)
+            .ok_or(ExecutionError::MissingPlayer(player_id))?;
+        player.life = i64::from(projected.life);
+        player.mana = ManaPool::default();
+        let remaining_ids = projected
+            .mana_pool
+            .iter()
+            .map(|unit| unit.id.0)
+            .collect::<BTreeSet<_>>();
+        player
+            .expiring_mana
+            .retain(|unit| remaining_ids.contains(&unit.id));
+        for unit in &projected.mana_pool {
+            if regeneration_mana_id_class(unit.id.0) == Some(REGENERATION_UNRESTRICTED_MANA_CLASS) {
+                player.mana.unrestricted = player.mana.unrestricted.saturating_add(1);
+            } else {
+                let index = regeneration_mana_color_index(unit.color);
+                player.mana.colored[index] = player.mana.colored[index].saturating_add(1);
+            }
+        }
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+    }
+    for projected in runtime.game.objects.values() {
+        let object_id = projected.id.0;
+        let Some(mut object) = state.object(object_id) else {
+            continue;
+        };
+        object.zone = bounded_regeneration_zone(projected.zone);
+        object.tapped = projected.tapped;
+        object.attacking = projected.attacking;
+        object.blocking = projected.blocking;
+        object.counters = projected.counters.clone();
+        if projected.damage_marked == 0 {
+            object.counters.remove("damage");
+        } else {
+            object
+                .counters
+                .insert("damage".into(), projected.damage_marked);
+        }
+        state.put_object(object).map_err(ExecutionError::Adapter)?;
+    }
+    state
+        .put_regeneration_runtime_state(runtime)
+        .map_err(ExecutionError::Adapter)
+}
+
+const REGENERATION_SYNTHETIC_MANA_TAG: u64 = 1 << 63;
+const REGENERATION_UNRESTRICTED_MANA_CLASS: u8 = 6;
+
+fn regeneration_synthetic_mana_id(player: PlayerId, class: u8, ordinal: u32) -> u64 {
+    REGENERATION_SYNTHETIC_MANA_TAG
+        | (u64::from(player) << 48)
+        | (u64::from(class) << 40)
+        | u64::from(ordinal)
+}
+
+fn regeneration_mana_id_class(id: u64) -> Option<u8> {
+    (id & REGENERATION_SYNTHETIC_MANA_TAG != 0).then_some(((id >> 40) & 0xff) as u8)
+}
+
+fn regeneration_mana_color_from_index(index: usize) -> RegenerationManaColor {
+    match index {
+        0 => RegenerationManaColor::White,
+        1 => RegenerationManaColor::Blue,
+        2 => RegenerationManaColor::Black,
+        3 => RegenerationManaColor::Red,
+        4 => RegenerationManaColor::Green,
+        _ => RegenerationManaColor::Colorless,
+    }
+}
+
+fn regeneration_mana_color_index(color: RegenerationManaColor) -> usize {
+    match color {
+        RegenerationManaColor::White => 0,
+        RegenerationManaColor::Blue => 1,
+        RegenerationManaColor::Black => 2,
+        RegenerationManaColor::Red => 3,
+        RegenerationManaColor::Green => 4,
+        RegenerationManaColor::Colorless => 5,
+    }
+}
+
+fn common_action_error(
+    error: crate::common_action_procedure_runtime::CommonActionRuntimeError,
+) -> ExecutionError {
+    ExecutionError::Adapter(error.to_string())
+}
+
+fn common_object_ref(object_id: ObjectId) -> CommonObjectRef {
+    CommonObjectRef {
+        object_id,
+        incarnation_id: object_id,
+    }
+}
+
+fn common_card_types(characteristics: &ObjectCharacteristics) -> BTreeSet<CommonCardType> {
+    characteristics
+        .card_types
+        .iter()
+        .filter_map(|kind| match kind {
+            CardType::Artifact => Some(CommonCardType::Artifact),
+            CardType::Creature => Some(CommonCardType::Creature),
+            CardType::Enchantment => Some(CommonCardType::Enchantment),
+            CardType::Instant => Some(CommonCardType::Instant),
+            CardType::Land => Some(CommonCardType::Land),
+            CardType::Planeswalker => Some(CommonCardType::Planeswalker),
+            CardType::Sorcery => Some(CommonCardType::Sorcery),
+            CardType::Battle | CardType::Permanent | CardType::Spell => None,
+        })
+        .collect()
+}
+
+fn common_zone(zone: Zone) -> Option<CommonZone> {
+    match zone {
+        Zone::Library => Some(CommonZone::Library),
+        Zone::Hand => Some(CommonZone::Hand),
+        Zone::Battlefield => Some(CommonZone::Battlefield),
+        Zone::Graveyard => Some(CommonZone::Graveyard),
+        Zone::Exile => Some(CommonZone::Exile),
+        Zone::Command => Some(CommonZone::Command),
+        Zone::Stack => None,
+        Zone::Merged => None,
+    }
+}
+
+fn bounded_zone(zone: CommonZone) -> Option<Zone> {
+    match zone {
+        CommonZone::Library => Some(Zone::Library),
+        CommonZone::Hand => Some(Zone::Hand),
+        CommonZone::Battlefield => Some(Zone::Battlefield),
+        CommonZone::Graveyard => Some(Zone::Graveyard),
+        CommonZone::Exile => Some(Zone::Exile),
+        CommonZone::Command => Some(Zone::Command),
+        CommonZone::AttractionDeck | CommonZone::OutsideGame => None,
+    }
+}
+
+pub(crate) fn synchronized_common_procedure_state<S: OracleStateAdapter>(
+    state: &S,
+) -> Result<CommonProcedureState, ExecutionError> {
+    let mut procedures = state.common_procedure_state();
+    let prior_players = procedures.players.clone();
+    procedures.players.clear();
+    procedures.permanents.clear();
+    procedures.cards.retain(|_, card| {
+        matches!(
+            card.zone,
+            CommonZone::AttractionDeck | CommonZone::OutsideGame
+        )
+    });
+    let mut maximum_object_id = 0;
+    for player_id in state.player_ids() {
+        let player = state
+            .player(player_id)
+            .ok_or(ExecutionError::MissingPlayer(player_id))?;
+        let prior = prior_players.get(&u16::from(player_id));
+        let mut procedure_player = PlayerProcedureState {
+            energy: prior.map_or(0, |value| value.energy),
+            library: player.library.iter().rev().copied().collect(),
+            hand: BTreeSet::new(),
+            graveyard: BTreeSet::new(),
+            outside_game: prior.map_or_else(BTreeSet::new, |value| value.outside_game.clone()),
+            counters: player.counters,
+            ring_temptation_count: prior.map_or(0, |value| value.ring_temptation_count),
+            ring_bearer: prior.and_then(|value| value.ring_bearer),
+            attraction_deck: prior.and_then(|value| value.attraction_deck.clone()),
+        };
+        for object_id in state.object_ids() {
+            let Some(object) = state.object(object_id) else {
+                continue;
+            };
+            if object.owner != player_id {
+                continue;
+            }
+            match object.zone {
+                Zone::Hand => {
+                    procedure_player.hand.insert(object_id);
+                }
+                Zone::Graveyard => {
+                    procedure_player.graveyard.insert(object_id);
+                }
+                _ => {}
+            }
+        }
+        procedures
+            .players
+            .insert(u16::from(player_id), procedure_player);
+    }
+    for object_id in state.object_ids() {
+        let object = state
+            .object(object_id)
+            .ok_or(ExecutionError::MissingObject(object_id))?;
+        maximum_object_id = maximum_object_id.max(object_id);
+        let characteristics = object.characteristics();
+        if let Some(zone) = common_zone(object.zone) {
+            procedures.cards.insert(
+                object_id,
+                CommonCardRecord {
+                    card_id: object_id,
+                    owner: u16::from(object.owner),
+                    zone,
+                    card_types: common_card_types(characteristics),
+                    subtypes: characteristics.subtypes.iter().cloned().collect(),
+                    public_identity: object.zone != Zone::Library,
+                },
+            );
+            procedures
+                .card_mana_values
+                .insert(object_id, characteristics.mana_value);
+        }
+        if object.zone == Zone::Battlefield {
+            let reference = common_object_ref(object_id);
+            procedures.permanents.insert(
+                reference,
+                CommonPermanentRecord {
+                    object: reference,
+                    card_id: (!object.token).then_some(object_id),
+                    owner: u16::from(object.owner),
+                    controller: u16::from(object.controller),
+                    card_types: common_card_types(characteristics),
+                    subtypes: characteristics.subtypes.iter().cloned().collect(),
+                    counters: object.counters,
+                    is_token: object.token,
+                },
+            );
+        }
+    }
+    procedures.next_object_id = procedures
+        .next_object_id
+        .max(maximum_object_id.saturating_add(1));
+    procedures.public_players_complete = true;
+    procedures.battlefield_complete = true;
+    procedures.counter_state_complete = true;
+    Ok(procedures)
+}
+
+fn commit_common_procedure_state<S: OracleStateAdapter>(
+    state: &mut S,
+    procedures: CommonProcedureState,
+) -> Result<(), ExecutionError> {
+    for (common_player_id, common_player) in &procedures.players {
+        let player_id = u8::try_from(*common_player_id).map_err(|_| {
+            ExecutionError::Adapter("common procedure player id exceeds runtime range".into())
+        })?;
+        let mut player = state
+            .player(player_id)
+            .ok_or(ExecutionError::MissingPlayer(player_id))?;
+        player.library = common_player.library.iter().rev().copied().collect();
+        player.counters = common_player.counters.clone();
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+    }
+    for card in procedures.cards.values() {
+        let Some(zone) = bounded_zone(card.zone) else {
+            continue;
+        };
+        if let Some(mut object) = state.object(card.card_id) {
+            object.zone = zone;
+            state.put_object(object).map_err(ExecutionError::Adapter)?;
+        }
+    }
+    for permanent in procedures.permanents.values() {
+        let player_id = u8::try_from(permanent.controller).map_err(|_| {
+            ExecutionError::Adapter("common procedure controller exceeds runtime range".into())
+        })?;
+        if let Some(mut object) = state.object(permanent.object.object_id) {
+            object.zone = Zone::Battlefield;
+            object.controller = player_id;
+            object.counters = permanent.counters.clone();
+            object.characteristics_mut().subtypes = permanent.subtypes.iter().cloned().collect();
+            state.put_object(object).map_err(ExecutionError::Adapter)?;
+            continue;
+        }
+        let owner = u8::try_from(permanent.owner).map_err(|_| {
+            ExecutionError::Adapter("common procedure owner exceeds runtime range".into())
+        })?;
+        let card_types = permanent
+            .card_types
+            .iter()
+            .map(|kind| match kind {
+                CommonCardType::Artifact => CardType::Artifact,
+                CommonCardType::Creature => CardType::Creature,
+                CommonCardType::Dungeon => CardType::Permanent,
+                CommonCardType::Enchantment => CardType::Enchantment,
+                CommonCardType::Instant => CardType::Instant,
+                CommonCardType::Land => CardType::Land,
+                CommonCardType::Planeswalker => CardType::Planeswalker,
+                CommonCardType::Sorcery => CardType::Sorcery,
+            })
+            .collect();
+        state
+            .insert_physical_object(PhysicalObject {
+                id: permanent.object.object_id,
+                origin_id: permanent.object.object_id,
+                copy_of: None,
+                owner,
+                controller: player_id,
+                zone: Zone::Battlefield,
+                token: permanent.is_token,
+                tapped: false,
+                attacking: false,
+                blocking: false,
+                prepared: false,
+                face_down: false,
+                active_face: 0,
+                class_level: 0,
+                front: ObjectCharacteristics {
+                    names: Vec::new(),
+                    card_types,
+                    supertypes: Vec::new(),
+                    subtypes: permanent.subtypes.iter().cloned().collect(),
+                    colors: Vec::new(),
+                    mana_value: 0,
+                    power: 0,
+                    toughness: 0,
+                    keywords: Vec::new(),
+                    abilities: Vec::new(),
+                },
+                back: None,
+                counters: permanent.counters.clone(),
+            })
+            .map_err(ExecutionError::Adapter)?;
+    }
+    state
+        .put_common_procedure_state(procedures)
+        .map_err(ExecutionError::Adapter)
+}
+
+pub(crate) fn synchronized_library_access_state<S: OracleStateAdapter>(
+    state: &S,
+) -> Result<LibraryAccessState, ExecutionError> {
+    let mut access = state.library_access_state();
+    access.cards.clear();
+    access.libraries.clear();
+    for player_id in state.player_ids() {
+        let player = state
+            .player(player_id)
+            .ok_or(ExecutionError::MissingPlayer(player_id))?;
+        for object_id in &player.library {
+            let object = state
+                .object(*object_id)
+                .ok_or(ExecutionError::MissingObject(*object_id))?;
+            let card_types = object
+                .characteristics()
+                .card_types
+                .iter()
+                .filter_map(|card_type| match card_type {
+                    CardType::Artifact => Some(LibraryCardType::Artifact),
+                    CardType::Battle => Some(LibraryCardType::Battle),
+                    CardType::Creature => Some(LibraryCardType::Creature),
+                    CardType::Enchantment => Some(LibraryCardType::Enchantment),
+                    CardType::Instant => Some(LibraryCardType::Instant),
+                    CardType::Land => Some(LibraryCardType::Land),
+                    CardType::Planeswalker => Some(LibraryCardType::Planeswalker),
+                    CardType::Sorcery => Some(LibraryCardType::Sorcery),
+                    CardType::Spell | CardType::Permanent => None,
+                })
+                .collect();
+            access.cards.insert(
+                *object_id,
+                LibraryCard {
+                    id: *object_id,
+                    owner: object.owner,
+                    card_types,
+                },
+            );
+        }
+        access
+            .set_library(player_id, player.library)
+            .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    }
+    Ok(access)
+}
+
+fn apply_damage_clause<S: OracleStateAdapter>(
+    state: &mut S,
+    program: &CompiledDamageClause,
+    context: &ExecutionContext,
+) -> Result<(), ExecutionError> {
+    let source = state
+        .object(context.source)
+        .ok_or(ExecutionError::MissingObject(context.source))?;
+    let address = context.executing_clause_address.ok_or_else(|| {
+        ExecutionError::Adapter(
+            "damage execution is missing its compiler-owned occurrence address".to_owned(),
+        )
+    })?;
+    if (program.recipient_optional()
+        || matches!(
+            program.recipient(),
+            DamageRecipientTemplate::SelectedTargets
+                | DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets
+        ))
+        && context
+            .targets
+            .get(&program.recipient_target_id())
+            .is_none_or(Vec::is_empty)
+    {
+        state.record_mutation(format!(
+            "damage_transaction_no_selected_target:{}:{}",
+            context.source,
+            program.semantic_digest()
+        ));
+        return Ok(());
+    }
+    let (source_object, trigger_source_state, source_evidence) =
+        if program.envelope() == DamageClauseEnvelope::TriggeredAbility {
+            if let Some(last_known) = context.last_known_source.as_deref() {
+                (
+                    last_known,
+                    Some(DamageTriggerSourceState::Departed),
+                    DamageSourceEvidence::LastKnownInformation,
+                )
+            } else {
+                (
+                    &source,
+                    Some(DamageTriggerSourceState::Present),
+                    DamageSourceEvidence::CurrentCharacteristics,
+                )
+            }
+        } else {
+            (&source, None, DamageSourceEvidence::CurrentCharacteristics)
+        };
+    let source_characteristics = source_object.characteristics();
+    let source_kind = if matches!(context.window, ActionWindow::SpellResolution) {
+        DamageSourceKind::Spell
+    } else if source_object.zone == Zone::Battlefield
+        && source_characteristics
+            .card_types
+            .contains(&CardType::Creature)
+    {
+        DamageSourceKind::Creature
+    } else if source_object.zone == Zone::Battlefield {
+        DamageSourceKind::OtherPermanent
+    } else {
+        DamageSourceKind::Other
+    };
+    let mut source_keywords = [
+        (Keyword::Deathtouch, DamageSourceKeyword::Deathtouch),
+        (Keyword::Lifelink, DamageSourceKeyword::Lifelink),
+    ]
+    .into_iter()
+    .filter_map(|(keyword, projected)| {
+        source_characteristics
+            .keywords
+            .contains(&keyword)
+            .then_some(projected)
+    })
+    .collect::<BTreeSet<_>>();
+    source_keywords.extend(state.damage_source_keyword_overrides(context.source));
+    let source_snapshot = DamageSourceSnapshot {
+        identity: DamageSourceIdentity::Object(context.source),
+        controller: source_object.controller,
+        evidence: source_evidence,
+        characteristics: DamageSourceCharacteristics {
+            kind: source_kind,
+            keywords: source_keywords,
+        },
+    };
+    let source_controller = source_snapshot.controller;
+
+    let mut production = DamageProductionState {
+        damage: DamageRuntimeState {
+            players: state
+                .player_ids()
+                .into_iter()
+                .filter_map(|player| {
+                    state.player(player).map(|value| {
+                        (
+                            player,
+                            DamagePlayerState {
+                                life: value.life,
+                                poison_counters: value
+                                    .counters
+                                    .get("poison")
+                                    .copied()
+                                    .unwrap_or_default(),
+                            },
+                        )
+                    })
+                })
+                .collect(),
+            objects: state
+                .object_ids()
+                .into_iter()
+                .filter_map(|object_id| {
+                    let object = state.object(object_id)?;
+                    if object.zone != Zone::Battlefield {
+                        return None;
+                    }
+                    let characteristics = object.characteristics();
+                    let projected = if characteristics.card_types.contains(&CardType::Creature) {
+                        DamageObjectState::Creature(DamageCreatureState {
+                            controller: object.controller,
+                            has_flying: characteristics.keywords.contains(&Keyword::Flying),
+                            attacking: object.attacking,
+                            blocking: object.blocking,
+                            dealt_damage_this_turn: object
+                                .counters
+                                .get("dealt-damage-this-turn")
+                                .is_some_and(|amount| *amount > 0),
+                            marked_damage: object
+                                .counters
+                                .get("damage")
+                                .copied()
+                                .unwrap_or_default(),
+                            minus_one_minus_one_counters: object
+                                .counters
+                                .get("-1/-1")
+                                .copied()
+                                .unwrap_or_default(),
+                            has_deathtouch_damage: object
+                                .counters
+                                .get("deathtouch-damage")
+                                .is_some_and(|amount| *amount > 0),
+                        })
+                    } else if characteristics.card_types.contains(&CardType::Planeswalker) {
+                        DamageObjectState::Planeswalker(DamagePlaneswalkerState {
+                            controller: object.controller,
+                            loyalty: object.counters.get("loyalty").copied().unwrap_or_default(),
+                        })
+                    } else if characteristics.card_types.contains(&CardType::Battle) {
+                        DamageObjectState::Battle(DamageBattleState {
+                            controller: object.controller,
+                            defense: object.counters.get("defense").copied().unwrap_or_default(),
+                        })
+                    } else {
+                        return None;
+                    };
+                    Some((object_id, projected))
+                })
+                .collect(),
+            modifiers: state.damage_modifiers(),
+        },
+        object_incarnations: BTreeMap::from([(context.source, 1)]),
+    };
+    let recipients = damage_clause_recipients(
+        program.recipient(),
+        program.recipient_target_id(),
+        &production.damage,
+        source_object.controller,
+        context,
+    )?;
+    let mut modifier_choices = context.damage_modifier_choices.clone();
+    let mut transient_protection_modifiers = Vec::new();
+    let mut next_modifier_id = production
+        .damage
+        .modifiers
+        .keys()
+        .next_back()
+        .copied()
+        .unwrap_or_default()
+        .checked_add(1)
+        .ok_or(ExecutionError::ArithmeticOverflow)?;
+    let mut protection_source =
+        protection_source_snapshot(state, context.source, source_controller, context)?;
+    protection_source.effect_kind = match source_kind {
+        DamageSourceKind::Spell => ProtectionSourceKind::Spell,
+        DamageSourceKind::Creature | DamageSourceKind::OtherPermanent => {
+            ProtectionSourceKind::Object
+        }
+        _ => protection_source.effect_kind,
+    };
+    for record in active_targeting_protections(state, context) {
+        let query = protection_query_context(state, record.protection.protected(), context)?;
+        for binding in &recipients {
+            let protected_recipient = match record.protection.protected() {
+                ProtectedEntity::Player(player) => DamageRecipient::Player(player),
+                ProtectedEntity::Object(object) => DamageRecipient::Creature(object.object_id),
+            };
+            if binding.recipient != protected_recipient
+                || !matches!(
+                    protection_damage_prevention_decision(
+                        &record.protection,
+                        &protection_source,
+                        1,
+                        true,
+                        &query,
+                    )
+                    .map_err(|error| ExecutionError::Adapter(error.to_string()))?,
+                    ProtectionDamagePreventionDecision::PreventAll { .. }
+                )
+            {
+                continue;
+            }
+            let chooser = match binding.recipient {
+                DamageRecipient::Player(player) => player,
+                DamageRecipient::Creature(object)
+                | DamageRecipient::Planeswalker(object)
+                | DamageRecipient::Battle(object) => {
+                    state
+                        .object(object)
+                        .ok_or(ExecutionError::MissingObject(object))?
+                        .controller
+                }
+            };
+            let modifier_id = next_modifier_id;
+            next_modifier_id = next_modifier_id
+                .checked_add(1)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            production.damage.modifiers.insert(
+                modifier_id,
+                DamageModifier {
+                    id: modifier_id,
+                    matcher: DamageEventMatcher {
+                        source: DamageSourceMatcher::Identity(source_snapshot.identity),
+                        recipient: DamageRecipientMatcher::Exact(binding.recipient),
+                        kind: DamageKindMatcher::Any,
+                    },
+                    operation: DamageModifierOperation::Prevention(DamagePrevention::PreventAll),
+                    persistence: DamageModifierPersistence::Persistent,
+                    requirement: DamageModifierRequirement::Mandatory,
+                },
+            );
+            transient_protection_modifiers.push(modifier_id);
+            modifier_choices.push(DamageModifierChoice {
+                assignment: binding.assignment,
+                chooser,
+                modifier: modifier_id,
+                decision: DamageModifierDecision::Apply,
+            });
+        }
+    }
+    for level_source in state.object_ids() {
+        let Some(level_object) = state.object(level_source) else {
+            continue;
+        };
+        for child in active_level_children(state, level_source) {
+            let LevelChildKind::Static(
+                LevelStaticAbilityProgram::PreventDamageToYouOrControlledCreature { amount },
+            ) = child.kind
+            else {
+                continue;
+            };
+            for binding in &recipients {
+                let protected = match binding.recipient {
+                    DamageRecipient::Player(player) => player == level_object.controller,
+                    DamageRecipient::Creature(object) => {
+                        production.damage.objects.get(&object).is_some_and(|state| {
+                            matches!(
+                                state,
+                                DamageObjectState::Creature(creature)
+                                    if creature.controller == level_object.controller
+                            )
+                        })
+                    }
+                    DamageRecipient::Planeswalker(_) | DamageRecipient::Battle(_) => false,
+                };
+                if !protected {
+                    continue;
+                }
+                let chooser = match binding.recipient {
+                    DamageRecipient::Player(player) => player,
+                    DamageRecipient::Creature(object) => {
+                        state
+                            .object(object)
+                            .ok_or(ExecutionError::MissingObject(object))?
+                            .controller
+                    }
+                    DamageRecipient::Planeswalker(_) | DamageRecipient::Battle(_) => continue,
+                };
+                let modifier_id = next_modifier_id;
+                next_modifier_id = next_modifier_id
+                    .checked_add(1)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+                production.damage.modifiers.insert(
+                    modifier_id,
+                    DamageModifier {
+                        id: modifier_id,
+                        matcher: DamageEventMatcher {
+                            source: DamageSourceMatcher::Identity(source_snapshot.identity),
+                            recipient: DamageRecipientMatcher::Exact(binding.recipient),
+                            kind: DamageKindMatcher::Any,
+                        },
+                        operation: DamageModifierOperation::Prevention(
+                            DamagePrevention::PreventAmount(amount),
+                        ),
+                        persistence: DamageModifierPersistence::Persistent,
+                        requirement: DamageModifierRequirement::Mandatory,
+                    },
+                );
+                transient_protection_modifiers.push(modifier_id);
+                modifier_choices.push(DamageModifierChoice {
+                    assignment: binding.assignment,
+                    chooser,
+                    modifier: modifier_id,
+                    decision: DamageModifierDecision::Apply,
+                });
+            }
+        }
+    }
+    let binding = TypedOracleExecutionBinding::new(
+        OracleSemanticEvidence::for_damage(program),
+        OracleOccurrenceProvenance {
+            source_object: context.source,
+            source_incarnation: 1,
+            face_index: address.face_index,
+            clause_index: address.clause_index,
+            snapshot_observation: None,
+        },
+    )
+    .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+    let dynamic_amount = match program.amount() {
+        crate::damage_clause_compiler::DamageAmountTemplate::BoundSacrificedCreaturePower {
+            cost_clause_index,
+            selection_id,
+        } => {
+            if address.clause_index == cost_clause_index {
+                return Err(ExecutionError::InvalidAmount(
+                    "sacrificed-creature damage cannot resolve in its cost clause",
+                ));
+            }
+            let selected = context.object_choices.get(&selection_id).ok_or(
+                ExecutionError::InvalidAmount(
+                    "sacrificed-creature damage is missing its exact cost choice",
+                ),
+            )?;
+            let [object_id] = selected.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "sacrificed-creature damage requires exactly one cost choice",
+                ));
+            };
+            let sacrificed = state
+                .object(*object_id)
+                .ok_or(ExecutionError::MissingObject(*object_id))?;
+            if sacrificed.zone != Zone::Graveyard
+                || !sacrificed
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "sacrificed-creature damage requires the chosen creature in its graveyard",
+                ));
+            }
+            Some(
+                u32::try_from(sacrificed.characteristics().power.max(0))
+                    .map_err(|_| ExecutionError::ArithmeticOverflow)?,
+            )
+        }
+        crate::damage_clause_compiler::DamageAmountTemplate::BoundSameClauseSacrificedCreaturePower {
+            selection_id,
+        } => {
+            let selected = context.object_choices.get(&selection_id).ok_or(
+                ExecutionError::InvalidAmount(
+                    "same-clause sacrificed-creature damage is missing its exact cost choice",
+                ),
+            )?;
+            let [object_id] = selected.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "same-clause sacrificed-creature damage requires exactly one cost choice",
+                ));
+            };
+            let sacrificed = state
+                .object(*object_id)
+                .ok_or(ExecutionError::MissingObject(*object_id))?;
+            if sacrificed.zone != Zone::Graveyard
+                || !sacrificed
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "same-clause sacrificed-creature damage requires the chosen creature in its graveyard",
+                ));
+            }
+            Some(
+                u32::try_from(sacrificed.characteristics().power.max(0))
+                    .map_err(|_| ExecutionError::ArithmeticOverflow)?,
+            )
+        }
+        crate::damage_clause_compiler::DamageAmountTemplate::SacrificedCreaturePower => {
+            return Err(ExecutionError::InvalidAmount(
+                "sacrificed-creature damage requires exact face binding",
+            ));
+        }
+        crate::damage_clause_compiler::DamageAmountTemplate::BoundDiscardedCardsTotalManaValue {
+            cost_clause_index,
+            selection_id,
+        } => {
+            if address.clause_index == cost_clause_index {
+                return Err(ExecutionError::InvalidAmount(
+                    "discarded-card mana value damage cannot resolve in its cost clause",
+                ));
+            }
+            let selected = context.object_choices.get(&selection_id).ok_or(
+                ExecutionError::InvalidAmount(
+                    "discarded-card mana value damage is missing its exact cost choices",
+                ),
+            )?;
+            let mut total = 0u32;
+            for object_id in selected {
+                let discarded = state
+                    .object(*object_id)
+                    .ok_or(ExecutionError::MissingObject(*object_id))?;
+                if discarded.zone != Zone::Graveyard || discarded.owner != context.actor {
+                    return Err(ExecutionError::InvalidAmount(
+                        "discarded-card mana value damage requires the paid cards in their owner's graveyard",
+                    ));
+                }
+                total = total
+                    .checked_add(discarded.characteristics().mana_value)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?;
+            }
+            Some(total)
+        }
+        crate::damage_clause_compiler::DamageAmountTemplate::DiscardedCardsTotalManaValue => {
+            return Err(ExecutionError::InvalidAmount(
+                "discarded-card mana value damage requires exact face binding",
+            ));
+        }
+        _ => None,
+    };
+    let receipt = execute_damage_clause_transaction(
+        &mut production,
+        program,
+        &binding,
+        DamageClauseBindings {
+            source: source_snapshot,
+            trigger_source_state,
+            x_value: matches!(
+                program.amount(),
+                crate::damage_clause_compiler::DamageAmountTemplate::X
+            )
+            .then_some(context.x_value),
+            dynamic_amount,
+            recipients,
+            modifier_choices,
+        },
+    )
+    .map_err(|error| ExecutionError::Adapter(error.to_string()))?;
+
+    for (player_id, projected) in &production.damage.players {
+        let mut player = state
+            .player(*player_id)
+            .ok_or(ExecutionError::MissingPlayer(*player_id))?;
+        player.life = projected.life;
+        set_or_remove_counter(&mut player.counters, "poison", projected.poison_counters);
+        state.put_player(player).map_err(ExecutionError::Adapter)?;
+    }
+    for (object_id, projected) in &production.damage.objects {
+        let mut object = state
+            .object(*object_id)
+            .ok_or(ExecutionError::MissingObject(*object_id))?;
+        match projected {
+            DamageObjectState::Creature(creature) => {
+                set_or_remove_counter(&mut object.counters, "damage", creature.marked_damage);
+                set_or_remove_counter(
+                    &mut object.counters,
+                    "-1/-1",
+                    creature.minus_one_minus_one_counters,
+                );
+                set_or_remove_counter(
+                    &mut object.counters,
+                    "deathtouch-damage",
+                    u32::from(creature.has_deathtouch_damage),
+                );
+            }
+            DamageObjectState::Planeswalker(planeswalker) => {
+                set_or_remove_counter(&mut object.counters, "loyalty", planeswalker.loyalty);
+            }
+            DamageObjectState::Battle(battle) => {
+                set_or_remove_counter(&mut object.counters, "defense", battle.defense);
+            }
+        }
+        state.put_object(object).map_err(ExecutionError::Adapter)?;
+    }
+    if source_kind == DamageSourceKind::Creature && receipt.transaction.total_actual_damage > 0 {
+        let mut source = state
+            .object(context.source)
+            .ok_or(ExecutionError::MissingObject(context.source))?;
+        source.counters.insert("dealt-damage-this-turn".into(), 1);
+        state.put_object(source).map_err(ExecutionError::Adapter)?;
+    }
+    for modifier in transient_protection_modifiers {
+        production.damage.modifiers.remove(&modifier);
+    }
+    state
+        .put_damage_modifiers(production.damage.modifiers)
+        .map_err(ExecutionError::Adapter)?;
+    if program.gains_life_equal_to_actual_damage() {
+        let gain = i64::try_from(receipt.transaction.total_actual_damage)
+            .map_err(|_| ExecutionError::ArithmeticOverflow)?;
+        change_life(state, source_controller, gain)?;
+    }
+    state.record_mutation(format!(
+        "damage_transaction:{}:{}:{}",
+        context.source,
+        program.semantic_digest(),
+        receipt.transaction.total_actual_damage
+    ));
+    Ok(())
+}
+
+fn set_or_remove_counter(counters: &mut BTreeMap<String, u32>, name: &str, amount: u32) {
+    if amount == 0 {
+        counters.remove(name);
+    } else {
+        counters.insert(name.to_owned(), amount);
+    }
+}
+
+fn damage_clause_recipients(
+    template: DamageRecipientTemplate,
+    target_id: u8,
+    state: &DamageRuntimeState,
+    source_controller: PlayerId,
+    context: &ExecutionContext,
+) -> Result<Vec<DamageRecipientBinding>, ExecutionError> {
+    let recipients = match template {
+        DamageRecipientTemplate::You => vec![DamageRecipient::Player(source_controller)],
+        DamageRecipientTemplate::ThatPlayer => vec![DamageRecipient::Player(
+            referenced_that_player(context).ok_or(ExecutionError::InvalidAmount(
+                "damage to that player is missing exact trigger-player evidence",
+            ))?,
+        )],
+        DamageRecipientTemplate::SourceItself => vec![DamageRecipient::Creature(context.source)],
+        DamageRecipientTemplate::EachOpponent => state
+            .players
+            .keys()
+            .copied()
+            .filter(|player| *player != source_controller)
+            .map(DamageRecipient::Player)
+            .collect(),
+        DamageRecipientTemplate::EachPlayer => state
+            .players
+            .keys()
+            .copied()
+            .map(DamageRecipient::Player)
+            .collect(),
+        DamageRecipientTemplate::EachCreature
+        | DamageRecipientTemplate::EachAttackingCreature
+        | DamageRecipientTemplate::EachCreatureWithFlying
+        | DamageRecipientTemplate::EachCreatureWithoutFlying
+        | DamageRecipientTemplate::EachCreatureOpponentsControl
+        | DamageRecipientTemplate::EachCreatureAndEachPlayer
+        | DamageRecipientTemplate::EachCreatureAndEachPlaneswalker => state
+            .players
+            .keys()
+            .copied()
+            .filter(|_| template == DamageRecipientTemplate::EachCreatureAndEachPlayer)
+            .map(DamageRecipient::Player)
+            .chain(
+                state
+                    .objects
+                    .iter()
+                    .filter_map(|(object, value)| match (template, value) {
+                        (
+                            DamageRecipientTemplate::EachCreature
+                            | DamageRecipientTemplate::EachAttackingCreature
+                            | DamageRecipientTemplate::EachCreatureAndEachPlayer
+                            | DamageRecipientTemplate::EachCreatureAndEachPlaneswalker,
+                            DamageObjectState::Creature(_),
+                        ) if template != DamageRecipientTemplate::EachAttackingCreature
+                            || matches!(value, DamageObjectState::Creature(creature) if creature.attacking) =>
+                        {
+                            Some(DamageRecipient::Creature(*object))
+                        }
+                        (
+                            DamageRecipientTemplate::EachCreatureWithFlying,
+                            DamageObjectState::Creature(creature),
+                        ) if creature.has_flying => Some(DamageRecipient::Creature(*object)),
+                        (
+                            DamageRecipientTemplate::EachCreatureWithoutFlying,
+                            DamageObjectState::Creature(creature),
+                        ) if !creature.has_flying => Some(DamageRecipient::Creature(*object)),
+                        (
+                            DamageRecipientTemplate::EachCreatureOpponentsControl,
+                            DamageObjectState::Creature(creature),
+                        ) if creature.controller != source_controller => {
+                            Some(DamageRecipient::Creature(*object))
+                        }
+                        (
+                            DamageRecipientTemplate::EachCreatureAndEachPlaneswalker,
+                            DamageObjectState::Planeswalker(_),
+                        ) => Some(DamageRecipient::Planeswalker(*object)),
+                        _ => None,
+                    }),
+            )
+            .collect(),
+        DamageRecipientTemplate::SelectedTargets
+        | DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets => context
+            .targets
+            .get(&target_id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|selected| match selected {
+                SelectedTarget::Player(player) => Ok(DamageRecipient::Player(player)),
+                SelectedTarget::Object(object) => match state.objects.get(&object) {
+                    Some(DamageObjectState::Creature(_)) => Ok(DamageRecipient::Creature(object)),
+                    Some(DamageObjectState::Planeswalker(_)) => {
+                        Ok(DamageRecipient::Planeswalker(object))
+                    }
+                    Some(DamageObjectState::Battle(_)) => Ok(DamageRecipient::Battle(object)),
+                    None => Err(ExecutionError::MissingObject(object)),
+                },
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        DamageRecipientTemplate::TargetCreatureController => {
+            let selected = context
+                .targets
+                .get(&target_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let [SelectedTarget::Object(object)] = selected else {
+                return Err(ExecutionError::InvalidAmount(
+                    "damage to a target creature's controller requires exactly one creature target",
+                ));
+            };
+            let Some(DamageObjectState::Creature(creature)) = state.objects.get(object) else {
+                return Err(ExecutionError::MissingObject(*object));
+            };
+            vec![DamageRecipient::Player(creature.controller)]
+        }
+        _ => {
+            let selected = context
+                .targets
+                .get(&target_id)
+                .cloned()
+                .unwrap_or_default();
+            let [selected] = selected.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "damage clause requires exactly one selected recipient",
+                ));
+            };
+            vec![match selected {
+                SelectedTarget::Player(player) => DamageRecipient::Player(*player),
+                SelectedTarget::Object(object) => match state.objects.get(object) {
+                    Some(DamageObjectState::Creature(_)) => DamageRecipient::Creature(*object),
+                    Some(DamageObjectState::Planeswalker(_)) => {
+                        DamageRecipient::Planeswalker(*object)
+                    }
+                    Some(DamageObjectState::Battle(_)) => DamageRecipient::Battle(*object),
+                    None => return Err(ExecutionError::MissingObject(*object)),
+                },
+            }]
+        }
+    };
+    recipients
+        .into_iter()
+        .enumerate()
+        .map(|(index, recipient)| {
+            let assignment = u16::try_from(index).map_err(|_| {
+                ExecutionError::InvalidAmount("damage assignment count exceeds u16")
+            })?;
+            Ok(DamageRecipientBinding {
+                assignment,
+                recipient,
+            })
+        })
+        .collect()
 }
 
 fn apply_exile_top<S: OracleStateAdapter>(
@@ -9615,6 +27138,126 @@ fn apply_bounce_with_controller_copy<S: OracleStateAdapter>(
     Ok(())
 }
 
+fn bound_sacrificed_creature_stats<S: OracleStateAdapter>(
+    state: &S,
+    binding: &SacrificedCreatureProcedureBinding,
+    context: &ExecutionContext,
+) -> Result<(u32, u32), ExecutionError> {
+    let SacrificedCreatureProcedureBinding::FaceCost {
+        cost_clause_index,
+        selection_id,
+    } = binding
+    else {
+        return Err(ExecutionError::InvalidAmount(
+            "sacrificed-creature procedure requires exact face binding",
+        ));
+    };
+    let address = context
+        .executing_clause_address
+        .ok_or(ExecutionError::InvalidAmount(
+            "sacrificed-creature procedure requires an executing clause address",
+        ))?;
+    if address.clause_index == *cost_clause_index {
+        return Err(ExecutionError::InvalidAmount(
+            "sacrificed-creature procedure cannot resolve in its cost clause",
+        ));
+    }
+    let selected =
+        context
+            .object_choices
+            .get(selection_id)
+            .ok_or(ExecutionError::InvalidAmount(
+                "sacrificed-creature procedure is missing its exact cost choice",
+            ))?;
+    let [object_id] = selected.as_slice() else {
+        return Err(ExecutionError::InvalidAmount(
+            "sacrificed-creature procedure requires exactly one cost choice",
+        ));
+    };
+    let sacrificed = state
+        .object(*object_id)
+        .ok_or(ExecutionError::MissingObject(*object_id))?;
+    if sacrificed.zone != Zone::Graveyard
+        || !sacrificed
+            .characteristics()
+            .card_types
+            .contains(&CardType::Creature)
+    {
+        return Err(ExecutionError::InvalidAmount(
+            "sacrificed-creature procedure requires the chosen creature in its graveyard",
+        ));
+    }
+    Ok((
+        u32::try_from(sacrificed.characteristics().power.max(0))
+            .map_err(|_| ExecutionError::ArithmeticOverflow)?,
+        u32::try_from(sacrificed.characteristics().toughness.max(0))
+            .map_err(|_| ExecutionError::ArithmeticOverflow)?,
+    ))
+}
+
+fn bound_sacrificed_permanent<S: OracleStateAdapter>(
+    state: &S,
+    binding: &SacrificedCreatureProcedureBinding,
+    context: &ExecutionContext,
+) -> Result<PhysicalObject, ExecutionError> {
+    let SacrificedCreatureProcedureBinding::FaceCost {
+        cost_clause_index,
+        selection_id,
+    } = binding
+    else {
+        return Err(ExecutionError::InvalidAmount(
+            "sacrificed-permanent procedure requires exact face binding",
+        ));
+    };
+    let address = context
+        .executing_clause_address
+        .ok_or(ExecutionError::InvalidAmount(
+            "sacrificed-permanent procedure requires an executing clause address",
+        ))?;
+    if address.clause_index == *cost_clause_index {
+        return Err(ExecutionError::InvalidAmount(
+            "sacrificed-permanent procedure cannot resolve in its cost clause",
+        ));
+    }
+    let selected =
+        context
+            .object_choices
+            .get(selection_id)
+            .ok_or(ExecutionError::InvalidAmount(
+                "sacrificed-permanent procedure is missing its exact cost choice",
+            ))?;
+    let [object_id] = selected.as_slice() else {
+        return Err(ExecutionError::InvalidAmount(
+            "sacrificed-permanent procedure requires exactly one cost choice",
+        ));
+    };
+    let sacrificed = state
+        .object(*object_id)
+        .ok_or(ExecutionError::MissingObject(*object_id))?;
+    let characteristics = sacrificed.characteristics();
+    if sacrificed.zone != Zone::Graveyard
+        || !characteristics
+            .card_types
+            .iter()
+            .any(|card_type| matches!(card_type, CardType::Artifact | CardType::Creature))
+    {
+        return Err(ExecutionError::InvalidAmount(
+            "sacrificed-permanent procedure requires the chosen artifact or creature in its graveyard",
+        ));
+    }
+    Ok(sacrificed)
+}
+
+fn bound_sacrificed_permanent_mana_value<S: OracleStateAdapter>(
+    state: &S,
+    binding: &SacrificedCreatureProcedureBinding,
+    context: &ExecutionContext,
+) -> Result<u32, ExecutionError> {
+    Ok(bound_sacrificed_permanent(state, binding, context)?
+        .characteristics()
+        .mana_value)
+}
+
 fn apply_library_procedure<S: OracleStateAdapter>(
     state: &mut S,
     procedure: &LibraryProcedure,
@@ -9658,7 +27301,7 @@ fn apply_library_procedure<S: OracleStateAdapter>(
                         .map_err(ExecutionError::Adapter)?;
                 }
                 deterministic_shuffle(state, player, context.replay_seed)?;
-                draw_cards(state, player, draw)?;
+                draw_cards(state, player, draw, context)?;
             }
             Ok(())
         }
@@ -9681,7 +27324,7 @@ fn apply_library_procedure<S: OracleStateAdapter>(
                         .map_err(ExecutionError::Adapter)?;
                 }
                 deterministic_shuffle(state, player, context.replay_seed)?;
-                draw_cards(state, player, draw)?;
+                draw_cards(state, player, draw, context)?;
             }
             Ok(())
         }
@@ -9700,7 +27343,7 @@ fn apply_library_procedure<S: OracleStateAdapter>(
                         .move_object(card, Zone::Graveyard)
                         .map_err(ExecutionError::Adapter)?;
                 }
-                draw_cards(state, player, amount)?;
+                draw_cards(state, player, amount, context)?;
             }
             Ok(())
         }
@@ -9724,7 +27367,7 @@ fn apply_library_procedure<S: OracleStateAdapter>(
                         .move_object(card, Zone::Graveyard)
                         .map_err(ExecutionError::Adapter)?;
                 }
-                draw_cards(state, player, draw)?;
+                draw_cards(state, player, draw, context)?;
             }
             Ok(())
         }
@@ -9750,6 +27393,142 @@ fn apply_library_procedure<S: OracleStateAdapter>(
                         .move_object(card, Zone::Hand)
                         .map_err(ExecutionError::Adapter)?;
                     change_life(state, player, -i64::from(mana_value))?;
+                }
+            }
+            Ok(())
+        }
+        LibraryProcedure::DrawSacrificedCreaturePower {
+            player,
+            binding,
+            gain_life_equal_toughness,
+        } => {
+            let SacrificedCreatureProcedureBinding::FaceCost {
+                cost_clause_index,
+                selection_id,
+            } = binding
+            else {
+                return Err(ExecutionError::InvalidAmount(
+                    "sacrificed-creature library procedure requires exact face binding",
+                ));
+            };
+            let address = context
+                .executing_clause_address
+                .ok_or(ExecutionError::InvalidAmount(
+                    "sacrificed-creature library procedure requires an executing clause address",
+                ))?;
+            if address.clause_index == *cost_clause_index {
+                return Err(ExecutionError::InvalidAmount(
+                    "sacrificed-creature library procedure cannot resolve in its cost clause",
+                ));
+            }
+            let selected =
+                context
+                    .object_choices
+                    .get(selection_id)
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "sacrificed-creature library procedure is missing its exact cost choice",
+                    ))?;
+            let [object_id] = selected.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "sacrificed-creature library procedure requires exactly one cost choice",
+                ));
+            };
+            let sacrificed = state
+                .object(*object_id)
+                .ok_or(ExecutionError::MissingObject(*object_id))?;
+            if sacrificed.zone != Zone::Graveyard
+                || !sacrificed
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "sacrificed-creature library procedure requires the chosen creature in its graveyard",
+                ));
+            }
+            let draw = u32::try_from(sacrificed.characteristics().power.max(0))
+                .map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            let gain = u32::try_from(sacrificed.characteristics().toughness.max(0))
+                .map_err(|_| ExecutionError::ArithmeticOverflow)?;
+            for player in resolve_players(state, player, context)? {
+                draw_cards(state, player, draw, context)?;
+                if *gain_life_equal_toughness {
+                    let mut player_state = state
+                        .player(player)
+                        .ok_or(ExecutionError::MissingPlayer(player))?;
+                    player_state.life = player_state
+                        .life
+                        .checked_add(i64::from(gain))
+                        .ok_or(ExecutionError::ArithmeticOverflow)?;
+                    state
+                        .put_player(player_state)
+                        .map_err(ExecutionError::Adapter)?;
+                    state
+                        .record_mutation(format!("gain_life_sacrificed_toughness:{player}:{gain}"));
+                }
+            }
+            Ok(())
+        }
+        LibraryProcedure::SacrificedPermanentManaValue {
+            player,
+            binding,
+            draw_equal_mana_value,
+            gain_life_equal_mana_value,
+            fixed_draw,
+        } => {
+            let mana_value = bound_sacrificed_permanent_mana_value(state, binding, context)?;
+            let draw = if *draw_equal_mana_value {
+                mana_value
+            } else {
+                u32::from(*fixed_draw)
+            };
+            for player in resolve_players(state, player, context)? {
+                if draw > 0 {
+                    draw_cards(state, player, draw, context)?;
+                }
+                if *gain_life_equal_mana_value {
+                    change_life(state, player, i64::from(mana_value))?;
+                }
+            }
+            Ok(())
+        }
+        LibraryProcedure::DrawIfSacrificedPermanentWasVehicle { player, binding } => {
+            let sacrificed = bound_sacrificed_permanent(state, binding, context)?;
+            if sacrificed
+                .characteristics()
+                .subtypes
+                .iter()
+                .any(|subtype| subtype.eq_ignore_ascii_case("Vehicle"))
+            {
+                for player in resolve_players(state, player, context)? {
+                    draw_cards(state, player, 1, context)?;
+                }
+            }
+            Ok(())
+        }
+        LibraryProcedure::ScryIfSearchedCardCheaperThanSacrificedPermanent {
+            player,
+            binding,
+            search_id,
+            amount,
+        } => {
+            let sacrificed = bound_sacrificed_permanent(state, binding, context)?;
+            let searched_id = context.searched_cards.get(search_id).copied().ok_or(
+                ExecutionError::InvalidAmount(
+                    "conditional scry requires the exact searched card choice",
+                ),
+            )?;
+            let searched = state
+                .object(searched_id)
+                .ok_or(ExecutionError::MissingObject(searched_id))?;
+            if searched.zone != Zone::Battlefield {
+                return Err(ExecutionError::InvalidAmount(
+                    "conditional scry requires the searched card on the battlefield",
+                ));
+            }
+            if searched.characteristics().mana_value < sacrificed.characteristics().mana_value {
+                for player in resolve_players(state, player, context)? {
+                    scry(state, player, u32::from(*amount), context)?;
                 }
             }
             Ok(())
@@ -10070,6 +27849,49 @@ fn evaluate_typed_mana_calculation<S: OracleStateAdapter>(
         }
         TypedQuantityCalculation::Value(TypedCalculatedValue::Count(objects)) => {
             evaluate_typed_mana_count(state, objects, context)
+        }
+        TypedQuantityCalculation::Value(
+            TypedCalculatedValue::BoundSacrificedCreatureManaValue {
+                cost_clause_index,
+                selection_id,
+            },
+        ) => {
+            let address = context
+                .executing_clause_address
+                .ok_or(ExecutionError::InvalidAmount(
+                    "bound sacrificed-creature mana requires an executing clause address",
+                ))?;
+            if address.clause_index == *cost_clause_index {
+                return Err(ExecutionError::InvalidAmount(
+                    "bound sacrificed-creature mana cannot resolve in its cost clause",
+                ));
+            }
+            let selected =
+                context
+                    .object_choices
+                    .get(selection_id)
+                    .ok_or(ExecutionError::InvalidAmount(
+                        "bound sacrificed-creature mana is missing its exact cost choice",
+                    ))?;
+            let [object_id] = selected.as_slice() else {
+                return Err(ExecutionError::InvalidAmount(
+                    "bound sacrificed-creature mana requires exactly one cost choice",
+                ));
+            };
+            let object = state
+                .object(*object_id)
+                .ok_or(ExecutionError::MissingObject(*object_id))?;
+            if object.zone != Zone::Graveyard
+                || !object
+                    .characteristics()
+                    .card_types
+                    .contains(&CardType::Creature)
+            {
+                return Err(ExecutionError::InvalidAmount(
+                    "bound sacrificed-creature mana requires the chosen creature in its graveyard",
+                ));
+            }
+            Ok(object.characteristics().mana_value)
         }
         TypedQuantityCalculation::Sum(terms) => {
             let mut total = 0u32;
@@ -10445,6 +28267,29 @@ fn object_is_indestructible<S: OracleStateAdapter>(
     Ok(false)
 }
 
+fn death_destination<S: OracleStateAdapter>(
+    state: &S,
+    object: ObjectId,
+    context: &ExecutionContext,
+) -> Result<Zone, ExecutionError> {
+    let mut records = state.continuous_effects();
+    records.sort_by_key(|record| (record.order, record.source_identity));
+    for record in records {
+        if !record.object_identities.contains(&object)
+            || !matches!(record.effect, Effect::ExileIfWouldDieThisTurn { .. })
+        {
+            continue;
+        }
+        let mut local = context.clone();
+        local.source = record.source_identity;
+        if restriction_duration_is_active(state, record.source_identity, &record.duration, &local)?
+        {
+            return Ok(Zone::Exile);
+        }
+    }
+    Ok(Zone::Graveyard)
+}
+
 fn apply_zone_move<S: OracleStateAdapter>(
     state: &mut S,
     zone_move: &ZoneMove,
@@ -10484,8 +28329,17 @@ fn apply_zone_move<S: OracleStateAdapter>(
         return Ok(());
     }
     for id in &objects {
+        let destination = if state
+            .object(*id)
+            .is_some_and(|object| object.zone == Zone::Battlefield)
+            && zone_move.to == Zone::Graveyard
+        {
+            death_destination(state, *id, context)?
+        } else {
+            zone_move.to
+        };
         state
-            .move_object(*id, zone_move.to)
+            .move_object(*id, destination)
             .map_err(ExecutionError::Adapter)?;
         let mut candidate = state
             .object(*id)
@@ -10495,7 +28349,7 @@ fn apply_zone_move<S: OracleStateAdapter>(
         state
             .put_object(candidate)
             .map_err(ExecutionError::Adapter)?;
-        if zone_move.to == Zone::Battlefield {
+        if destination == Zone::Battlefield {
             apply_enters_replacements(state, *id, context)?;
         }
     }
@@ -10556,6 +28410,16 @@ fn resolve_object_selection<S: OracleStateAdapter>(
     }
     let valid_count = match selection.amount {
         TargetAmount::Exactly(amount) => selected.len() == usize::from(amount),
+        TargetAmount::ExactlyX => {
+            selected.len()
+                == usize::try_from(context.x_value)
+                    .map_err(|_| ExecutionError::ArithmeticOverflow)?
+        }
+        TargetAmount::UpToX => {
+            selected.len()
+                <= usize::try_from(context.x_value)
+                    .map_err(|_| ExecutionError::ArithmeticOverflow)?
+        }
         TargetAmount::UpTo(amount) => selected.len() <= usize::from(amount),
         TargetAmount::AnyNumber => true,
         TargetAmount::All => {
@@ -10576,6 +28440,24 @@ fn resolve_object_selection<S: OracleStateAdapter>(
                 "selected object {object} does not satisfy its selection filter"
             )));
         }
+    }
+    Ok(selected)
+}
+
+fn resolve_object_selection_amount<S: OracleStateAdapter>(
+    state: &S,
+    selection: &ObjectSelection,
+    amount: &Amount,
+    context: &ExecutionContext,
+) -> Result<Vec<ObjectId>, ExecutionError> {
+    let selected = resolve_object_selection(state, selection, context)?;
+    let expected = usize::try_from(evaluate_amount(state, amount, context)?).map_err(|_| {
+        ExecutionError::InvalidAmount("object selection count exceeds runtime range")
+    })?;
+    if selected.len() != expected {
+        return Err(ExecutionError::InvalidAmount(
+            "object selection does not match its dynamic cost amount",
+        ));
     }
     Ok(selected)
 }
@@ -10679,7 +28561,8 @@ fn apply_enters_replacements<S: OracleStateAdapter>(
                     record.order
                 ));
             }
-            ReplacementEffect::MultiplyEvent { .. }
+            ReplacementEffect::PreventCounters { .. }
+            | ReplacementEffect::MultiplyEvent { .. }
             | ReplacementEffect::IncreaseEvent { .. }
             | ReplacementEffect::ConditionalTokenSubstitution { .. }
             | ReplacementEffect::EntersTapped(_)
@@ -10726,7 +28609,16 @@ fn apply_search<S: OracleStateAdapter>(
         let player_state = state
             .player(player)
             .ok_or(ExecutionError::MissingPlayer(player))?;
-        let requested = context.searched_cards.values().copied().collect::<Vec<_>>();
+        let requested = context
+            .searched_cards
+            .iter()
+            .map(|(_, id)| *id)
+            .collect::<Vec<_>>();
+        if search.shuffle_before_destination && amount > 1 && requested.len() != amount {
+            return Err(ExecutionError::Adapter(format!(
+                "ordered top-card search requires exactly {amount} explicit physical card choices"
+            )));
+        }
         if requested.len() > amount {
             return Err(ExecutionError::Adapter(format!(
                 "library search selected {} cards but permits at most {amount}",
@@ -10939,6 +28831,7 @@ fn replace_token_event<S: OracleStateAdapter>(
         let mut local = context.clone();
         local.source = record.source_identity;
         match &record.effect {
+            ReplacementEffect::PreventCounters { .. } => {}
             ReplacementEffect::MultiplyEvent { event, multiplier } => {
                 let occurrence = ReplacementOccurrence {
                     event: ReplacementEvent::CreateTokens {
@@ -11007,15 +28900,12 @@ fn insert_defined_token<S: OracleStateAdapter>(
         prepared: false,
         face_down: false,
         active_face: 0,
-        class_level: if definition
+        class_level: definition
             .subtypes
             .iter()
             .any(|subtype| subtype.eq_ignore_ascii_case("Class"))
-        {
-            1
-        } else {
-            0
-        },
+            .then_some(1)
+            .unwrap_or(0),
         front: ObjectCharacteristics {
             names: definition.name.iter().cloned().collect(),
             card_types: definition.card_types.clone(),
@@ -11067,8 +28957,69 @@ fn draw_cards<S: OracleStateAdapter>(
     state: &mut S,
     player: PlayerId,
     amount: u32,
+    context: &ExecutionContext,
 ) -> Result<(), ExecutionError> {
-    for _ in 0..amount {
+    let choices = context.dredge_draw_choices.get(&player).cloned();
+    if choices
+        .as_ref()
+        .is_some_and(|choices| choices.len() != amount as usize)
+    {
+        return Err(ExecutionError::InvalidAmount(
+            "Dredge choices must account for every draw in the instruction",
+        ));
+    }
+    for index in 0..amount as usize {
+        if let Some(source) = choices.as_ref().and_then(|choices| choices[index]) {
+            let program = state.dredge_program(source).ok_or_else(|| {
+                ExecutionError::Adapter("chosen Dredge source has no installed program".into())
+            })?;
+            let ZoneKeywordKind::Dredge { amount: mill } = program.kind() else {
+                return Err(ExecutionError::Adapter(
+                    "installed draw replacement is not Dredge".into(),
+                ));
+            };
+            let source_card = state
+                .object(source)
+                .ok_or(ExecutionError::MissingObject(source))?;
+            let library_len = state
+                .player(player)
+                .ok_or(ExecutionError::MissingPlayer(player))?
+                .library
+                .len();
+            if source_card.zone != Zone::Graveyard
+                || source_card.owner != player
+                || library_len < *mill as usize
+            {
+                return Err(ExecutionError::Adapter(
+                    "chosen Dredge replacement is unavailable".into(),
+                ));
+            }
+            for _ in 0..*mill {
+                let card = state
+                    .player(player)
+                    .ok_or(ExecutionError::MissingPlayer(player))?
+                    .library
+                    .first()
+                    .copied()
+                    .ok_or_else(|| {
+                        ExecutionError::Adapter(
+                            "Dredge replacement cannot mill the required cards".into(),
+                        )
+                    })?;
+                state
+                    .move_object(card, Zone::Graveyard)
+                    .map_err(ExecutionError::Adapter)?;
+                state.record_mutation(format!("dredge_mill:{player}:{card}"));
+            }
+            state
+                .move_object(source, Zone::Hand)
+                .map_err(ExecutionError::Adapter)?;
+            state.record_mutation(format!(
+                "dredge:{player}:{source}:{mill}:{}",
+                program.semantic_digest()
+            ));
+            continue;
+        }
         let card = state
             .player(player)
             .ok_or(ExecutionError::MissingPlayer(player))?
@@ -11098,7 +29049,7 @@ fn apply_connive<S: OracleStateAdapter>(
             "connive requires exactly one object's controller".to_owned(),
         ));
     };
-    draw_cards(state, *player, 1)?;
+    draw_cards(state, *player, 1, context)?;
 
     let selected = resolve_object_selection(state, discard, context)?;
     let [discarded] = selected.as_slice() else {
@@ -11456,6 +29407,11 @@ fn replace_counter_event<S: OracleStateAdapter>(
             object: Some(object),
         };
         match &record.effect {
+            ReplacementEffect::PreventCounters { object: protected }
+                if resolve_objects(state, protected, &local)?.contains(&object) =>
+            {
+                amount = 0;
+            }
             ReplacementEffect::MultiplyEvent { event, multiplier }
                 if replacement_event_matches(state, event, &occurrence, &local) =>
             {

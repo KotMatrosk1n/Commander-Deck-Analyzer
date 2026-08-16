@@ -5,17 +5,17 @@
 //! ability. Protection is evaluated through all four rules effects: targeting,
 //! attachment legality, damage prevention, and blocking legality.
 //!
-//! No production adapter is connected yet. A recognized program remains
-//! nonlive until the main engine supplies exact object incarnations, player
-//! relationships, source characteristics, and attachment evidence.
+//! The production adapter supplies exact object incarnations, player
+//! relationships, source characteristics, attachment evidence, and damage
+//! transaction receipts to all four protection queries.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const TARGETING_PROTECTION_COMPILER_VERSION: &str = "targeting-protection-compiler-0.1";
-pub const TARGETING_PROTECTION_RUNTIME_VERSION: &str = "targeting-protection-runtime-0.1";
+pub const TARGETING_PROTECTION_COMPILER_VERSION: &str = "targeting-protection-compiler-0.2";
+pub const TARGETING_PROTECTION_RUNTIME_VERSION: &str = "targeting-protection-runtime-0.3";
 pub const TARGETING_PROTECTION_RULES_CONTEXT_VERSION: &str =
     "magic-comprehensive-rules-2026-06-19:109.2,115.1,120.3,609.7,702.16,702.18,702.11";
 
@@ -23,10 +23,8 @@ pub type PlayerId = u8;
 pub type ObjectId = u64;
 pub type IncarnationId = u64;
 
-/// These programs are deliberately nonlive until a production adapter
-/// supplies the complete evidence required by every query in this module.
 pub const fn targeting_protection_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -183,6 +181,8 @@ pub enum ProtectionRecipient {
     SourceObject,
     ControllerPlayer,
     EnchantedCreature,
+    TargetCreature,
+    TargetCreatureYouControl,
 }
 
 impl ProtectionRecipient {
@@ -191,6 +191,8 @@ impl ProtectionRecipient {
             Self::SourceObject => "source-object",
             Self::ControllerPlayer => "controller-player",
             Self::EnchantedCreature => "enchanted-creature",
+            Self::TargetCreature => "target-creature",
+            Self::TargetCreatureYouControl => "target-creature-you-control",
         }
     }
 }
@@ -288,6 +290,8 @@ pub fn compile_targeting_protection_program(
     }
 
     let compiled = compile_enchanted_creature_protection(exact_source)
+        .or_else(|| compile_target_creature_protection(exact_source))
+        .or_else(|| compile_temporary_source_or_player_protection(exact_source))
         .or_else(|| compile_player_targeting_restriction(exact_source))
         .or_else(|| compile_singleton_keyword(exact_source))?;
     Some(build_program(exact_source, compiled))
@@ -344,13 +348,14 @@ fn compile_singleton_keyword(source: &str) -> Option<CompiledParts> {
             return None;
         }
         TargetingProtectionKind::Hexproof { qualities }
-    } else {
-        let quality_text = lower.strip_prefix("protection from ")?;
+    } else if let Some(quality_text) = lower.strip_prefix("protection from ") {
         let qualities = parse_quality_list_with_original(core.get("Protection from ".len()..)?)?;
         if reminder.is_some_and(|value| !canonical_protection_reminder(value, quality_text)) {
             return None;
         }
         TargetingProtectionKind::Protection { qualities }
+    } else {
+        return None;
     };
 
     Some(CompiledParts {
@@ -414,14 +419,15 @@ fn compile_enchanted_creature_protection(source: &str) -> Option<CompiledParts> 
         body.strip_suffix(". This effect doesn't remove this Aura.")
     {
         (quality, AttachmentExceptionPolicy::GrantingAuraOnly)
-    } else {
-        let quality = body.strip_suffix(
+    } else if let Some(quality) = body.strip_suffix(
         ". This effect doesn't remove Auras and Equipment you control that are already attached to it.",
-    )?;
+    ) {
         (
             quality,
             AttachmentExceptionPolicy::ControlledAurasAndEquipmentAlreadyAttached,
         )
+    } else {
+        return None;
     };
     let qualities = parse_quality_list_with_original(quality_text)?;
     Some(CompiledParts {
@@ -429,6 +435,60 @@ fn compile_enchanted_creature_protection(source: &str) -> Option<CompiledParts> 
         recipient: ProtectionRecipient::EnchantedCreature,
         duration: ProtectionDuration::WhileSourceAbilityApplies,
         attachment_exception,
+    })
+}
+
+fn compile_target_creature_protection(source: &str) -> Option<CompiledParts> {
+    let lower = source.to_ascii_lowercase();
+    let controlled_prefix = "target creature you control gains protection from ";
+    let target_prefix = "target creature gains protection from ";
+    let (recipient, body) = if lower.starts_with(controlled_prefix) {
+        (
+            ProtectionRecipient::TargetCreatureYouControl,
+            source.get(controlled_prefix.len()..)?,
+        )
+    } else {
+        (
+            ProtectionRecipient::TargetCreature,
+            source
+                .get(target_prefix.len()..)
+                .filter(|_| lower.starts_with(target_prefix))?,
+        )
+    };
+    let quality_text = body.strip_suffix(" until end of turn.")?;
+    let qualities = parse_quality_list_with_original(quality_text)?;
+    Some(CompiledParts {
+        kind: TargetingProtectionKind::Protection { qualities },
+        recipient,
+        duration: ProtectionDuration::UntilEndOfTurn,
+        attachment_exception: AttachmentExceptionPolicy::None,
+    })
+}
+
+fn compile_temporary_source_or_player_protection(source: &str) -> Option<CompiledParts> {
+    let lower = source.to_ascii_lowercase();
+    let source_prefix = "this object gains protection from ";
+    let player_prefix = "you gain protection from ";
+    let (recipient, body) = if lower.starts_with(source_prefix) {
+        (
+            ProtectionRecipient::SourceObject,
+            source.get(source_prefix.len()..)?,
+        )
+    } else if lower.starts_with(player_prefix) {
+        (
+            ProtectionRecipient::ControllerPlayer,
+            source.get(player_prefix.len()..)?,
+        )
+    } else {
+        return None;
+    };
+    let quality_text = body.strip_suffix(" until end of turn.")?;
+    let qualities = parse_quality_list_with_original(quality_text)?;
+    Some(CompiledParts {
+        kind: TargetingProtectionKind::Protection { qualities },
+        recipient,
+        duration: ProtectionDuration::UntilEndOfTurn,
+        attachment_exception: AttachmentExceptionPolicy::None,
     })
 }
 
@@ -607,11 +667,12 @@ fn parse_structured_or_subtype_quality(
     if let Some(counter) = lower
         .strip_prefix("permanents with ")
         .and_then(|value| value.strip_suffix(" counters on them"))
-        && !counter.is_empty()
     {
-        return Some(ProtectionQualitySpec::PermanentWithCounter(
-            counter.to_owned(),
-        ));
+        if !counter.is_empty() {
+            return Some(ProtectionQualitySpec::PermanentWithCounter(
+                counter.to_owned(),
+            ));
+        }
     }
     canonical_subtype_phrase(original).map(ProtectionQualitySpec::Subtype)
 }
@@ -933,6 +994,9 @@ pub struct AttachmentSnapshot {
 pub struct ProtectionInstallationInput {
     pub effect_controller: PlayerId,
     pub protected: ProtectedEntity,
+    /// Current controller evidence is mandatory for recipients constrained to
+    /// a creature controlled by the resolving effect's controller.
+    pub protected_controller: Option<PlayerId>,
     pub choices: ProtectionChoices,
     /// Required only by an enchanted-creature program.
     pub granting_aura: Option<AttachmentSnapshot>,
@@ -979,11 +1043,18 @@ pub fn install_targeting_protection(
     program: &TargetingProtectionProgram,
     input: ProtectionInstallationInput,
 ) -> Result<InstalledTargetingProtection, TargetingProtectionError> {
-    validate_recipient(program.recipient, input.effect_controller, input.protected)?;
-    let expects_color =
-        program_kind_qualities(&program.kind).contains(&ProtectionQualitySpec::ChosenColor);
-    let expects_player =
-        program_kind_qualities(&program.kind).contains(&ProtectionQualitySpec::ChosenPlayer);
+    validate_recipient(
+        program.recipient,
+        input.effect_controller,
+        input.protected,
+        input.protected_controller,
+    )?;
+    let expects_color = program_kind_qualities(&program.kind)
+        .iter()
+        .any(|quality| *quality == ProtectionQualitySpec::ChosenColor);
+    let expects_player = program_kind_qualities(&program.kind)
+        .iter()
+        .any(|quality| *quality == ProtectionQualitySpec::ChosenPlayer);
     if expects_color != input.choices.chosen_color.is_some()
         || expects_player != input.choices.chosen_player.is_some()
     {
@@ -1064,10 +1135,15 @@ fn validate_recipient(
     recipient: ProtectionRecipient,
     effect_controller: PlayerId,
     protected: ProtectedEntity,
+    protected_controller: Option<PlayerId>,
 ) -> Result<(), TargetingProtectionError> {
     let valid = match (recipient, protected) {
         (ProtectionRecipient::SourceObject, ProtectedEntity::Object(_))
-        | (ProtectionRecipient::EnchantedCreature, ProtectedEntity::Object(_)) => true,
+        | (ProtectionRecipient::EnchantedCreature, ProtectedEntity::Object(_))
+        | (ProtectionRecipient::TargetCreature, ProtectedEntity::Object(_)) => true,
+        (ProtectionRecipient::TargetCreatureYouControl, ProtectedEntity::Object(_)) => {
+            protected_controller == Some(effect_controller)
+        }
         (ProtectionRecipient::ControllerPlayer, ProtectedEntity::Player(protected_player)) => {
             protected_player == effect_controller
         }

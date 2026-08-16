@@ -34,7 +34,7 @@ const ENTERS_TAPPED_NORMALIZED: &str = "this object enters tapped.";
 /// These programs remain nonlive until the main engine supplies a complete
 /// battlefield, simultaneous untap-step commit, and full replacement census.
 pub const fn object_state_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -868,12 +868,14 @@ impl ObjectStateClauseRuntime {
             }
         }
         for identity in candidates.keys() {
-            if let ReplacementEffectIdentity::Intrinsic { .. } = identity
-                && !intrinsic_by_identity.contains_key(identity)
-            {
-                return Err(
-                    ObjectStateRuntimeError::UnknownIntrinsicReplacementCandidate(identity.clone()),
-                );
+            if let ReplacementEffectIdentity::Intrinsic { .. } = identity {
+                if !intrinsic_by_identity.contains_key(identity) {
+                    return Err(
+                        ObjectStateRuntimeError::UnknownIntrinsicReplacementCandidate(
+                            identity.clone(),
+                        ),
+                    );
+                }
             }
         }
 

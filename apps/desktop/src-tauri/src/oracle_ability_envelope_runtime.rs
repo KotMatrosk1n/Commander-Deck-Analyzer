@@ -32,8 +32,8 @@ use crate::oracle_action_algebra_runtime::{
     object_matches_filter, parse_object_filter, reviewed_oracle_action_normalized_source,
 };
 
-pub const ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION: &str = "oracle-ability-envelope-compiler-0.4";
-pub const ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION: &str = "oracle-ability-envelope-runtime-0.4";
+pub const ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION: &str = "oracle-ability-envelope-compiler-0.8";
+pub const ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION: &str = "oracle-ability-envelope-runtime-0.12";
 pub const ORACLE_ABILITY_ENVELOPE_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:113.7a,117.1b,117.3,117.5,506,508-511,603,605,606,701.14-17";
 
 pub const fn oracle_ability_envelope_production_adapter_connected() -> bool {
@@ -62,17 +62,28 @@ pub enum AbilityObjectBinding {
     ThisCreature,
     ThisArtifact,
     ThisEnchantment,
+    ThisAura,
     ThisLand,
+    ThisEquipment,
+    ThisVehicle,
     ThisPlaneswalker,
     ThisBattle,
+    ThisSiege,
     AnotherPermanentYouControl,
     AnotherCreatureYouControl,
     ACreatureYouControl,
     OneOrMoreCreaturesYouControl,
+    ALandYouControl,
+    AnyLand,
     AnyCreature,
     AnyPermanent,
     ACard,
     ASpell,
+    ANoncreatureSpell,
+    AnInstantOrSorcerySpell,
+    ACreatureSpell,
+    AnArtifactSpell,
+    AnEnchantmentSpell,
     ThisSpell,
     CopiedSpell,
     TargetOfAbility,
@@ -88,17 +99,28 @@ impl AbilityObjectBinding {
             Self::ThisCreature => "this-creature",
             Self::ThisArtifact => "this-artifact",
             Self::ThisEnchantment => "this-enchantment",
+            Self::ThisAura => "this-aura",
             Self::ThisLand => "this-land",
+            Self::ThisEquipment => "this-equipment",
+            Self::ThisVehicle => "this-vehicle",
             Self::ThisPlaneswalker => "this-planeswalker",
             Self::ThisBattle => "this-battle",
+            Self::ThisSiege => "this-siege",
             Self::AnotherPermanentYouControl => "another-permanent-you-control",
             Self::AnotherCreatureYouControl => "another-creature-you-control",
             Self::ACreatureYouControl => "a-creature-you-control",
             Self::OneOrMoreCreaturesYouControl => "one-or-more-creatures-you-control",
+            Self::ALandYouControl => "a-land-you-control",
+            Self::AnyLand => "any-land",
             Self::AnyCreature => "any-creature",
             Self::AnyPermanent => "any-permanent",
             Self::ACard => "a-card",
             Self::ASpell => "a-spell",
+            Self::ANoncreatureSpell => "a-noncreature-spell",
+            Self::AnInstantOrSorcerySpell => "an-instant-or-sorcery-spell",
+            Self::ACreatureSpell => "a-creature-spell",
+            Self::AnArtifactSpell => "an-artifact-spell",
+            Self::AnEnchantmentSpell => "an-enchantment-spell",
             Self::ThisSpell => "this-spell",
             Self::CopiedSpell => "copied-spell",
             Self::TargetOfAbility => "target-of-ability",
@@ -290,6 +312,16 @@ pub enum TriggerPredicate {
         alone: bool,
         recipient: AttackRecipientRequirement,
     },
+    PlayerAttacks {
+        player: AbilityPlayerBinding,
+    },
+    PlayerGainsLife {
+        player: AbilityPlayerBinding,
+    },
+    PlayerDrawsCard {
+        player: AbilityPlayerBinding,
+        occurrence_this_turn: Option<u32>,
+    },
     Blocks {
         object: AbilityObjectBinding,
         became_blocked: bool,
@@ -300,6 +332,9 @@ pub enum TriggerPredicate {
     },
     DealsDamage {
         source: AbilityObjectBinding,
+    },
+    IsDealtDamage {
+        object: AbilityObjectBinding,
     },
     StepOrPhase {
         boundary: StepBoundary,
@@ -408,6 +443,7 @@ impl StepBoundary {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum InterveningCondition {
+    SourceWasKicked,
     SourceIsTapped(bool),
     SourceIsAttacking(bool),
     SourceHasCounter {
@@ -426,6 +462,7 @@ pub enum InterveningCondition {
         comparison: NumericComparison,
         amount: u32,
     },
+    AnyOpponentPoisonCountersAtLeast(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -634,6 +671,7 @@ pub struct AbilityEnvelopeShape {
     exact_source: String,
     normalized_source: String,
     exact_body: String,
+    ability_word: Option<String>,
     envelope: ParsedAbilityEnvelope,
     shape_digest: String,
 }
@@ -643,6 +681,103 @@ pub struct OracleAbilityEnvelopeProgram {
     shape: AbilityEnvelopeShape,
     body: OracleActionProgram,
     semantic_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedOracleAbilityEnvelopeProgram {
+    shape: AbilityEnvelopeShape,
+    body_semantic_digest: String,
+    semantic_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StructuralAbilityEnvelopeKind {
+    Triggered,
+    Activated,
+}
+
+impl StructuralAbilityEnvelopeKind {
+    const fn stable_id(self) -> &'static str {
+        match self {
+            Self::Triggered => "triggered/v1",
+            Self::Activated => "activated/v1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuralOracleAbilityEnvelopeProgram {
+    exact_source: String,
+    normalized_source: String,
+    ability_word: Option<String>,
+    kind: StructuralAbilityEnvelopeKind,
+    exact_header: String,
+    exact_body: String,
+    semantic_digest: String,
+}
+
+impl StructuralOracleAbilityEnvelopeProgram {
+    pub fn exact_source(&self) -> &str {
+        &self.exact_source
+    }
+
+    pub fn normalized_source(&self) -> &str {
+        &self.normalized_source
+    }
+
+    pub fn ability_word(&self) -> Option<&str> {
+        self.ability_word.as_deref()
+    }
+
+    pub fn kind(&self) -> StructuralAbilityEnvelopeKind {
+        self.kind
+    }
+
+    pub fn exact_header(&self) -> &str {
+        &self.exact_header
+    }
+
+    pub fn exact_body(&self) -> &str {
+        &self.exact_body
+    }
+
+    pub fn semantic_digest(&self) -> &str {
+        &self.semantic_digest
+    }
+
+    pub const fn production_adapter_connected(&self) -> bool {
+        false
+    }
+}
+
+impl RetainedOracleAbilityEnvelopeProgram {
+    pub fn exact_source(&self) -> &str {
+        self.shape.exact_source()
+    }
+
+    pub fn normalized_source(&self) -> &str {
+        self.shape.normalized_source()
+    }
+
+    pub fn exact_body(&self) -> &str {
+        self.shape.exact_body()
+    }
+
+    pub fn envelope(&self) -> &ParsedAbilityEnvelope {
+        self.shape.envelope()
+    }
+
+    pub fn body_semantic_digest(&self) -> &str {
+        &self.body_semantic_digest
+    }
+
+    pub fn semantic_digest(&self) -> &str {
+        &self.semantic_digest
+    }
+
+    pub const fn production_adapter_connected(&self) -> bool {
+        false
+    }
 }
 
 impl OracleAbilityEnvelopeProgram {
@@ -656,6 +791,10 @@ impl OracleAbilityEnvelopeProgram {
 
     pub fn exact_body(&self) -> &str {
         self.shape.exact_body()
+    }
+
+    pub fn ability_word(&self) -> Option<&str> {
+        self.shape.ability_word()
     }
 
     pub fn envelope(&self) -> &ParsedAbilityEnvelope {
@@ -674,8 +813,79 @@ impl OracleAbilityEnvelopeProgram {
         &self.semantic_digest
     }
 
-    pub const fn production_adapter_connected(&self) -> bool {
-        oracle_ability_envelope_production_adapter_connected()
+    pub fn production_adapter_connected(&self) -> bool {
+        ability_envelope_header_production_adapter_connected(self.envelope())
+            && self.body.production_adapter_connected()
+    }
+}
+
+pub fn ability_envelope_header_production_adapter_connected(
+    envelope: &ParsedAbilityEnvelope,
+) -> bool {
+    match envelope {
+        ParsedAbilityEnvelope::Triggered(TriggerEnvelope { predicate, .. }) => {
+            trigger_predicate_has_production_adapter(predicate)
+        }
+        ParsedAbilityEnvelope::Activated(envelope) => {
+            activation_envelope_has_production_adapter(envelope)
+        }
+    }
+}
+
+fn activation_envelope_has_production_adapter(envelope: &ActivatedEnvelope) -> bool {
+    fn restriction_supported(restriction: &ActivationRestriction) -> bool {
+        match restriction {
+            ActivationRestriction::AnyTime
+            | ActivationRestriction::SorceryTiming
+            | ActivationRestriction::DuringYourTurn
+            | ActivationRestriction::DuringAnOpponentsTurn
+            | ActivationRestriction::DuringCombat
+            | ActivationRestriction::BeforeAttackersAreDeclared => true,
+            ActivationRestriction::Combined(restrictions) => {
+                restrictions.iter().all(restriction_supported)
+            }
+            ActivationRestriction::OnlyOnceEachTurn
+            | ActivationRestriction::OnlyOnce
+            | ActivationRestriction::SourceWasNotCastThisTurn
+            | ActivationRestriction::SourceEnteredThisTurn => false,
+        }
+    }
+    restriction_supported(&envelope.restriction)
+        && envelope
+            .costs
+            .iter()
+            .filter(|cost| matches!(cost, ActivationCost::Mana(_)))
+            .count()
+            <= 1
+        && envelope.costs.iter().all(|cost| {
+            !matches!(
+                cost,
+                ActivationCost::Mana(ManaCost { symbols })
+                    if symbols.iter().any(|symbol| matches!(symbol, ManaSymbol::Snow))
+            )
+        })
+}
+
+fn trigger_predicate_has_production_adapter(predicate: &TriggerPredicate) -> bool {
+    match predicate {
+        TriggerPredicate::EntersBattlefield { .. }
+        | TriggerPredicate::LeavesBattlefield { .. }
+        | TriggerPredicate::Dies { .. }
+        | TriggerPredicate::Attacks { .. }
+        | TriggerPredicate::PlayerAttacks { .. }
+        | TriggerPredicate::PlayerGainsLife { .. }
+        | TriggerPredicate::PlayerDrawsCard { .. }
+        | TriggerPredicate::Blocks { .. }
+        | TriggerPredicate::DealsCombatDamage { .. }
+        | TriggerPredicate::DealsDamage { .. }
+        | TriggerPredicate::IsDealtDamage { .. }
+        | TriggerPredicate::StepOrPhase { .. }
+        | TriggerPredicate::Cast { .. }
+        | TriggerPredicate::BecomesTarget { .. } => true,
+        TriggerPredicate::TappedOrUntapped { tapped: true, .. } => true,
+        TriggerPredicate::TappedOrUntapped { tapped: false, .. }
+        | TriggerPredicate::CounterChanged { .. }
+        | TriggerPredicate::ControllerControls { .. } => false,
     }
 }
 
@@ -690,6 +900,10 @@ impl AbilityEnvelopeShape {
 
     pub fn exact_body(&self) -> &str {
         &self.exact_body
+    }
+
+    pub fn ability_word(&self) -> Option<&str> {
+        self.ability_word.as_deref()
     }
 
     pub fn envelope(&self) -> &ParsedAbilityEnvelope {
@@ -774,6 +988,99 @@ pub fn compile_oracle_ability_envelope(
     })
 }
 
+pub fn compile_retained_oracle_ability_envelope(
+    input: AbilityEnvelopeCompileInput<'_>,
+) -> Result<RetainedOracleAbilityEnvelopeProgram, AbilityEnvelopeRejection> {
+    let shape = parse_ability_envelope_shape(input)?;
+    let mut body_hasher = Sha256::new();
+    for component in [
+        "oracle-ability-envelope-retained-body/v1",
+        ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION,
+        ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION,
+        shape.exact_body(),
+    ] {
+        body_hasher.update((component.len() as u64).to_le_bytes());
+        body_hasher.update(component.as_bytes());
+    }
+    let body_semantic_digest = format!("{:x}", body_hasher.finalize());
+    let mut hasher = Sha256::new();
+    for component in [
+        "oracle-ability-envelope-retained-program/v1",
+        ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION,
+        ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION,
+        ORACLE_ABILITY_ENVELOPE_RULES_CONTEXT_VERSION,
+        shape.exact_source(),
+        shape.normalized_source(),
+        shape.shape_digest(),
+        &body_semantic_digest,
+    ] {
+        hasher.update((component.len() as u64).to_le_bytes());
+        hasher.update(component.as_bytes());
+    }
+    let semantic_digest = format!("{:x}", hasher.finalize());
+    Ok(RetainedOracleAbilityEnvelopeProgram {
+        shape,
+        body_semantic_digest,
+        semantic_digest,
+    })
+}
+
+pub fn compile_structural_oracle_ability_envelope(
+    input: AbilityEnvelopeCompileInput<'_>,
+) -> Result<StructuralOracleAbilityEnvelopeProgram, AbilityEnvelopeRejection> {
+    if !is_complete_single_line(input.exact_source)
+        || !is_complete_single_line(input.normalized_source)
+    {
+        return Err(AbilityEnvelopeRejection::EmptyOrMalformedSource);
+    }
+    if reviewed_ability_envelope_normalized_source(input.exact_source) != input.normalized_source {
+        return Err(AbilityEnvelopeRejection::NormalizationMismatch);
+    }
+    let (ability_word, envelope_source) = split_ability_word_prefix(input.normalized_source);
+    let (kind, delimiter, delimiter_width) = if starts_trigger_envelope(envelope_source) {
+        (
+            StructuralAbilityEnvelopeKind::Triggered,
+            find_top_level_delimiter(envelope_source, ',')
+                .ok_or(AbilityEnvelopeRejection::UnsupportedTriggerPredicate)?,
+            1usize,
+        )
+    } else if let Some(colon) = find_top_level_delimiter(envelope_source, ':') {
+        (StructuralAbilityEnvelopeKind::Activated, colon, 1usize)
+    } else {
+        return Err(AbilityEnvelopeRejection::NotAbilityEnvelope);
+    };
+    let exact_header = envelope_source[..delimiter].trim();
+    let exact_body = envelope_source[delimiter + delimiter_width..].trim();
+    if exact_header.is_empty() || exact_body.is_empty() {
+        return Err(AbilityEnvelopeRejection::UnsupportedActionBody);
+    }
+    let mut hasher = Sha256::new();
+    for component in [
+        "oracle-ability-envelope-structural/v1",
+        ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION,
+        ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION,
+        ORACLE_ABILITY_ENVELOPE_RULES_CONTEXT_VERSION,
+        kind.stable_id(),
+        ability_word.unwrap_or(""),
+        input.exact_source,
+        input.normalized_source,
+        exact_header,
+        exact_body,
+    ] {
+        hasher.update((component.len() as u64).to_le_bytes());
+        hasher.update(component.as_bytes());
+    }
+    Ok(StructuralOracleAbilityEnvelopeProgram {
+        exact_source: input.exact_source.to_owned(),
+        normalized_source: input.normalized_source.to_owned(),
+        ability_word: ability_word.map(str::to_owned),
+        kind,
+        exact_header: exact_header.to_owned(),
+        exact_body: exact_body.to_owned(),
+        semantic_digest: format!("{:x}", hasher.finalize()),
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ManaResource {
     White,
@@ -802,6 +1109,7 @@ pub struct TriggerObjectSnapshot {
     pub zone_before: Zone,
     pub zone_after: Zone,
     pub card_types: BTreeSet<CardType>,
+    pub subtypes: BTreeSet<String>,
     pub tapped: bool,
     pub attachments: BTreeSet<TriggerAttachmentEvidence>,
 }
@@ -860,6 +1168,17 @@ pub enum AbilityTriggerEvent {
         object: TriggerObjectSnapshot,
         alone: bool,
         defender: Option<AttackDefender>,
+    },
+    PlayerAttacked {
+        player: PlayerId,
+    },
+    LifeGained {
+        player: PlayerId,
+        amount: u32,
+    },
+    CardDrawn {
+        player: PlayerId,
+        occurrence_this_turn: u32,
     },
     Blocked {
         object: TriggerObjectSnapshot,
@@ -1085,6 +1404,7 @@ pub struct AbilityEnvelopeRuntimeState<S: OracleActionStateAdapter> {
     pub tap_symbol_eligible_creatures: BTreeSet<ObjectRef>,
     pub source_cast_turn: BTreeMap<ObjectRef, u64>,
     pub source_entered_turn: BTreeMap<ObjectRef, u64>,
+    pub kicked_sources: BTreeSet<ObjectRef>,
     pending: BTreeMap<PendingAbilityId, PendingAbility>,
     activation_count_by_turn: BTreeMap<(String, ObjectRef, u64), u32>,
     activated_once: BTreeSet<(String, ObjectRef)>,
@@ -1107,6 +1427,7 @@ impl<S: OracleActionStateAdapter> AbilityEnvelopeRuntimeState<S> {
             tap_symbol_eligible_creatures: BTreeSet::new(),
             source_cast_turn: BTreeMap::new(),
             source_entered_turn: BTreeMap::new(),
+            kicked_sources: BTreeSet::new(),
             pending: BTreeMap::new(),
             activation_count_by_turn: BTreeMap::new(),
             activated_once: BTreeSet::new(),
@@ -1137,22 +1458,43 @@ pub fn begin_ability_trigger<S: OracleActionStateAdapter>(
     source: ObjectRef,
     event: &AbilityTriggerEvent,
 ) -> Result<AbilityTriggerReceipt, AbilityEnvelopeRuntimeError> {
-    let ParsedAbilityEnvelope::Triggered(envelope) = program.envelope() else {
+    verify_program_version(program)?;
+    begin_typed_ability_trigger(
+        state,
+        program.envelope(),
+        program.semantic_digest(),
+        controller,
+        source,
+        event,
+    )
+}
+
+pub fn begin_typed_ability_trigger<S: OracleActionStateAdapter>(
+    state: &mut AbilityEnvelopeRuntimeState<S>,
+    parsed: &ParsedAbilityEnvelope,
+    program_digest: &str,
+    controller: PlayerId,
+    source: ObjectRef,
+    event: &AbilityTriggerEvent,
+) -> Result<AbilityTriggerReceipt, AbilityEnvelopeRuntimeError> {
+    let ParsedAbilityEnvelope::Triggered(envelope) = parsed else {
         return Err(AbilityEnvelopeRuntimeError::WrongEnvelopeKind);
     };
-    verify_program_version(program)?;
+    if program_digest.len() != 64 || !program_digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AbilityEnvelopeRuntimeError::ProgramVersionMismatch);
+    }
     validate_trigger_source(state, controller, source, event)?;
     let (event_object, event_player) =
         validate_trigger_event(state, &envelope.predicate, controller, source, event)?;
-    if let Some(condition) = &envelope.intervening_if
-        && !evaluate_intervening_condition(state, condition, controller, source)?
-    {
-        return Err(AbilityEnvelopeRuntimeError::TriggerDidNotMatch);
+    if let Some(condition) = &envelope.intervening_if {
+        if !evaluate_intervening_condition(state, condition, controller, source)? {
+            return Err(AbilityEnvelopeRuntimeError::TriggerDidNotMatch);
+        }
     }
     let id = state.next_pending_id()?;
     let pending = PendingAbility {
         id,
-        program_digest: program.semantic_digest().to_owned(),
+        program_digest: program_digest.to_owned(),
         kind: AbilityEnvelopeKind::Triggered,
         controller,
         source,
@@ -1173,10 +1515,31 @@ pub fn begin_ability_activation<S: OracleActionStateAdapter>(
     source: ObjectRef,
     payment: &AbilityActivationPayment,
 ) -> Result<AbilityActivationReceipt, AbilityEnvelopeRuntimeError> {
-    let ParsedAbilityEnvelope::Activated(envelope) = program.envelope() else {
+    verify_program_version(program)?;
+    begin_typed_ability_activation(
+        state,
+        program.envelope(),
+        program.semantic_digest(),
+        controller,
+        source,
+        payment,
+    )
+}
+
+pub fn begin_typed_ability_activation<S: OracleActionStateAdapter>(
+    state: &mut AbilityEnvelopeRuntimeState<S>,
+    parsed: &ParsedAbilityEnvelope,
+    program_digest: &str,
+    controller: PlayerId,
+    source: ObjectRef,
+    payment: &AbilityActivationPayment,
+) -> Result<AbilityActivationReceipt, AbilityEnvelopeRuntimeError> {
+    let ParsedAbilityEnvelope::Activated(envelope) = parsed else {
         return Err(AbilityEnvelopeRuntimeError::WrongEnvelopeKind);
     };
-    verify_program_version(program)?;
+    if program_digest.len() != 64 || !program_digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AbilityEnvelopeRuntimeError::ProgramVersionMismatch);
+    }
     let mut staged = state.clone();
     let result = (|| {
         validate_source_identity(&staged, controller, source, false)?;
@@ -1187,7 +1550,7 @@ pub fn begin_ability_activation<S: OracleActionStateAdapter>(
         validate_activation_restriction(
             &staged,
             &envelope.restriction,
-            program.semantic_digest(),
+            program_digest,
             controller,
             source,
         )?;
@@ -1202,16 +1565,11 @@ pub fn begin_ability_activation<S: OracleActionStateAdapter>(
             paid_costs.push(receipt);
         }
         paid_costs.sort_by_key(|receipt| receipt.cost_index);
-        note_activation(
-            &mut staged,
-            &envelope.restriction,
-            program.semantic_digest(),
-            source,
-        );
+        note_activation(&mut staged, &envelope.restriction, program_digest, source);
         let id = staged.next_pending_id()?;
         let pending = PendingAbility {
             id,
-            program_digest: program.semantic_digest().to_owned(),
+            program_digest: program_digest.to_owned(),
             kind: AbilityEnvelopeKind::Activated,
             controller,
             source,
@@ -1288,9 +1646,13 @@ fn required_activation_source_zone(
                     | AbilityObjectBinding::ThisCreature
                     | AbilityObjectBinding::ThisArtifact
                     | AbilityObjectBinding::ThisEnchantment
+                    | AbilityObjectBinding::ThisAura
                     | AbilityObjectBinding::ThisLand
+                    | AbilityObjectBinding::ThisEquipment
+                    | AbilityObjectBinding::ThisVehicle
                     | AbilityObjectBinding::ThisPlaneswalker
-                    | AbilityObjectBinding::ThisBattle,
+                    | AbilityObjectBinding::ThisBattle
+                    | AbilityObjectBinding::ThisSiege,
                 ..
             } => Some(Zone::Battlefield),
             _ => None,
@@ -1451,7 +1813,10 @@ fn validate_trigger_source<S: OracleActionStateAdapter>(
         AbilityTriggerEvent::CombatDamage { source, .. }
         | AbilityTriggerEvent::Damage { source, .. } => Some(source),
         AbilityTriggerEvent::Spell { spell, .. } => Some(spell),
-        AbilityTriggerEvent::StepOrPhase { .. }
+        AbilityTriggerEvent::PlayerAttacked { .. }
+        | AbilityTriggerEvent::LifeGained { .. }
+        | AbilityTriggerEvent::CardDrawn { .. }
+        | AbilityTriggerEvent::StepOrPhase { .. }
         | AbilityTriggerEvent::BattlefieldConditionChanged { .. } => None,
     };
     if event_source
@@ -1524,6 +1889,32 @@ fn validate_trigger_event<S: OracleActionStateAdapter>(
                 && event_object_binding_matches(*object, event_object, controller, source)
         }
         (
+            TriggerPredicate::PlayerAttacks { player },
+            AbilityTriggerEvent::PlayerAttacked {
+                player: event_player,
+            },
+        ) => player_binding_matches(*player, controller, *event_player, state),
+        (
+            TriggerPredicate::PlayerGainsLife { player },
+            AbilityTriggerEvent::LifeGained {
+                player: event_player,
+                amount,
+            },
+        ) => *amount > 0 && player_binding_matches(*player, controller, *event_player, state),
+        (
+            TriggerPredicate::PlayerDrawsCard {
+                player,
+                occurrence_this_turn,
+            },
+            AbilityTriggerEvent::CardDrawn {
+                player: event_player,
+                occurrence_this_turn: event_occurrence,
+            },
+        ) => {
+            occurrence_this_turn.is_none_or(|expected| expected == *event_occurrence)
+                && player_binding_matches(*player, controller, *event_player, state)
+        }
+        (
             TriggerPredicate::Blocks {
                 object,
                 became_blocked,
@@ -1557,6 +1948,25 @@ fn validate_trigger_event<S: OracleActionStateAdapter>(
                 ..
             },
         ) => *amount > 0 && event_object_binding_matches(*object, event_object, controller, source),
+        (
+            TriggerPredicate::IsDealtDamage { object },
+            AbilityTriggerEvent::Damage {
+                recipient: ResolvedDamageRecipient::Object(reference),
+                amount,
+                ..
+            },
+        ) => {
+            *amount > 0
+                && state
+                    .action_state
+                    .action_world()
+                    .objects
+                    .get(reference)
+                    .map(snapshot_from_game_object)
+                    .is_some_and(|snapshot| {
+                        event_object_binding_matches(*object, &snapshot, controller, source)
+                    })
+        }
         (
             TriggerPredicate::StepOrPhase {
                 boundary,
@@ -1681,6 +2091,20 @@ fn validate_trigger_event<S: OracleActionStateAdapter>(
     if !matched {
         return Err(AbilityEnvelopeRuntimeError::TriggerDidNotMatch);
     }
+    if matches!(predicate, TriggerPredicate::IsDealtDamage { .. })
+        && let AbilityTriggerEvent::Damage {
+            recipient: ResolvedDamageRecipient::Object(reference),
+            ..
+        } = event
+    {
+        let event_player = state
+            .action_state
+            .action_world()
+            .objects
+            .get(reference)
+            .map(|object| object.controller);
+        return Ok((Some(*reference), event_player));
+    }
     Ok(trigger_event_bindings(event))
 }
 
@@ -1692,6 +2116,9 @@ fn validate_trigger_player_evidence<S: OracleActionStateAdapter>(
 ) -> Result<(), AbilityEnvelopeRuntimeError> {
     let world = state.action_state.action_world();
     let event_player = match event {
+        AbilityTriggerEvent::PlayerAttacked { player }
+        | AbilityTriggerEvent::LifeGained { player, .. }
+        | AbilityTriggerEvent::CardDrawn { player, .. } => Some(*player),
         AbilityTriggerEvent::StepOrPhase { active_player, .. } => Some(*active_player),
         AbilityTriggerEvent::BattlefieldConditionChanged { player, .. } => Some(*player),
         AbilityTriggerEvent::Spell { player, .. } => Some(*player),
@@ -1729,7 +2156,14 @@ fn validate_trigger_player_evidence<S: OracleActionStateAdapter>(
         } | TriggerPredicate::Attacks {
             recipient: AttackRecipientRequirement::Opponent,
             ..
+        } | TriggerPredicate::PlayerAttacks {
+            player: AbilityPlayerBinding::AnOpponent,
         } | TriggerPredicate::Cast {
+            player: AbilityPlayerBinding::AnOpponent,
+            ..
+        } | TriggerPredicate::PlayerGainsLife {
+            player: AbilityPlayerBinding::AnOpponent,
+        } | TriggerPredicate::PlayerDrawsCard {
             player: AbilityPlayerBinding::AnOpponent,
             ..
         } | TriggerPredicate::BecomesTarget {
@@ -1784,6 +2218,9 @@ fn trigger_event_bindings(event: &AbilityTriggerEvent) -> (Option<ObjectRef>, Op
             },
         ),
         AbilityTriggerEvent::Spell { spell, player, .. } => (Some(spell.reference), Some(*player)),
+        AbilityTriggerEvent::PlayerAttacked { player }
+        | AbilityTriggerEvent::LifeGained { player, .. }
+        | AbilityTriggerEvent::CardDrawn { player, .. } => (None, Some(*player)),
         AbilityTriggerEvent::StepOrPhase { active_player, .. } => (None, Some(*active_player)),
         AbilityTriggerEvent::BattlefieldConditionChanged { player, .. } => (None, Some(*player)),
     }
@@ -1791,7 +2228,8 @@ fn trigger_event_bindings(event: &AbilityTriggerEvent) -> (Option<ObjectRef>, Op
 
 fn trigger_event_amount(event: &AbilityTriggerEvent) -> Option<u32> {
     match event {
-        AbilityTriggerEvent::Damage { amount, .. } => Some(*amount),
+        AbilityTriggerEvent::Damage { amount, .. }
+        | AbilityTriggerEvent::LifeGained { amount, .. } => Some(*amount),
         _ => None,
     }
 }
@@ -1823,14 +2261,26 @@ fn event_object_binding_matches(
         AbilityObjectBinding::ThisEnchantment => {
             object.reference == source && object.card_types.contains(&CardType::Enchantment)
         }
+        AbilityObjectBinding::ThisAura => {
+            object.reference == source && object.subtypes.contains("Aura")
+        }
         AbilityObjectBinding::ThisLand => {
             object.reference == source && object.card_types.contains(&CardType::Land)
+        }
+        AbilityObjectBinding::ThisEquipment => {
+            object.reference == source && object.subtypes.contains("Equipment")
+        }
+        AbilityObjectBinding::ThisVehicle => {
+            object.reference == source && object.subtypes.contains("Vehicle")
         }
         AbilityObjectBinding::ThisPlaneswalker => {
             object.reference == source && object.card_types.contains(&CardType::Planeswalker)
         }
         AbilityObjectBinding::ThisBattle => {
             object.reference == source && object.card_types.contains(&CardType::Battle)
+        }
+        AbilityObjectBinding::ThisSiege => {
+            object.reference == source && object.subtypes.contains("Siege")
         }
         AbilityObjectBinding::AnotherPermanentYouControl => {
             object.reference != source
@@ -1846,12 +2296,33 @@ fn event_object_binding_matches(
         | AbilityObjectBinding::OneOrMoreCreaturesYouControl => {
             object.controller == controller && object.card_types.contains(&CardType::Creature)
         }
+        AbilityObjectBinding::ALandYouControl => {
+            object.controller == controller && object.card_types.contains(&CardType::Land)
+        }
+        AbilityObjectBinding::AnyLand => object.card_types.contains(&CardType::Land),
         AbilityObjectBinding::AnyCreature => object.card_types.contains(&CardType::Creature),
         AbilityObjectBinding::AnyPermanent => snapshot_is_permanent(object),
         AbilityObjectBinding::ACard => object.zone_after != Zone::Battlefield,
         AbilityObjectBinding::ASpell
         | AbilityObjectBinding::ThisSpell
         | AbilityObjectBinding::CopiedSpell => object.zone_after == Zone::Stack,
+        AbilityObjectBinding::ANoncreatureSpell => {
+            object.zone_after == Zone::Stack && !object.card_types.contains(&CardType::Creature)
+        }
+        AbilityObjectBinding::AnInstantOrSorcerySpell => {
+            object.zone_after == Zone::Stack
+                && (object.card_types.contains(&CardType::Instant)
+                    || object.card_types.contains(&CardType::Sorcery))
+        }
+        AbilityObjectBinding::ACreatureSpell => {
+            object.zone_after == Zone::Stack && object.card_types.contains(&CardType::Creature)
+        }
+        AbilityObjectBinding::AnArtifactSpell => {
+            object.zone_after == Zone::Stack && object.card_types.contains(&CardType::Artifact)
+        }
+        AbilityObjectBinding::AnEnchantmentSpell => {
+            object.zone_after == Zone::Stack && object.card_types.contains(&CardType::Enchantment)
+        }
         AbilityObjectBinding::TargetOfAbility => false,
         AbilityObjectBinding::EnchantedObject => {
             object.attachments.contains(&TriggerAttachmentEvidence {
@@ -2025,6 +2496,7 @@ fn evaluate_intervening_condition<S: OracleActionStateAdapter>(
 ) -> Result<bool, AbilityEnvelopeRuntimeError> {
     let world = state.action_state.action_world();
     match condition {
+        InterveningCondition::SourceWasKicked => Ok(state.kicked_sources.contains(&source)),
         InterveningCondition::SourceIsTapped(expected) => world
             .objects
             .get(&source)
@@ -2085,6 +2557,23 @@ fn evaluate_intervening_condition<S: OracleActionStateAdapter>(
                 .count() as i64;
             Ok(compare_i64(count, *comparison, i64::from(*amount)))
         }
+        InterveningCondition::AnyOpponentPoisonCountersAtLeast(amount) => {
+            let opponents = world
+                .opponents
+                .get(&controller)
+                .ok_or(AbilityEnvelopeRuntimeError::InterveningConditionUnavailable)?;
+            for opponent in opponents {
+                let poison_counters = world
+                    .players
+                    .get(opponent)
+                    .ok_or(AbilityEnvelopeRuntimeError::InterveningConditionUnavailable)?
+                    .poison_counters;
+                if poison_counters >= *amount {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
     }
 }
 
@@ -2118,6 +2607,7 @@ fn snapshot_from_game_object(object: &GameObject) -> TriggerObjectSnapshot {
         zone_before: Zone::from_action_zone(object.zone),
         zone_after: Zone::from_action_zone(object.zone),
         card_types: object.card_types.clone(),
+        subtypes: object.subtypes.clone(),
         tapped: object.tapped,
         attachments: BTreeSet::new(),
     }
@@ -2989,9 +3479,13 @@ fn resolve_bound_cost_objects<S: OracleActionStateAdapter>(
         | AbilityObjectBinding::ThisCreature
         | AbilityObjectBinding::ThisArtifact
         | AbilityObjectBinding::ThisEnchantment
+        | AbilityObjectBinding::ThisAura
         | AbilityObjectBinding::ThisLand
+        | AbilityObjectBinding::ThisEquipment
+        | AbilityObjectBinding::ThisVehicle
         | AbilityObjectBinding::ThisPlaneswalker
-        | AbilityObjectBinding::ThisBattle => {
+        | AbilityObjectBinding::ThisBattle
+        | AbilityObjectBinding::ThisSiege => {
             let object = state
                 .action_state
                 .action_world()
@@ -3058,13 +3552,14 @@ pub fn parse_ability_envelope_shape(
     }
 
     let source = input.normalized_source;
-    if !source.ends_with('.') || source.ends_with("..") {
+    if (!source.ends_with('.') && !source.ends_with(')')) || source.ends_with("..") {
         return Err(AbilityEnvelopeRejection::EmptyOrMalformedSource);
     }
-    let (envelope, exact_body) = if starts_trigger_envelope(source) {
-        parse_triggered_shape(source)?
-    } else if contains_top_level_colon(source) {
-        parse_activated_shape(source)?
+    let (ability_word, envelope_source) = split_ability_word_prefix(source);
+    let (envelope, exact_body) = if starts_trigger_envelope(envelope_source) {
+        parse_triggered_shape(envelope_source)?
+    } else if contains_top_level_colon(envelope_source) {
+        parse_activated_shape(envelope_source)?
     } else {
         return Err(AbilityEnvelopeRejection::NotAbilityEnvelope);
     };
@@ -3074,6 +3569,7 @@ pub fn parse_ability_envelope_shape(
     let shape_digest = ability_shape_semantic_digest(
         input.exact_source,
         input.normalized_source,
+        ability_word,
         &envelope,
         exact_body,
     );
@@ -3081,9 +3577,28 @@ pub fn parse_ability_envelope_shape(
         exact_source: input.exact_source.to_owned(),
         normalized_source: input.normalized_source.to_owned(),
         exact_body: exact_body.to_owned(),
+        ability_word: ability_word.map(str::to_owned),
         envelope,
         shape_digest,
     })
+}
+
+fn split_ability_word_prefix(source: &str) -> (Option<&str>, &str) {
+    let Some((prefix, remainder)) = source.split_once(" \u{2014} ") else {
+        return (None, source);
+    };
+    let valid_prefix = !prefix.is_empty()
+        && prefix.len() <= 80
+        && prefix.chars().all(|character| {
+            character.is_alphabetic()
+                || character.is_whitespace()
+                || matches!(character, '\'' | '-' | ',')
+        });
+    if valid_prefix && (starts_trigger_envelope(remainder) || contains_top_level_colon(remainder)) {
+        (Some(prefix), remainder)
+    } else {
+        (None, source)
+    }
 }
 
 fn parse_triggered_shape(
@@ -3162,6 +3677,50 @@ fn parse_trigger_predicate_remainder(
 ) -> Result<TriggerPredicate, AbilityEnvelopeRejection> {
     if let Some(predicate) = parse_step_or_phase_trigger(source) {
         return Ok(predicate);
+    }
+    if source == "you attack" {
+        return Ok(TriggerPredicate::PlayerAttacks {
+            player: AbilityPlayerBinding::You,
+        });
+    }
+    if source == "an opponent attacks" {
+        return Ok(TriggerPredicate::PlayerAttacks {
+            player: AbilityPlayerBinding::AnOpponent,
+        });
+    }
+    if source == "you gain life" {
+        return Ok(TriggerPredicate::PlayerGainsLife {
+            player: AbilityPlayerBinding::You,
+        });
+    }
+    if source == "an opponent gains life" {
+        return Ok(TriggerPredicate::PlayerGainsLife {
+            player: AbilityPlayerBinding::AnOpponent,
+        });
+    }
+    if source == "you draw a card" {
+        return Ok(TriggerPredicate::PlayerDrawsCard {
+            player: AbilityPlayerBinding::You,
+            occurrence_this_turn: None,
+        });
+    }
+    if source == "an opponent draws a card" {
+        return Ok(TriggerPredicate::PlayerDrawsCard {
+            player: AbilityPlayerBinding::AnOpponent,
+            occurrence_this_turn: None,
+        });
+    }
+    for (source_text, occurrence_this_turn) in [
+        ("you draw your second card each turn", 2),
+        ("you draw your third card each turn", 3),
+        ("you draw your fourth card each turn", 4),
+    ] {
+        if source == source_text {
+            return Ok(TriggerPredicate::PlayerDrawsCard {
+                player: AbilityPlayerBinding::You,
+                occurrence_this_turn: Some(occurrence_this_turn),
+            });
+        }
     }
     if let Some(subject) = source.strip_prefix("you control no ")
         && let Some(mut filter) = parse_object_filter(subject)
@@ -3242,6 +3801,11 @@ fn parse_trigger_predicate_remainder(
             });
         }
     }
+    if let Some(subject) = source.strip_suffix(" is dealt damage")
+        && let Some(object) = parse_ability_object_binding(subject)
+    {
+        return Ok(TriggerPredicate::IsDealtDamage { object });
+    }
     if let Some(subject) = source.strip_suffix(" deals damage")
         && let Some(object) = parse_ability_object_binding(subject)
     {
@@ -3308,6 +3872,16 @@ fn parse_trigger_predicate_remainder(
             TargetingCauseRequirement::SpellOrAbility,
         ),
         (
+            " becomes the target of a spell an opponent controls",
+            Some(AbilityPlayerBinding::AnOpponent),
+            TargetingCauseRequirement::Spell,
+        ),
+        (
+            " becomes the target of an ability an opponent controls",
+            Some(AbilityPlayerBinding::AnOpponent),
+            TargetingCauseRequirement::Ability,
+        ),
+        (
             " becomes the target of a spell or ability",
             None,
             TargetingCauseRequirement::SpellOrAbility,
@@ -3355,6 +3929,9 @@ fn parse_intervening_condition(
     source: &str,
 ) -> Result<InterveningCondition, AbilityEnvelopeRejection> {
     match source {
+        "it was kicked" | "this permanent was kicked" | "this creature was kicked" => {
+            return Ok(InterveningCondition::SourceWasKicked);
+        }
         "this permanent is tapped" | "this creature is tapped" => {
             return Ok(InterveningCondition::SourceIsTapped(true));
         }
@@ -3386,6 +3963,15 @@ fn parse_intervening_condition(
         && let Some(object) = parse_ability_object_binding(object_source)
     {
         return Ok(InterveningCondition::YouControlObject(object));
+    }
+    if let Some(amount) = source
+        .strip_prefix("an opponent has ")
+        .and_then(|remainder| remainder.strip_suffix(" or more poison counters"))
+        .and_then(parse_number_word_or_decimal)
+    {
+        return Ok(InterveningCondition::AnyOpponentPoisonCountersAtLeast(
+            amount,
+        ));
     }
     for (prefix, player, comparison) in [
         (
@@ -3526,7 +4112,17 @@ fn parse_step_or_phase_trigger(source: &str) -> Option<TriggerPredicate> {
                 .strip_prefix("the end of ")
                 .map(|value| (StepBoundary::End, value))
         })?;
-    let (turn_owner, boundary_name) = if let Some(value) = remainder.strip_prefix("your ") {
+    let (suffix_turn_owner, remainder) =
+        if let Some(value) = remainder.strip_suffix(" on your turn") {
+            (Some(TurnOwner::Yours), value)
+        } else if let Some(value) = remainder.strip_suffix(" on each opponent's turn") {
+            (Some(TurnOwner::Opponents), value)
+        } else if let Some(value) = remainder.strip_suffix(" on each player's turn") {
+            (Some(TurnOwner::EachPlayers), value)
+        } else {
+            (None, remainder)
+        };
+    let (prefix_turn_owner, boundary_name) = if let Some(value) = remainder.strip_prefix("your ") {
         (TurnOwner::Yours, value)
     } else if let Some(value) = remainder.strip_prefix("each opponent's ") {
         (TurnOwner::Opponents, value)
@@ -3537,6 +4133,7 @@ fn parse_step_or_phase_trigger(source: &str) -> Option<TriggerPredicate> {
     } else {
         (TurnOwner::Any, remainder)
     };
+    let turn_owner = suffix_turn_owner.unwrap_or(prefix_turn_owner);
     let (phase, step) = match boundary_name {
         "beginning phase" => (Some(TurnPhase::Beginning), None),
         "precombat main phase" => (Some(TurnPhase::PrecombatMain), None),
@@ -3623,6 +4220,11 @@ fn parse_cast_or_copy_trigger(source: &str) -> Option<TriggerPredicate> {
             };
         let spell = match spell_source {
             "a spell" | "one or more spells" => AbilityObjectBinding::ASpell,
+            "a noncreature spell" => AbilityObjectBinding::ANoncreatureSpell,
+            "an instant or sorcery spell" => AbilityObjectBinding::AnInstantOrSorcerySpell,
+            "a creature spell" => AbilityObjectBinding::ACreatureSpell,
+            "an artifact spell" => AbilityObjectBinding::AnArtifactSpell,
+            "an enchantment spell" => AbilityObjectBinding::AnEnchantmentSpell,
             "this spell" => AbilityObjectBinding::ThisSpell,
             "a copy of a spell" => AbilityObjectBinding::CopiedSpell,
             _ => return None,
@@ -3672,24 +4274,36 @@ fn parse_counter_change_trigger(source: &str) -> Option<TriggerPredicate> {
 }
 
 fn parse_ability_object_binding(source: &str) -> Option<AbilityObjectBinding> {
-    match source.trim() {
+    let normalized = source.trim().to_ascii_lowercase();
+    match normalized.as_str() {
         "this permanent" | "it" => Some(AbilityObjectBinding::ThisPermanent),
         "this creature" => Some(AbilityObjectBinding::ThisCreature),
         "this artifact" => Some(AbilityObjectBinding::ThisArtifact),
         "this enchantment" => Some(AbilityObjectBinding::ThisEnchantment),
+        "this aura" => Some(AbilityObjectBinding::ThisAura),
         "this land" => Some(AbilityObjectBinding::ThisLand),
+        "this equipment" => Some(AbilityObjectBinding::ThisEquipment),
+        "this vehicle" => Some(AbilityObjectBinding::ThisVehicle),
         "this planeswalker" => Some(AbilityObjectBinding::ThisPlaneswalker),
         "this battle" => Some(AbilityObjectBinding::ThisBattle),
+        "this siege" => Some(AbilityObjectBinding::ThisSiege),
         "another permanent you control" => Some(AbilityObjectBinding::AnotherPermanentYouControl),
         "another creature you control" => Some(AbilityObjectBinding::AnotherCreatureYouControl),
         "a creature you control" => Some(AbilityObjectBinding::ACreatureYouControl),
         "one or more creatures you control" => {
             Some(AbilityObjectBinding::OneOrMoreCreaturesYouControl)
         }
+        "a land you control" => Some(AbilityObjectBinding::ALandYouControl),
+        "a land" | "one or more lands" => Some(AbilityObjectBinding::AnyLand),
         "a creature" | "one or more creatures" => Some(AbilityObjectBinding::AnyCreature),
         "a permanent" | "one or more permanents" => Some(AbilityObjectBinding::AnyPermanent),
         "a card" | "one or more cards" => Some(AbilityObjectBinding::ACard),
         "a spell" | "one or more spells" => Some(AbilityObjectBinding::ASpell),
+        "a noncreature spell" => Some(AbilityObjectBinding::ANoncreatureSpell),
+        "an instant or sorcery spell" => Some(AbilityObjectBinding::AnInstantOrSorcerySpell),
+        "a creature spell" => Some(AbilityObjectBinding::ACreatureSpell),
+        "an artifact spell" => Some(AbilityObjectBinding::AnArtifactSpell),
+        "an enchantment spell" => Some(AbilityObjectBinding::AnEnchantmentSpell),
         "this spell" => Some(AbilityObjectBinding::ThisSpell),
         "a copy of a spell" => Some(AbilityObjectBinding::CopiedSpell),
         "enchanted creature" => Some(AbilityObjectBinding::EnchantedObject),
@@ -3901,26 +4515,33 @@ fn parse_mana_symbol(source: &str) -> Option<ManaSymbol> {
 
 fn parse_object_cost(source: &str, requires_untapped: bool) -> Option<ObjectCost> {
     let source = source.trim();
+    let source_binding = source.to_ascii_lowercase();
     let source_only = matches!(
-        source,
+        source_binding.as_str(),
         "this permanent"
             | "this creature"
             | "this artifact"
             | "this enchantment"
+            | "this aura"
             | "this land"
+            | "this equipment"
+            | "this vehicle"
             | "this planeswalker"
             | "this battle"
+            | "this siege"
     );
     let mut other_than_source = false;
     let mut filter = CostObjectFilter::default();
     if source_only {
-        filter.card_types.insert(match source {
+        filter.card_types.insert(match source_binding.as_str() {
             "this creature" => CostCardType::Creature,
             "this artifact" => CostCardType::Artifact,
             "this enchantment" => CostCardType::Enchantment,
+            "this aura" => CostCardType::Enchantment,
             "this land" => CostCardType::Land,
+            "this equipment" | "this vehicle" => CostCardType::Artifact,
             "this planeswalker" => CostCardType::Planeswalker,
-            "this battle" => CostCardType::Battle,
+            "this battle" | "this siege" => CostCardType::Battle,
             "this permanent" => CostCardType::Permanent,
             _ => return None,
         });
@@ -4146,6 +4767,7 @@ fn collapse_whitespace(source: &str) -> String {
 fn ability_shape_semantic_digest(
     exact_source: &str,
     normalized_source: &str,
+    ability_word: Option<&str>,
     envelope: &ParsedAbilityEnvelope,
     exact_body: &str,
 ) -> String {
@@ -4157,6 +4779,7 @@ fn ability_shape_semantic_digest(
         ORACLE_ABILITY_ENVELOPE_RULES_CONTEXT_VERSION,
         exact_source,
         normalized_source,
+        ability_word.unwrap_or(""),
         envelope.kind().stable_id(),
         &format!("{envelope:?}"),
         exact_body,

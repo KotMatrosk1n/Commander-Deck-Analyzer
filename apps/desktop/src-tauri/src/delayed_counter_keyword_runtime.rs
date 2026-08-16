@@ -12,8 +12,8 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const DELAYED_COUNTER_KEYWORD_COMPILER_VERSION: &str = "delayed-counter-keyword-compiler-0.1";
-pub const DELAYED_COUNTER_KEYWORD_RUNTIME_VERSION: &str = "delayed-counter-keyword-runtime-0.1";
+pub const DELAYED_COUNTER_KEYWORD_COMPILER_VERSION: &str = "delayed-counter-keyword-compiler-0.4";
+pub const DELAYED_COUNTER_KEYWORD_RUNTIME_VERSION: &str = "delayed-counter-keyword-runtime-0.4";
 pub const DELAYED_COUNTER_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101.4,117.5,603.2c,603.3b,603.4,\
      603.6c,603.10,702.24,702.28,702.32,702.63,704.5,701.17,701.20,122.6";
 
@@ -159,7 +159,13 @@ impl DelayedCounterKeywordProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        delayed_counter_keyword_production_adapter_connected()
+        matches!(
+            &self.kind,
+            DelayedCounterKeywordKind::Echo { .. }
+                | DelayedCounterKeywordKind::CumulativeUpkeep { .. }
+                | DelayedCounterKeywordKind::Vanishing { .. }
+                | DelayedCounterKeywordKind::Fading { .. }
+        )
     }
 }
 
@@ -1368,18 +1374,19 @@ impl DelayedCounterKeywordRuntime {
                     Some(TriggerKind::FadingRemoveFadeCounterOrSacrifice)
                 }
             };
-            if let Some(kind) = kind
-                && self
+            if let Some(kind) = kind {
+                if self
                     .trigger_ledger
                     .insert((program.binding_id, kind, event_id))
-            {
-                triggers.push(self.new_trigger(
-                    &program,
-                    kind,
-                    active_player,
-                    event_id,
-                    previous_upkeep,
-                )?);
+                {
+                    triggers.push(self.new_trigger(
+                        &program,
+                        kind,
+                        active_player,
+                        event_id,
+                        previous_upkeep,
+                    )?);
+                }
             }
         }
         self.last_upkeep_event.insert(active_player, event_id);

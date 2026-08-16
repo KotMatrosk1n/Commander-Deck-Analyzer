@@ -112,6 +112,7 @@ pub(crate) struct BoundDelegatedEquipProgram {
     pub(crate) source_card_index: usize,
     pub(crate) clause: EquipClauseIdentity,
     pub(crate) program: EquipProgram,
+    pub(crate) is_reconfigure: bool,
     pub(crate) target_family: EquipTargetFamily,
 }
 
@@ -129,8 +130,18 @@ impl BoundDelegatedEquipProgram {
         if !program.has_exact_contract() {
             return Err(EquipBindingError::InexactProgramContract);
         }
-        let KeywordProgramKind::Equip(equip) = program.kind() else {
-            return Err(EquipBindingError::ProgramKindMismatch);
+        let (equip, is_reconfigure) = match program.kind() {
+            KeywordProgramKind::Equip(equip) => (equip.clone(), false),
+            KeywordProgramKind::Reconfigure(reconfigure) => (
+                EquipProgram {
+                    activation_cost: reconfigure.activation_cost.clone(),
+                    target_filter: reconfigure.target_filter.clone(),
+                    planeswalker_as_creature: false,
+                    sorcery_timing_only: reconfigure.sorcery_timing_only,
+                },
+                true,
+            ),
+            _ => return Err(EquipBindingError::ProgramKindMismatch),
         };
         let address = clause.address();
         let source = program.source();
@@ -166,7 +177,7 @@ impl BoundDelegatedEquipProgram {
         if !equip.sorcery_timing_only {
             return Err(EquipBindingError::UnsupportedTimingContract);
         }
-        let target_family = exact_target_family(equip)?;
+        let target_family = exact_target_family(&equip)?;
         Ok(Self {
             bridge_version: EQUIP_PRODUCTION_RUNTIME_VERSION,
             source_object,
@@ -177,7 +188,8 @@ impl BoundDelegatedEquipProgram {
                 face_index: address.face_index,
                 clause_index: address.clause_index,
             },
-            program: equip.clone(),
+            program: equip,
+            is_reconfigure,
             target_family,
         })
     }
@@ -342,7 +354,7 @@ impl PendingEquipActivations {
         if source.controller != context.actor {
             return Err(EquipActivationError::WrongSourceController);
         }
-        if !source.can_be_attached_as_equipment() {
+        if !binding.source_is_legal(source) {
             return Err(EquipActivationError::IllegalEquipmentSource);
         }
         if source.identity == target.identity {
@@ -419,7 +431,7 @@ impl PendingEquipActivations {
                 EquipResolutionOutcome::Failed(EquipResolutionFailure::SourceIdentityChanged)
             }
             Some(source)
-                if source.zone != Zone::Battlefield || !source.can_be_attached_as_equipment() =>
+                if source.zone != Zone::Battlefield || !pending.binding.source_is_legal(source) =>
             {
                 EquipResolutionOutcome::Failed(EquipResolutionFailure::SourceIllegal)
             }
@@ -456,6 +468,20 @@ impl PendingEquipActivations {
             .values()
             .filter(|pending| pending.source == source)
             .count()
+    }
+}
+
+impl BoundDelegatedEquipProgram {
+    fn source_is_legal(&self, source: &EquipObjectSnapshot) -> bool {
+        source.is_artifact_equipment()
+            && if self.is_reconfigure {
+                source.has_reconfigure
+            } else {
+                !source
+                    .characteristics
+                    .card_types
+                    .contains(&CardType::Creature)
+            }
     }
 }
 

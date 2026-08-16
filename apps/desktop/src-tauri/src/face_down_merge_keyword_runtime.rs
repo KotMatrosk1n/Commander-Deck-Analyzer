@@ -11,7 +11,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const FACE_DOWN_MERGE_KEYWORD_COMPILER_VERSION: &str = "face-down-merge-keyword-compiler-0.1";
-pub const FACE_DOWN_MERGE_KEYWORD_RUNTIME_VERSION: &str = "face-down-merge-keyword-runtime-0.1";
+pub const FACE_DOWN_MERGE_KEYWORD_RUNTIME_VERSION: &str = "face-down-merge-keyword-runtime-0.3";
 pub const FACE_DOWN_MERGE_KEYWORD_RULES_CONTEXT_VERSION: &str =
     "magic-comprehensive-rules-2026-06-19:108.2,118,601,608.3,702.37,702.168,702.140,708,727,903.3";
 
@@ -255,7 +255,13 @@ impl FaceDownMergeKeywordProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        face_down_merge_keyword_production_adapter_connected()
+        matches!(
+            self.kind,
+            FaceDownMergeKeywordKind::Morph { .. }
+                | FaceDownMergeKeywordKind::Megamorph { .. }
+                | FaceDownMergeKeywordKind::Disguise { .. }
+                | FaceDownMergeKeywordKind::Mutate { .. }
+        )
     }
 }
 
@@ -310,8 +316,7 @@ pub fn compile_face_down_merge_keyword_program(
             face_up_cost: parse_mana_cost(cost)?,
             ward_cost: parse_mana_cost(DISGUISE_WARD_COST)?,
         }
-    } else {
-        let cost = core.strip_prefix("Mutate ")?;
+    } else if let Some(cost) = core.strip_prefix("Mutate ") {
         if reminder != MUTATE_REMINDER
             || layout != SourceLayout::Mutate
             || !type_line_has_card_type(exact_source_type_line, "Creature")
@@ -321,6 +326,8 @@ pub fn compile_face_down_merge_keyword_program(
         FaceDownMergeKeywordKind::Mutate {
             alternative_cost: parse_mana_cost(cost)?,
         }
+    } else {
+        return None;
     };
 
     if !source_context_supports(&kind, exact_source_type_line, layout) {
@@ -752,6 +759,7 @@ impl FaceDownPermanent {
                 ) | (
                     FaceDownCastMode::Disguise,
                     FaceDownMergeKeywordKind::Disguise { .. }
+                        | FaceDownMergeKeywordKind::Mutate { .. }
                 )
             )
     }
@@ -846,10 +854,20 @@ fn validate_mana_payment(
             return Err(FaceDownMergeRuntimeError::DuplicatePaymentObject(*source));
         }
     }
-    if expected.symbols.contains(&ManaSymbol::VariableX) && evidence.chosen_x.is_none() {
+    if expected
+        .symbols
+        .iter()
+        .any(|symbol| *symbol == ManaSymbol::VariableX)
+        && evidence.chosen_x.is_none()
+    {
         return Err(FaceDownMergeRuntimeError::MissingXChoice);
     }
-    if !expected.symbols.contains(&ManaSymbol::VariableX) && evidence.chosen_x.is_some() {
+    if !expected
+        .symbols
+        .iter()
+        .any(|symbol| *symbol == ManaSymbol::VariableX)
+        && evidence.chosen_x.is_some()
+    {
         return Err(FaceDownMergeRuntimeError::UnexpectedXChoice);
     }
     Ok(())
@@ -1026,15 +1044,15 @@ fn validate_cost_objects(
                 }
             }
         }
-        if let Some(filter) = permanent_filter
-            && (object.controller != payer || !permanent_matches(object, filter, source))
-        {
-            return Err(FaceDownMergeRuntimeError::CostObjectDoesNotMatch);
+        if let Some(filter) = permanent_filter {
+            if object.controller != payer || !permanent_matches(object, filter, source) {
+                return Err(FaceDownMergeRuntimeError::CostObjectDoesNotMatch);
+            }
         }
-        if let Some(filter) = card_filter
-            && (object.owner != payer || !card_matches(object, filter))
-        {
-            return Err(FaceDownMergeRuntimeError::CostObjectDoesNotMatch);
+        if let Some(filter) = card_filter {
+            if object.owner != payer || !card_matches(object, filter) {
+                return Err(FaceDownMergeRuntimeError::CostObjectDoesNotMatch);
+            }
         }
     }
     Ok(())

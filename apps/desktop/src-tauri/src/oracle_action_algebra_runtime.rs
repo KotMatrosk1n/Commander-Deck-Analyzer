@@ -13,9 +13,10 @@
 //! An unchanged Oracle instruction therefore keeps the same identity across a
 //! card snapshot refresh.
 //!
-//! The production adapter remains disconnected. The staged adapter in this
-//! file is a complete local contract for the action forms the parser accepts:
-//! it commits the whole program or leaves the caller's state unchanged.
+//! The staged adapter in this file is a complete local contract for the action
+//! forms the parser accepts. The bounded host also projects reviewed
+//! end-of-turn power/toughness and keyword effects; other continuous durations
+//! remain disconnected.
 
 #![allow(dead_code)]
 
@@ -26,8 +27,8 @@ use std::sync::OnceLock;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-pub const ORACLE_ACTION_ALGEBRA_COMPILER_VERSION: &str = "oracle-action-algebra-compiler-0.7";
-pub const ORACLE_ACTION_ALGEBRA_RUNTIME_VERSION: &str = "oracle-action-algebra-runtime-0.7";
+pub const ORACLE_ACTION_ALGEBRA_COMPILER_VERSION: &str = "oracle-action-algebra-compiler-0.8";
+pub const ORACLE_ACTION_ALGEBRA_RUNTIME_VERSION: &str = "oracle-action-algebra-runtime-0.9";
 pub const ORACLE_ACTION_ALGEBRA_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101-102,104,107,109,111,119-122,400-406,608.2c-d,609-611,613,615,701.3,701.6-9,701.13-15,701.17-20,701.25,701.32,701.35,701.45,707";
 
 /// Recognition here cannot become production execution coverage until the
@@ -51,9 +52,8 @@ pub struct ObjectRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ActionId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OracleActionSemanticContext {
-    #[default]
     ResolvingSpellInstruction,
     ResolvingActivatedAbilityInstruction,
     ResolvingTriggeredAbilityInstruction,
@@ -74,6 +74,12 @@ impl OracleActionSemanticContext {
             Self::ResolvingSpecialActionInstruction => "resolving-special-action-instruction/v1",
             Self::ResolvingDungeonRoomInstruction => "resolving-dungeon-room-instruction/v1",
         }
+    }
+}
+
+impl Default for OracleActionSemanticContext {
+    fn default() -> Self {
+        Self::ResolvingSpellInstruction
     }
 }
 
@@ -195,6 +201,7 @@ pub enum VariableAmount {
     NumberOfSelectedObjects,
     SourcePower,
     SourceToughness,
+    DamageSourcePower,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -235,6 +242,7 @@ pub enum PlayerOperand {
 pub enum ControllerConstraint {
     Any,
     You,
+    NotYou,
     Opponent,
 }
 
@@ -247,11 +255,13 @@ pub struct ObjectFilter {
     pub required_colors: BTreeSet<Color>,
     pub excluded_colors: BTreeSet<Color>,
     pub required_subtypes: BTreeSet<String>,
+    pub required_keywords: BTreeSet<KeywordAbility>,
     pub controller: ControllerConstraint,
     pub other_than_source: bool,
     pub token: Option<bool>,
     pub attacking: Option<bool>,
     pub blocking: Option<bool>,
+    pub attacking_or_blocking: bool,
     pub tapped: Option<bool>,
 }
 
@@ -265,11 +275,13 @@ impl ObjectFilter {
             required_colors: BTreeSet::new(),
             excluded_colors: BTreeSet::new(),
             required_subtypes: BTreeSet::new(),
+            required_keywords: BTreeSet::new(),
             controller: ControllerConstraint::Any,
             other_than_source: false,
             token: None,
             attacking: None,
             blocking: None,
+            attacking_or_blocking: false,
             tapped: None,
         }
     }
@@ -341,6 +353,7 @@ pub enum SacrificeSelection {
 pub enum DamageRecipient {
     Player(PlayerOperand),
     Object(ObjectOperand),
+    DamageSource,
     AnyTarget,
 }
 
@@ -409,6 +422,7 @@ pub struct TokenTemplate {
     pub card_types: BTreeSet<CardType>,
     pub subtypes: BTreeSet<String>,
     pub keywords: BTreeSet<KeywordAbility>,
+    pub ability_semantic_ids: BTreeSet<String>,
     pub tapped: bool,
     pub attacking: bool,
 }
@@ -641,8 +655,69 @@ impl OracleActionProgram {
         &self.root
     }
 
-    pub const fn production_adapter_connected(&self) -> bool {
-        oracle_action_algebra_production_adapter_connected()
+    pub fn production_adapter_connected(&self) -> bool {
+        action_node_has_production_adapter(&self.root)
+    }
+}
+
+fn action_node_has_production_adapter(node: &ActionNode) -> bool {
+    match &node.kind {
+        ActionKind::Optional { action, .. } => action_node_has_production_adapter(action),
+        ActionKind::Conditional {
+            if_true, if_false, ..
+        } => {
+            action_node_has_production_adapter(if_true)
+                && if_false
+                    .as_deref()
+                    .is_none_or(action_node_has_production_adapter)
+        }
+        ActionKind::OrderedSequence { actions, .. } => {
+            actions.iter().all(action_node_has_production_adapter)
+        }
+        _ => {
+            matches!(
+                node.kind.family(),
+                OracleActionFamily::Draw
+                    | OracleActionFamily::Discard
+                    | OracleActionFamily::Sacrifice
+                    | OracleActionFamily::Life
+                    | OracleActionFamily::Damage
+                    | OracleActionFamily::Prevention
+                    | OracleActionFamily::Fight
+                    | OracleActionFamily::TapUntap
+                    | OracleActionFamily::Counters
+                    | OracleActionFamily::Token
+                    | OracleActionFamily::ZoneMovement
+                    | OracleActionFamily::Reveal
+                    | OracleActionFamily::Look
+                    | OracleActionFamily::Search
+                    | OracleActionFamily::Mill
+            ) || match &node.kind {
+                ActionKind::ModifyPowerToughness { duration, .. } => {
+                    matches!(
+                        duration,
+                        Duration::ThisTurn | Duration::UntilEndOfTurn | Duration::UntilYourNextTurn
+                    )
+                }
+                ActionKind::ChangeKeywords {
+                    keywords, duration, ..
+                } => {
+                    matches!(
+                        duration,
+                        Duration::ThisTurn | Duration::UntilEndOfTurn | Duration::UntilYourNextTurn
+                    ) && keywords.iter().all(|keyword| {
+                        !matches!(
+                            keyword,
+                            KeywordAbility::Flash
+                                | KeywordAbility::Infect
+                                | KeywordAbility::Ward
+                                | KeywordAbility::Wither
+                        )
+                    })
+                }
+                _ => false,
+            }
+        }
     }
 }
 
@@ -702,12 +777,14 @@ pub fn classify_oracle_action_instruction(
         return OracleActionClassification::Rejected(OracleActionRejection::NormalizationMismatch);
     }
 
-    if let Some(reason) = reject_outer_envelope(input.normalized_source) {
+    let parse_source = validated_action_source_without_reminder(input.normalized_source)
+        .unwrap_or(input.normalized_source);
+    if let Some(reason) = reject_outer_envelope(parse_source) {
         return OracleActionClassification::Rejected(reason);
     }
 
     let mut parser = ActionParser::default();
-    let mut root = match parser.parse_complete(input.normalized_source) {
+    let mut root = match parser.parse_complete(parse_source) {
         Ok(root) => root,
         Err(reason) => return OracleActionClassification::Rejected(reason),
     };
@@ -725,6 +802,26 @@ pub fn classify_oracle_action_instruction(
         semantic_context: input.semantic_context,
         semantic_digest,
         root,
+    })
+}
+
+fn validated_action_source_without_reminder(source: &str) -> Option<&str> {
+    const POWERSTONE_REMINDER: &str = " (It's an artifact with \"{T}: Add {C}. This mana can't be spent to cast a nonartifact spell.\")";
+    const MUTAGEN_REMINDERS: [&str; 3] = [
+        " (It's an artifact with \"{1}, {T}, Sacrifice this token: Put a +1/+1 counter on target creature. Activate only as a sorcery.\")",
+        " (They're artifacts with \"{1}, {T}, Sacrifice this token: Put a +1/+1 counter on target creature. Activate only as a sorcery.\")",
+        " (A Mutagen token is an artifact with \"{1}, {T}, Sacrifice this token: Put a +1/+1 counter on target creature. Activate only as a sorcery.\")",
+    ];
+    if let Some(instruction) = source
+        .strip_suffix(POWERSTONE_REMINDER)
+        .filter(|instruction| instruction.contains("Powerstone token"))
+    {
+        return Some(instruction);
+    }
+    MUTAGEN_REMINDERS.iter().find_map(|reminder| {
+        source
+            .strip_suffix(reminder)
+            .filter(|instruction| instruction.contains("Mutagen token"))
     })
 }
 
@@ -1349,40 +1446,67 @@ fn parse_life(source: &str) -> Option<ActionKind> {
 }
 
 fn parse_damage(source: &str) -> Option<ActionKind> {
-    static PATTERN: OnceLock<Regex> = OnceLock::new();
-    let captures = PATTERN
-        .get_or_init(|| {
-            Regex::new(
-                r"^(?P<source>This spell|This creature|This permanent|It|Target creature) deals (?P<amount>[A-Za-z0-9]+(?: many)?) damage to (?P<recipient>any target|target player|target opponent|target creature|target permanent|each opponent|each player|that player|that creature|it)$",
-            )
-            .expect("damage pattern")
-        })
-        .captures(source)?;
-    let source = match captures.name("source")?.as_str() {
+    if let Some((source_phrase, recipient_phrase)) =
+        source.split_once(" deals damage equal to its power to ")
+    {
+        return Some(ActionKind::DealDamage {
+            source: parse_damage_source(source_phrase)?,
+            recipient: parse_damage_recipient(recipient_phrase)?,
+            amount: Amount::Variable(VariableAmount::DamageSourcePower),
+        });
+    }
+    if let Some(source_phrase) = source.strip_suffix(" deals damage to itself equal to its power") {
+        return Some(ActionKind::DealDamage {
+            source: parse_damage_source(source_phrase)?,
+            recipient: DamageRecipient::DamageSource,
+            amount: Amount::Variable(VariableAmount::DamageSourcePower),
+        });
+    }
+
+    let (source_phrase, damage_phrase) = source.split_once(" deals ")?;
+    let (amount_phrase, recipient_phrase) = damage_phrase.split_once(" damage to ")?;
+    let source = parse_damage_source(source_phrase)?;
+    let recipient = parse_damage_recipient(recipient_phrase)?;
+    Some(ActionKind::DealDamage {
+        source,
+        recipient,
+        amount: parse_amount(amount_phrase)?,
+    })
+}
+
+fn parse_damage_source(source: &str) -> Option<DamageSource> {
+    match source {
         "This spell" => DamageSource::ThisSpell,
-        "This creature" | "This permanent" => DamageSource::SourceObject,
+        "This object" | "This creature" | "This permanent" => DamageSource::SourceObject,
         "It" => DamageSource::Object(ObjectOperand::It),
-        "Target creature" => DamageSource::Object(parse_object_operand("target creature")?),
+        source if source.starts_with("Target ") => {
+            DamageSource::Object(parse_object_operand(source)?)
+        }
         _ => return None,
-    };
-    let recipient = match captures.name("recipient")?.as_str() {
+    }
+    .into()
+}
+
+fn parse_damage_recipient(source: &str) -> Option<DamageRecipient> {
+    match source {
         "any target" => DamageRecipient::AnyTarget,
         "target player" => DamageRecipient::Player(PlayerOperand::TargetPlayer),
         "target opponent" => DamageRecipient::Player(PlayerOperand::TargetOpponent),
         "each opponent" => DamageRecipient::Player(PlayerOperand::EachOpponent),
         "each player" => DamageRecipient::Player(PlayerOperand::EachPlayer),
         "that player" => DamageRecipient::Player(PlayerOperand::ThatPlayer),
-        "target creature" => DamageRecipient::Object(parse_object_operand("target creature")?),
-        "target permanent" => DamageRecipient::Object(parse_object_operand("target permanent")?),
+        source
+            if source.starts_with("target ")
+                || source.starts_with("each ")
+                || source.starts_with("all ") =>
+        {
+            DamageRecipient::Object(parse_object_operand(source)?)
+        }
         "that creature" => DamageRecipient::Object(ObjectOperand::ThatObject),
         "it" => DamageRecipient::Object(ObjectOperand::It),
         _ => return None,
-    };
-    Some(ActionKind::DealDamage {
-        source,
-        recipient,
-        amount: parse_amount(captures.name("amount")?.as_str())?,
-    })
+    }
+    .into()
 }
 
 fn parse_damage_prevention(source: &str) -> Option<ActionKind> {
@@ -1416,7 +1540,7 @@ fn parse_fight(source: &str) -> Option<ActionKind> {
     let captures = PATTERN
         .get_or_init(|| {
             Regex::new(
-                r"^(?P<first>This creature|Target creature(?: you control)?) fights (?P<second>another target creature|target creature(?: an opponent controls)?|that creature)$",
+                r"^(?P<first>This object|this object|This creature|this creature|It|it|Target creature(?: you control)?) fights (?P<second>another target creature|target creature(?: you control| you don't control| an opponent controls)?|that creature)$",
             )
             .expect("fight pattern")
         })
@@ -1430,9 +1554,10 @@ fn parse_fight(source: &str) -> Option<ActionKind> {
 fn parse_tap_untap(source: &str) -> Option<ActionKind> {
     let (operation, operand_source) = if let Some(operand) = source.strip_prefix("Tap ") {
         (true, operand)
-    } else {
-        let operand = source.strip_prefix("Untap ")?;
+    } else if let Some(operand) = source.strip_prefix("Untap ") {
         (false, operand)
+    } else {
+        return None;
     };
     if operand_source.contains(" or ") {
         return None;
@@ -1530,20 +1655,23 @@ fn parse_copy_token(source: &str) -> Option<ActionKind> {
         (PlayerOperand::You, body)
     } else if let Some(body) = source.strip_prefix("You create ") {
         (PlayerOperand::You, body)
-    } else {
-        let body = source.strip_prefix("Target player creates ")?;
+    } else if let Some(body) = source.strip_prefix("Target player creates ") {
         (PlayerOperand::TargetPlayer, body)
+    } else {
+        return None;
     };
     let (tapped, source_operand) = if let Some(source) = body
         .strip_prefix("a tapped token that's a copy of ")
         .or_else(|| body.strip_prefix("one tapped token that's a copy of "))
     {
         (true, source)
-    } else {
-        let source = body
-            .strip_prefix("a token that's a copy of ")
-            .or_else(|| body.strip_prefix("one token that's a copy of "))?;
+    } else if let Some(source) = body
+        .strip_prefix("a token that's a copy of ")
+        .or_else(|| body.strip_prefix("one token that's a copy of "))
+    {
         (false, source)
+    } else {
+        return None;
     };
     Some(ActionKind::CreateCopyToken {
         player,
@@ -1857,8 +1985,10 @@ fn parse_zone_movement(source: &str) -> Option<ActionKind> {
             parts
         } else if let Some(parts) = rest.split_once(" on top of ") {
             parts
+        } else if let Some(parts) = rest.split_once(" on the bottom of ") {
+            parts
         } else {
-            rest.split_once(" on the bottom of ")?
+            return None;
         };
         let (selection, from) = parse_zoned_card_selection(selection_source)?;
         let destination_phrase = if rest.contains(" on top of ") {
@@ -2037,10 +2167,23 @@ pub(crate) fn parse_object_filter(source: &str) -> Option<ObjectFilter> {
         filter.controller = ControllerConstraint::You;
         source = rest.to_owned();
         original.truncate(original.len() - " you control".len());
+    } else if let Some(rest) = source.strip_suffix(" you don't control") {
+        filter.controller = ControllerConstraint::NotYou;
+        source = rest.to_owned();
+        original.truncate(original.len() - " you don't control".len());
     } else if let Some(rest) = source.strip_suffix(" an opponent controls") {
         filter.controller = ControllerConstraint::Opponent;
         source = rest.to_owned();
         original.truncate(original.len() - " an opponent controls".len());
+    }
+    if let Some((rest, keyword_source)) = source.rsplit_once(" with ")
+        && let Some(keywords) = parse_keyword_list(keyword_source)
+    {
+        let suffix_len = " with ".len() + keyword_source.len();
+        let rest = rest.to_owned();
+        filter.required_keywords = keywords;
+        source = rest;
+        original.truncate(original.len() - suffix_len);
     }
     if let Some(rest) = source.strip_prefix("nontoken ") {
         filter.token = Some(false);
@@ -2060,6 +2203,11 @@ pub(crate) fn parse_object_filter(source: &str) -> Option<ObjectFilter> {
         filter.excluded_types.insert(CardType::Creature);
         source = rest.to_owned();
         original = original["noncreature ".len()..].to_owned();
+    }
+    if let Some(rest) = source.strip_prefix("attacking or blocking ") {
+        filter.attacking_or_blocking = true;
+        source = rest.to_owned();
+        original = original["attacking or blocking ".len()..].to_owned();
     }
     for (prefix, field) in [
         ("attacking ", 0u8),
@@ -2132,6 +2280,9 @@ pub(crate) fn parse_object_filter(source: &str) -> Option<ObjectFilter> {
         }
         "artifact or creature" | "artifact or creature card" | "artifact or creature cards" => {
             filter.any_types = BTreeSet::from([CardType::Artifact, CardType::Creature]);
+        }
+        "creature or planeswalker" | "creatures or planeswalkers" => {
+            filter.any_types = BTreeSet::from([CardType::Creature, CardType::Planeswalker]);
         }
         "instant or sorcery card" | "instant or sorcery cards" => {
             filter.any_types = BTreeSet::from([CardType::Instant, CardType::Sorcery]);
@@ -2226,6 +2377,40 @@ fn parse_token_template(source: &str) -> Option<TokenTemplate> {
     } else if let Some(rest) = source.strip_prefix("tapped ") {
         tapped = true;
         source = rest;
+    }
+
+    if source == "Powerstone" {
+        return Some(TokenTemplate {
+            name: "Powerstone".to_owned(),
+            power: None,
+            toughness: None,
+            colors: BTreeSet::new(),
+            card_types: BTreeSet::from([CardType::Artifact]),
+            subtypes: BTreeSet::from(["powerstone".to_owned()]),
+            keywords: BTreeSet::new(),
+            ability_semantic_ids: BTreeSet::from([
+                "oracle-token-ability/powerstone-mana-restricted-nonartifact-cast/v1".to_owned(),
+            ]),
+            tapped,
+            attacking,
+        });
+    }
+
+    if source == "Mutagen" {
+        return Some(TokenTemplate {
+            name: "Mutagen".to_owned(),
+            power: None,
+            toughness: None,
+            colors: BTreeSet::new(),
+            card_types: BTreeSet::from([CardType::Artifact]),
+            subtypes: BTreeSet::from(["mutagen".to_owned()]),
+            keywords: BTreeSet::new(),
+            ability_semantic_ids: BTreeSet::from([
+                "oracle-token-ability/mutagen-sorcery-plus-one-counter/v1".to_owned(),
+            ]),
+            tapped,
+            attacking,
+        });
     }
 
     let (core, keywords) = if let Some((core, keyword_source)) = source.rsplit_once(" with ") {
@@ -2325,6 +2510,7 @@ fn parse_token_template(source: &str) -> Option<TokenTemplate> {
         card_types,
         subtypes,
         keywords,
+        ability_semantic_ids: BTreeSet::new(),
         tapped,
         attacking,
     })
@@ -2554,9 +2740,10 @@ fn parse_zoned_card_selection(source: &str) -> Option<(CardSelection, Zone)> {
         (card, ZoneOwner::You, Zone::Hand)
     } else if let Some(card) = source.strip_suffix(" from your graveyard") {
         (card, ZoneOwner::You, Zone::Graveyard)
-    } else {
-        let card = source.strip_suffix(" from exile")?;
+    } else if let Some(card) = source.strip_suffix(" from exile") {
         (card, ZoneOwner::You, Zone::Exile)
+    } else {
+        return None;
     };
     let (cardinality, filter) = parse_search_selection(card_source)?;
     Some((
@@ -3562,9 +3749,20 @@ fn execute_action_node(
         } => {
             require_battlefield(state)?;
             let source = resolve_damage_source(source, node.id, bindings, state, memory)?;
-            let recipients =
-                resolve_damage_recipients(recipient, node.id, bindings, state, memory)?;
-            let amount = resolve_amount(amount, node.id, bindings, state, memory)?;
+            let recipients = if *recipient == DamageRecipient::DamageSource {
+                vec![ResolvedDamageRecipient::Object(
+                    source.ok_or(OracleActionRuntimeError::MissingSource)?,
+                )]
+            } else {
+                resolve_damage_recipients(recipient, node.id, bindings, state, memory)?
+            };
+            let amount = if *amount == Amount::Variable(VariableAmount::DamageSourcePower) {
+                let source = source.ok_or(OracleActionRuntimeError::MissingSource)?;
+                u32::try_from(current_power(source, state)?.max(0))
+                    .map_err(|_| OracleActionRuntimeError::AmountOverflow)?
+            } else {
+                resolve_amount(amount, node.id, bindings, state, memory)?
+            };
             let mut events = recipients
                 .into_iter()
                 .map(|recipient| {
@@ -4440,6 +4638,7 @@ pub(crate) fn object_matches_filter(
     let controller_matches = match filter.controller {
         ControllerConstraint::Any => true,
         ControllerConstraint::You => object.controller == controller,
+        ControllerConstraint::NotYou => object.controller != controller,
         ControllerConstraint::Opponent => state
             .opponents
             .get(&controller)
@@ -4447,6 +4646,15 @@ pub(crate) fn object_matches_filter(
                 controller,
             ))?
             .contains(&object.controller),
+    };
+    let keyword_matches = if filter.required_keywords.is_empty() {
+        true
+    } else {
+        let keywords = current_keywords(object.reference, state)?;
+        filter
+            .required_keywords
+            .iter()
+            .all(|keyword| keywords.contains(keyword))
     };
     Ok(object.zone == Zone::Battlefield
         && filter
@@ -4482,6 +4690,7 @@ pub(crate) fn object_matches_filter(
                 .iter()
                 .any(|actual| actual.eq_ignore_ascii_case(subtype))
         })
+        && keyword_matches
         && controller_matches
         && (!filter.other_than_source || Some(object.reference) != source)
         && filter.token.is_none_or(|token| object.is_token == token)
@@ -4491,6 +4700,7 @@ pub(crate) fn object_matches_filter(
         && filter
             .blocking
             .is_none_or(|blocking| object.blocking == blocking)
+        && (!filter.attacking_or_blocking || object.attacking || object.blocking)
         && filter.tapped.is_none_or(|tapped| object.tapped == tapped))
 }
 
@@ -4528,9 +4738,14 @@ fn card_matches_filter(object: &GameObject, filter: &ObjectFilter) -> bool {
                 .iter()
                 .any(|actual| actual.eq_ignore_ascii_case(subtype))
         })
+        && filter
+            .required_keywords
+            .iter()
+            .all(|keyword| object.intrinsic_keywords.contains(keyword))
         && filter.token.is_none_or(|token| object.is_token == token)
         && filter.attacking.is_none()
         && filter.blocking.is_none()
+        && !filter.attacking_or_blocking
         && filter.tapped.is_none()
 }
 
@@ -4783,6 +4998,9 @@ fn resolve_amount(
             let toughness = current_toughness(source, state)?;
             u32::try_from(toughness.max(0)).map_err(|_| OracleActionRuntimeError::AmountOverflow)
         }
+        Amount::Variable(VariableAmount::DamageSourcePower) => {
+            Err(OracleActionRuntimeError::StateInvariantViolation)
+        }
         Amount::Variable(variable) => bindings.variable_amounts.get(variable).copied().ok_or(
             OracleActionRuntimeError::MissingVariableAmount {
                 action,
@@ -4835,6 +5053,7 @@ fn resolve_damage_recipients(
                     .map(ResolvedDamageRecipient::Object)
                     .collect()
             }),
+        DamageRecipient::DamageSource => Err(OracleActionRuntimeError::StateInvariantViolation),
         DamageRecipient::AnyTarget => {
             let target = bindings
                 .any_targets
@@ -5244,7 +5463,7 @@ fn create_token(
         base_loyalty: None,
         base_defense: None,
         intrinsic_keywords: template.keywords.clone(),
-        ability_semantic_ids: BTreeSet::new(),
+        ability_semantic_ids: template.ability_semantic_ids.clone(),
         copiable_choices: BTreeMap::new(),
     };
     state.objects.insert(

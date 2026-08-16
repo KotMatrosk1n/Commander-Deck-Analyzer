@@ -63,6 +63,12 @@ pub(crate) enum OracleOwnership {
 pub(crate) enum TargetPredicate {
     NonlandPermanentAnOpponentControls,
     Creature,
+    AnotherCreature,
+    GreenOrWhiteCreatureAnOpponentControls,
+    ArtifactOrEnchantment,
+    Land,
+    AnotherNonlandPermanent,
+    AnotherCreatureWithShadow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +97,7 @@ pub(crate) struct LinkedExileProgram {
     pub source: SourceRequirement,
     pub trigger: LifecycleEvent,
     pub target: TargetPredicate,
+    pub exile_optional: bool,
     pub exile_from: ObjectZone,
     pub exile_to: ObjectZone,
     pub identity: LinkedIdentity,
@@ -310,9 +317,20 @@ pub(crate) enum ObjectLifecycleProgram {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CompiledObjectLifecycle {
-    pub ownership: OracleOwnership,
-    pub program: ObjectLifecycleProgram,
+pub struct CompiledObjectLifecycle {
+    pub(crate) ownership: OracleOwnership,
+    pub(crate) program: ObjectLifecycleProgram,
+}
+
+impl CompiledObjectLifecycle {
+    pub(crate) fn owns_clause(&self, clause_index: u16) -> bool {
+        match &self.ownership {
+            OracleOwnership::CompleteRoot { clause_count } => clause_index < *clause_count,
+            OracleOwnership::ExactClauseSet { clause_indices } => {
+                clause_indices.contains(&clause_index)
+            }
+        }
+    }
 }
 
 pub(crate) fn compile_object_lifecycle_runtime(
@@ -321,6 +339,7 @@ pub(crate) fn compile_object_lifecycle_runtime(
     let clauses = normalize_oracle_root(input.oracle_text)?;
 
     compile_banishing_light(input.type_line, &clauses)
+        .or_else(|| compile_separate_linked_exile(input.type_line, &clauses))
         .or_else(|| compile_otherworldly_journey(input.type_line, &clauses))
         .or_else(|| compile_enduring_curiosity(input.type_line, &clauses))
         .or_else(|| compile_divine_visitation(input.type_line, &clauses))
@@ -345,6 +364,7 @@ fn compile_banishing_light(type_line: &str, clauses: &[String]) -> Option<Compil
             source: battlefield_source(&[CardType::Enchantment], &[]),
             trigger: LifecycleEvent::SourceEntersBattlefield,
             target: TargetPredicate::NonlandPermanentAnOpponentControls,
+            exile_optional: false,
             exile_from: ObjectZone::Battlefield,
             exile_to: ObjectZone::Exile,
             identity: LinkedIdentity::CardExiledByThisSourceInstance,
@@ -353,6 +373,86 @@ fn compile_banishing_light(type_line: &str, clauses: &[String]) -> Option<Compil
             return_to: ObjectZone::Battlefield,
             return_controller: ControllerScope::Owner,
             return_mechanism: ReturnMechanism::ImmediateWithoutStack,
+        }),
+    })
+}
+
+fn compile_separate_linked_exile(
+    type_line: &str,
+    clauses: &[String],
+) -> Option<CompiledObjectLifecycle> {
+    let return_index = clauses.iter().position(|clause| {
+        clause
+            == "when this creature leaves the battlefield, return the exiled card to the battlefield under its owner's control"
+            || clause
+                == "when this enchantment leaves the battlefield, return the exiled card to the battlefield under its owner's control"
+    })?;
+    let (source_types, source_word) = if source_type_matches(type_line, &[CardType::Creature], &[])
+    {
+        (vec![CardType::Creature], "creature")
+    } else if source_type_matches(type_line, &[CardType::Enchantment], &[]) {
+        (vec![CardType::Enchantment], "enchantment")
+    } else {
+        return None;
+    };
+    if clauses[return_index]
+        != format!(
+            "when this {source_word} leaves the battlefield, return the exiled card to the battlefield under its owner's control"
+        )
+    {
+        return None;
+    }
+
+    let mut entry_matches = clauses.iter().enumerate().filter_map(|(index, clause)| {
+        let (target, optional) = match clause.as_str() {
+            "when this creature enters, exile another target creature" => {
+                (TargetPredicate::AnotherCreature, false)
+            }
+            "when this creature enters, you may exile another target creature" => {
+                (TargetPredicate::AnotherCreature, true)
+            }
+            "when this creature enters, exile target green or white creature an opponent controls" => {
+                (TargetPredicate::GreenOrWhiteCreatureAnOpponentControls, false)
+            }
+            "when this creature enters, you may exile target artifact or enchantment" => {
+                (TargetPredicate::ArtifactOrEnchantment, true)
+            }
+            "when this creature enters, exile target land" => (TargetPredicate::Land, false),
+            "when this enchantment enters, exile target creature" => {
+                (TargetPredicate::Creature, false)
+            }
+            "when this enchantment enters, exile another target nonland permanent" => {
+                (TargetPredicate::AnotherNonlandPermanent, false)
+            }
+            "when this creature enters, exile another target creature with shadow" => {
+                (TargetPredicate::AnotherCreatureWithShadow, false)
+            }
+            _ => return None,
+        };
+        (index != return_index).then_some((index, target, optional))
+    });
+    let (entry_index, target, exile_optional) = entry_matches.next()?;
+    if entry_matches.next().is_some() {
+        return None;
+    }
+
+    Some(CompiledObjectLifecycle {
+        ownership: OracleOwnership::ExactClauseSet {
+            clause_indices: vec![entry_index as u16, return_index as u16],
+        },
+        program: ObjectLifecycleProgram::LinkedExile(LinkedExileProgram {
+            source: battlefield_source(&source_types, &[]),
+            trigger: LifecycleEvent::SourceEntersBattlefield,
+            target,
+            exile_optional,
+            exile_from: ObjectZone::Battlefield,
+            exile_to: ObjectZone::Exile,
+            identity: LinkedIdentity::CardExiledByThisSourceInstance,
+            return_event: LifecycleEvent::SourceLeavesBattlefield,
+            return_from: ObjectZone::Exile,
+            return_to: ObjectZone::Battlefield,
+            return_controller: ControllerScope::Owner,
+            return_mechanism: ReturnMechanism::DelayedTriggeredAbility,
         }),
     })
 }

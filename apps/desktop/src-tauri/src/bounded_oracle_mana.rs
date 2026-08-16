@@ -39,6 +39,10 @@ pub enum CalculatedValue {
     Constant(u32),
     SourcePower,
     SacrificedCreatureManaValue,
+    BoundSacrificedCreatureManaValue {
+        cost_clause_index: u16,
+        selection_id: u8,
+    },
     SacrificedPermanentManaValue,
     Count(CountedObjects),
     ManaSpentToCastReferencedSpell,
@@ -147,7 +151,9 @@ pub struct SpellSpendFilter {
 pub enum SpendCardType {
     Artifact,
     Creature,
+    Instant,
     Planeswalker,
+    Sorcery,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -874,6 +880,23 @@ fn parse_spend_restriction(text: &str) -> Result<SpendRestriction, ManaExpressio
                 monocolored_of_produced_color: false,
                 cannot_be_countered: false,
             }),
+        ]));
+    }
+    if body == "cast an instant or sorcery spell" {
+        let spell = |card_type| {
+            SpendPurpose::CastSpell(SpellSpendFilter {
+                card_type: Some(card_type),
+                from: None,
+                minimum_mana_value: None,
+                mana_cost_contains_x: false,
+                chosen_creature_type: false,
+                monocolored_of_produced_color: false,
+                cannot_be_countered: false,
+            })
+        };
+        return Ok(SpendRestriction::AnyOf(vec![
+            spell(SpendCardType::Instant),
+            spell(SpendCardType::Sorcery),
         ]));
     }
     let purpose = match body {

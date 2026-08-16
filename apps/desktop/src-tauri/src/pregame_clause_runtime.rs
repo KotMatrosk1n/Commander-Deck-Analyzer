@@ -253,9 +253,10 @@ pub fn compile_pregame_clause_program(
         PregameClauseKind::RemoveFromDeckWithoutAnte
     } else if let Some(copy_limit) = parse_deck_copy_limit(exact_source) {
         PregameClauseKind::DeckCopyLimit(copy_limit)
-    } else {
-        let opening_hand = parse_opening_hand_program(&normalized_lower)?;
+    } else if let Some(opening_hand) = parse_opening_hand_program(&normalized_lower) {
         PregameClauseKind::OpeningHand(opening_hand)
+    } else {
+        return None;
     };
 
     let semantic_digest = pregame_semantic_digest(exact_source, &kind);
@@ -791,6 +792,7 @@ pub struct PregameResolutionTransaction {
     pub source: ObjectRef,
     pub controller: PlayerId,
     pub semantic_digest: String,
+    pub event: PregameEvent,
     pub effect: RevealEffect,
 }
 
@@ -914,6 +916,7 @@ impl PregameDelayedEffectRegistry {
             source: due.source,
             controller: due.controller,
             semantic_digest: due.semantic_digest,
+            event: due.event,
             effect: due.effect,
         })
     }

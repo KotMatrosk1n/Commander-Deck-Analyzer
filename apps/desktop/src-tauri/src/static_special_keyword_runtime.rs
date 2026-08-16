@@ -10,9 +10,10 @@
 //! Program identity contains exact Oracle content, the smallest relevant
 //! semantic source context, and versioned compiler and rules contracts. It
 //! never contains card names, card identifiers, database rows, snapshot
-//! metadata, clause addresses, or memory locations. Recognition is not live
-//! production coverage. The standalone runtimes below require complete
-//! transaction evidence and deliberately have no production adapter.
+//! metadata, clause addresses, or memory locations. Recognition alone is not
+//! live production coverage. Entry-attachment and Living metal programs have
+//! exact bounded production adapters; the other standalone runtimes remain
+//! fail closed.
 
 #![allow(dead_code)]
 
@@ -21,8 +22,8 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const STATIC_SPECIAL_KEYWORD_COMPILER_VERSION: &str = "static-special-keyword-compiler-0.1";
-pub const STATIC_SPECIAL_KEYWORD_RUNTIME_VERSION: &str = "static-special-keyword-runtime-0.1";
+pub const STATIC_SPECIAL_KEYWORD_COMPILER_VERSION: &str = "static-special-keyword-compiler-0.2";
+pub const STATIC_SPECIAL_KEYWORD_RUNTIME_VERSION: &str = "static-special-keyword-runtime-0.10";
 
 const JOB_SELECT_RULES_CONTEXT: &str = "magic-rules-2026-06-19:job-select-entry-token-attach-v1";
 const FOR_MIRRODIN_RULES_CONTEXT: &str =
@@ -51,7 +52,7 @@ pub type DigitalCardId = u64;
 pub type DraftCardId = u64;
 
 pub const fn static_special_keyword_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -212,7 +213,20 @@ impl StaticSpecialKeywordProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        static_special_keyword_production_adapter_connected()
+        matches!(
+            self.kind,
+            StaticSpecialKeywordKind::EntryAttachment { .. }
+                | StaticSpecialKeywordKind::LivingMetal
+                | StaticSpecialKeywordKind::Training
+                | StaticSpecialKeywordKind::Enlist
+                | StaticSpecialKeywordKind::DoubleTeam
+                | StaticSpecialKeywordKind::Phasing
+                | StaticSpecialKeywordKind::Banding
+                | StaticSpecialKeywordKind::Agenda {
+                    secret_name_count: 1 | 2,
+                }
+                | StaticSpecialKeywordKind::DraftFaceUp
+        )
     }
 }
 

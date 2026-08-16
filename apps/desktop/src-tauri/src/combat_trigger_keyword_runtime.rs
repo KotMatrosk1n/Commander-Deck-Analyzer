@@ -18,10 +18,10 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const COMBAT_TRIGGER_KEYWORD_COMPILER_VERSION: &str = "combat-trigger-keyword-compiler-0.1";
-pub const COMBAT_TRIGGER_KEYWORD_RUNTIME_VERSION: &str = "combat-trigger-keyword-runtime-0.1";
+pub const COMBAT_TRIGGER_KEYWORD_COMPILER_VERSION: &str = "combat-trigger-keyword-compiler-0.2";
+pub const COMBAT_TRIGGER_KEYWORD_RUNTIME_VERSION: &str = "combat-trigger-keyword-runtime-0.8";
 pub const COMBAT_TRIGGER_KEYWORD_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101.3,119.3,122.1a,400.7,506.4,508.1,508.1b,\
-     508.1m,508.4,508.5,509.1,509.1a-c,509.1g-i,603.2,603.3,603.3d,608.2b,608.2h,\
+     106.4,508.1m,508.4,508.5,509.1,509.1a-c,509.1g-i,603.2,603.3,603.3d,608.2b,608.2h,\
      609.3,611.2a,701.21,702.23,702.39,702.86,702.91,702.105,702.115,702.118,\
      702.121,702.130,802.2-4";
 
@@ -32,11 +32,26 @@ pub type CombatId = u64;
 pub type TurnId = u64;
 pub type TriggerId = u64;
 pub type AbilityInstanceId = u64;
+pub type ManaUnitId = u64;
 
-/// Recognition is not execution coverage. Production does not yet provide the
-/// complete evidence contracts required by this runtime.
-pub const fn combat_trigger_keyword_production_adapter_connected() -> bool {
-    false
+/// Only families with a complete production event and mutation projection may
+/// cross this boundary. The remaining typed families stay retained and
+/// explicitly non-live.
+pub const fn combat_trigger_keyword_production_adapter_connected(
+    kind: &CombatTriggerKeywordKind,
+) -> bool {
+    matches!(
+        kind,
+        CombatTriggerKeywordKind::Afflict { .. }
+            | CombatTriggerKeywordKind::Annihilator { .. }
+            | CombatTriggerKeywordKind::BattleCry
+            | CombatTriggerKeywordKind::Dethrone
+            | CombatTriggerKeywordKind::Firebending { .. }
+            | CombatTriggerKeywordKind::Ingest
+            | CombatTriggerKeywordKind::Melee
+            | CombatTriggerKeywordKind::Provoke
+            | CombatTriggerKeywordKind::Rampage { .. }
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,6 +60,7 @@ pub enum CombatTriggerKeywordFamily {
     Annihilator,
     BattleCry,
     Dethrone,
+    Firebending,
     Ingest,
     Melee,
     Provoke,
@@ -59,6 +75,7 @@ impl CombatTriggerKeywordFamily {
             Self::Annihilator => "Annihilator",
             Self::BattleCry => "Battle cry",
             Self::Dethrone => "Dethrone",
+            Self::Firebending => "Firebending",
             Self::Ingest => "Ingest",
             Self::Melee => "Melee",
             Self::Provoke => "Provoke",
@@ -74,6 +91,7 @@ pub enum CombatTriggerKeywordKind {
     Annihilator { amount: u32 },
     BattleCry,
     Dethrone,
+    Firebending { amount: u32 },
     Ingest,
     Melee,
     Provoke,
@@ -88,6 +106,7 @@ impl CombatTriggerKeywordKind {
             Self::Annihilator { .. } => CombatTriggerKeywordFamily::Annihilator,
             Self::BattleCry => CombatTriggerKeywordFamily::BattleCry,
             Self::Dethrone => CombatTriggerKeywordFamily::Dethrone,
+            Self::Firebending { .. } => CombatTriggerKeywordFamily::Firebending,
             Self::Ingest => CombatTriggerKeywordFamily::Ingest,
             Self::Melee => CombatTriggerKeywordFamily::Melee,
             Self::Provoke => CombatTriggerKeywordFamily::Provoke,
@@ -123,7 +142,7 @@ impl CombatTriggerKeywordProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        combat_trigger_keyword_production_adapter_connected()
+        combat_trigger_keyword_production_adapter_connected(&self.kind)
     }
 }
 
@@ -226,6 +245,9 @@ fn parse_reviewed_kind(exact_source: &str) -> Option<CombatTriggerKeywordKind> {
     if let Some(amount) = parse_annihilator(exact_source) {
         return Some(CombatTriggerKeywordKind::Annihilator { amount });
     }
+    if let Some(amount) = parse_firebending(exact_source) {
+        return Some(CombatTriggerKeywordKind::Firebending { amount });
+    }
     if let Some(amount) = parse_rampage(exact_source) {
         return Some(CombatTriggerKeywordKind::Rampage { amount });
     }
@@ -261,6 +283,21 @@ fn parse_annihilator(source: &str) -> Option<u32> {
         == format!(
             "Annihilator {amount} (Whenever this creature attacks, defending player sacrifices \
              {sacrifice_phrase} of their choice.)"
+        ))
+    .then_some(amount)
+}
+
+fn parse_firebending(source: &str) -> Option<u32> {
+    let amount_text = source
+        .strip_prefix("Firebending ")?
+        .split_once(" (")
+        .map(|(amount, _)| amount)?;
+    let amount = parse_positive_u32(amount_text)?;
+    let mana = "{R}".repeat(usize::try_from(amount).ok()?);
+    (source
+        == format!(
+            "Firebending {amount} (Whenever this creature attacks, add {mana}. This mana lasts \
+             until end of combat.)"
         ))
     .then_some(amount)
 }
@@ -394,6 +431,10 @@ fn canonical_semantics(kind: &CombatTriggerKeywordKind) -> String {
              instances=separate"
                 .to_owned()
         }
+        CombatTriggerKeywordKind::Firebending { amount } => format!(
+            "trigger=attacks;effect=controller:add-red-mana:{amount};expiration=end-of-combat;\
+             instances=separate"
+        ),
         CombatTriggerKeywordKind::Ingest => {
             "trigger=combat-damage-to-player;effect=damaged-player:exile-library-top;\
              instances=separate"
@@ -601,6 +642,9 @@ pub enum CombatKeywordTriggerPayload {
     },
     BattleCry,
     Dethrone,
+    Firebending {
+        amount: u32,
+    },
     Ingest {
         damaged_player: PlayerId,
     },
@@ -623,6 +667,7 @@ impl CombatKeywordTriggerPayload {
             Self::Annihilator { .. } => CombatTriggerKeywordFamily::Annihilator,
             Self::BattleCry => CombatTriggerKeywordFamily::BattleCry,
             Self::Dethrone => CombatTriggerKeywordFamily::Dethrone,
+            Self::Firebending { .. } => CombatTriggerKeywordFamily::Firebending,
             Self::Ingest { .. } => CombatTriggerKeywordFamily::Ingest,
             Self::Melee { .. } => CombatTriggerKeywordFamily::Melee,
             Self::Provoke { .. } => CombatTriggerKeywordFamily::Provoke,
@@ -905,6 +950,12 @@ pub fn create_attack_trigger(
             }
             CombatKeywordTriggerPayload::Dethrone
         }
+        CombatTriggerKeywordKind::Firebending { amount } => {
+            if provoke_target.is_some() {
+                return Err(CombatTriggerRuntimeError::UnexpectedResolutionChoice);
+            }
+            CombatKeywordTriggerPayload::Firebending { amount: *amount }
+        }
         CombatTriggerKeywordKind::Melee => {
             if provoke_target.is_some() {
                 return Err(CombatTriggerRuntimeError::UnexpectedResolutionChoice);
@@ -1021,6 +1072,7 @@ pub fn create_block_trigger(
         CombatTriggerKeywordKind::Annihilator { .. }
         | CombatTriggerKeywordKind::BattleCry
         | CombatTriggerKeywordKind::Dethrone
+        | CombatTriggerKeywordKind::Firebending { .. }
         | CombatTriggerKeywordKind::Ingest
         | CombatTriggerKeywordKind::Melee
         | CombatTriggerKeywordKind::Provoke => {
@@ -1179,6 +1231,7 @@ pub struct PlayerState {
     pub library: Vec<ZoneObject>,
     pub graveyard: Vec<ZoneObject>,
     pub exile: Vec<ZoneObject>,
+    pub mana_pool: Vec<CombatManaUnit>,
 }
 
 impl PlayerState {
@@ -1190,8 +1243,22 @@ impl PlayerState {
             library: Vec::new(),
             graveyard: Vec::new(),
             exile: Vec::new(),
+            mana_pool: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CombatManaColor {
+    Red,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CombatManaUnit {
+    pub mana_unit_id: ManaUnitId,
+    pub color: CombatManaColor,
+    pub expires_after_combat: CombatId,
+    pub created_by_trigger: TriggerId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1245,6 +1312,7 @@ pub struct CombatRuntimeState {
     pub current_characteristics_complete: bool,
     pub complete_libraries: BTreeSet<PlayerId>,
     pub state_based_actions_pending: bool,
+    pub next_mana_unit_id: ManaUnitId,
 }
 
 impl CombatRuntimeState {
@@ -1294,6 +1362,21 @@ impl CombatRuntimeState {
             .combat
             .as_ref()
             .is_some_and(|combat| combat.turn_id == ending_turn)
+        {
+            self.combat = None;
+        }
+    }
+
+    pub fn end_combat(&mut self, ending_combat: CombatId) {
+        for player in self.players.values_mut() {
+            player
+                .mana_pool
+                .retain(|unit| unit.expires_after_combat != ending_combat);
+        }
+        if self
+            .combat
+            .as_ref()
+            .is_some_and(|combat| combat.combat_id == ending_combat)
         {
             self.combat = None;
         }
@@ -1366,6 +1449,12 @@ pub enum ResolutionEffect {
         permanent: ObjectRef,
         counter: CounterKind,
         amount: u32,
+    },
+    ManaAdded {
+        player: PlayerId,
+        color: CombatManaColor,
+        mana_unit_ids: Vec<ManaUnitId>,
+        expires_after_combat: CombatId,
     },
     LibraryTopExiled {
         player: PlayerId,
@@ -1484,6 +1573,10 @@ pub fn resolve_combat_keyword_trigger(
             require_no_choice(&choice)?;
             resolve_dethrone(trigger, state)?
         }
+        CombatKeywordTriggerPayload::Firebending { amount } => {
+            require_no_choice(&choice)?;
+            resolve_firebending(trigger, *amount, state)?
+        }
         CombatKeywordTriggerPayload::Ingest { damaged_player } => {
             require_no_choice(&choice)?;
             resolve_ingest(*damaged_player, state)?
@@ -1521,6 +1614,42 @@ pub fn resolve_combat_keyword_trigger(
         trigger_id: trigger.trigger_id,
         effects,
     })
+}
+
+fn resolve_firebending(
+    trigger: &CombatKeywordTrigger,
+    amount: u32,
+    state: &mut CombatRuntimeState,
+) -> Result<Vec<ResolutionEffect>, CombatTriggerRuntimeError> {
+    let player = state
+        .players
+        .get_mut(&trigger.controller)
+        .ok_or(CombatTriggerRuntimeError::MissingPlayer(trigger.controller))?;
+    if !player.in_game {
+        return Ok(vec![ResolutionEffect::NoEffect(
+            ResolutionNoEffectReason::PlayerLeftGame,
+        )]);
+    }
+    let mut mana_unit_ids = Vec::with_capacity(amount as usize);
+    for _ in 0..amount {
+        let mana_unit_id = state.next_mana_unit_id;
+        state.next_mana_unit_id = state.next_mana_unit_id.checked_add(1).ok_or(
+            CombatTriggerRuntimeError::ArithmeticOverflow("allocating combat mana unit"),
+        )?;
+        mana_unit_ids.push(mana_unit_id);
+        player.mana_pool.push(CombatManaUnit {
+            mana_unit_id,
+            color: CombatManaColor::Red,
+            expires_after_combat: trigger.combat_id,
+            created_by_trigger: trigger.trigger_id,
+        });
+    }
+    Ok(vec![ResolutionEffect::ManaAdded {
+        player: trigger.controller,
+        color: CombatManaColor::Red,
+        mana_unit_ids,
+        expires_after_combat: trigger.combat_id,
+    }])
 }
 
 fn resolve_afflict(

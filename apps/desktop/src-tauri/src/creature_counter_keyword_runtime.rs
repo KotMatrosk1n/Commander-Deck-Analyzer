@@ -14,7 +14,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const CREATURE_COUNTER_COMPILER_VERSION: &str = "creature-counter-compiler-0.2";
-pub const CREATURE_COUNTER_RUNTIME_VERSION: &str = "creature-counter-runtime-0.2";
+pub const CREATURE_COUNTER_RUNTIME_VERSION: &str = "creature-counter-runtime-0.11";
 pub const CREATURE_COUNTER_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:107.3,115,117,118,122,400.7,602,603,608,614,616,701.37,701.39,701.46,702.38,702.43,702.44,702.54,702.58,702.82,702.100,702.104,702.112,702.123";
 
 const EVOLVE_CANONICAL: &str = "Evolve (Whenever a creature you control enters, if that creature has greater power or toughness than this creature, put a +1/+1 counter on this creature.)";
@@ -464,7 +464,21 @@ impl CreatureCounterKeywordProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        creature_counter_production_adapter_connected()
+        matches!(
+            self.kind,
+            CreatureCounterKeywordKind::Adapt { .. }
+                | CreatureCounterKeywordKind::Amplify { .. }
+                | CreatureCounterKeywordKind::Fabricate { .. }
+                | CreatureCounterKeywordKind::CastColorEntryCounters { .. }
+                | CreatureCounterKeywordKind::Monstrosity { .. }
+                | CreatureCounterKeywordKind::Devour { .. }
+                | CreatureCounterKeywordKind::Bolster { .. }
+                | CreatureCounterKeywordKind::ResidualEvolve
+                | CreatureCounterKeywordKind::ResidualRenown { .. }
+                | CreatureCounterKeywordKind::Modular { .. }
+                | CreatureCounterKeywordKind::Graft { .. }
+                | CreatureCounterKeywordKind::Tribute { .. }
+        )
     }
 }
 

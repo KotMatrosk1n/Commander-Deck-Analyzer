@@ -20,7 +20,7 @@ pub const RESIDUAL_COST_KEYWORD_RUNTIME_VERSION: &str = "residual-cost-keyword-r
 pub const RESIDUAL_COST_KEYWORD_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101.2-3,104.3d,106.3,106.6,107.1b,107.4,117.3,118.3-5,118.7,119.4,122.1,601.2b,601.2f-i,603.2,603.3b,608.2b,608.2h,609.3,701.6,701.59,701.67-68,702.21,702.41,704.5c,704.5g";
 
 pub const fn residual_cost_keyword_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -582,7 +582,22 @@ impl ResidualCostKeywordProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        residual_cost_keyword_production_adapter_connected()
+        matches!(
+            &self.kind,
+            ResidualCostKeywordKind::Affinity(AffinityProgram {
+                filter: AffinityFilter::CardType(_)
+                    | AffinityFilter::AllCardTypes(_)
+                    | AffinityFilter::CreatureType(_)
+                    | AffinityFilter::PermanentSubtype(_)
+                    | AffinityFilter::BasicLandType(_)
+                    | AffinityFilter::HistoricPermanent
+                    | AffinityFilter::OutlawPermanent
+                    | AffinityFilter::SnowLand
+                    | AffinityFilter::TokenPermanent
+                    | AffinityFilter::PermanentWithAffinity,
+                ..
+            })
+        )
     }
 }
 
@@ -703,7 +718,7 @@ fn parse_residual_affinity(source: &str) -> Option<AffinityProgram> {
     let (filter, expected_counted_phrase, uses_card_noun) = affinity_filter(label)?;
     let reminder = reminder?;
     let expected = if uses_card_noun {
-        "This card costs {1} less to cast for each permanent you control with affinity.".to_string()
+        format!("This card costs {{1}} less to cast for each permanent you control with affinity.")
     } else {
         format!(
             "This spell costs {{1}} less to cast for each {expected_counted_phrase} you control."
@@ -1457,6 +1472,20 @@ pub struct ResidualCostGameState {
 }
 
 impl ResidualCostGameState {
+    pub fn uninstall_ward_for_object(&mut self, object: ObjectId) {
+        let removed = self
+            .installed_ward
+            .iter()
+            .filter_map(|(ability, instance)| {
+                (instance.protected_object.object_id == object).then_some(*ability)
+            })
+            .collect::<BTreeSet<_>>();
+        self.installed_ward
+            .retain(|ability, _| !removed.contains(ability));
+        self.pending_ward
+            .retain(|_, pending| !removed.contains(&pending.ability_instance_id));
+    }
+
     pub fn install_ward(
         &mut self,
         instance: WardAbilityInstance,
@@ -2105,8 +2134,8 @@ fn consume_mana(
     Ok(())
 }
 
-fn consume_exact_color(
-    unused: &mut BTreeSet<&ManaUnit>,
+fn consume_exact_color<'a>(
+    unused: &mut BTreeSet<&'a ManaUnit>,
     color: ManaColor,
     amount: u32,
 ) -> Result<(), ResidualCostRuntimeError> {
