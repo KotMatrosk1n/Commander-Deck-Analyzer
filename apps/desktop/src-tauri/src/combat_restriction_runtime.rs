@@ -16,6 +16,10 @@ pub const COMBAT_RESTRICTION_RUNTIME_VERSION: &str = "combat-restriction-runtime
 pub const COMBAT_DECLARATION_RULES_CONTEXT: &str =
     "combat-declaration-context-0.1:current-characteristics;simultaneous-blocks;source-incarnation";
 
+pub const fn combat_restriction_production_adapter_connected() -> bool {
+    true
+}
+
 pub type PlayerId = u8;
 pub type ObjectId = u64;
 pub type IncarnationId = u64;
@@ -66,6 +70,10 @@ impl CombatRestrictionProgram {
 
     pub fn kind(&self) -> &CombatRestrictionKind {
         &self.kind
+    }
+
+    pub const fn production_adapter_connected(&self) -> bool {
+        combat_restriction_production_adapter_connected()
     }
 }
 
@@ -558,6 +566,10 @@ impl CombatRestrictionRuntime {
 
     pub fn bindings(&self) -> &[BoundCombatRestriction] {
         &self.bindings
+    }
+
+    pub fn unbind_source(&mut self, source: ObjectRef) {
+        self.bindings.retain(|binding| binding.source != source);
     }
 
     pub fn validate_attacks(

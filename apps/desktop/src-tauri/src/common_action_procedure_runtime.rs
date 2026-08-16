@@ -19,14 +19,14 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const COMMON_ACTION_PROCEDURE_COMPILER_VERSION: &str = "common-action-procedure-compiler-0.1";
-pub const COMMON_ACTION_PROCEDURE_RUNTIME_VERSION: &str = "common-action-procedure-runtime-0.1";
+pub const COMMON_ACTION_PROCEDURE_COMPILER_VERSION: &str = "common-action-procedure-compiler-0.3";
+pub const COMMON_ACTION_PROCEDURE_RUNTIME_VERSION: &str = "common-action-procedure-runtime-0.3";
 pub const COMMON_ACTION_PROCEDURE_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101.3,101.4,109.5,111.10f,117.3b,121,122,\
      400.2-7,400.11,603,608.2,701.16,701.34,701.41,701.44,701.47-49,701.54,\
-     725,726,800-810";
+     701.23,701.51,717,725,726,800-810";
 
 pub const fn common_action_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 pub type PlayerId = u16;
@@ -57,6 +57,8 @@ pub enum CommonActionFamily {
     BecomeMonarch,
     Proliferate,
     Amass,
+    OpenAttraction,
+    Clash,
 }
 
 impl CommonActionFamily {
@@ -73,6 +75,8 @@ impl CommonActionFamily {
             Self::BecomeMonarch => "become-monarch",
             Self::Proliferate => "proliferate",
             Self::Amass => "amass",
+            Self::OpenAttraction => "open-attraction",
+            Self::Clash => "clash",
         }
     }
 }
@@ -145,6 +149,8 @@ pub enum CommonActionKind {
         subtype: ArmySubtype,
         amount: ResolvedAmount,
     },
+    OpenAttraction,
+    ClashWithOpponent,
 }
 
 impl CommonActionKind {
@@ -161,6 +167,8 @@ impl CommonActionKind {
             Self::BecomeMonarch => CommonActionFamily::BecomeMonarch,
             Self::Proliferate => CommonActionFamily::Proliferate,
             Self::Amass { .. } => CommonActionFamily::Amass,
+            Self::OpenAttraction => CommonActionFamily::OpenAttraction,
+            Self::ClashWithOpponent => CommonActionFamily::Clash,
         }
     }
 
@@ -187,6 +195,8 @@ impl CommonActionKind {
             Self::Amass { subtype, amount } => {
                 format!("amass/{}/{}", subtype.stable_id(), amount.stable_id())
             }
+            Self::OpenAttraction => "open-attraction".into(),
+            Self::ClashWithOpponent => "clash-with-opponent".into(),
         }
     }
 }
@@ -510,6 +520,21 @@ fn parse_reviewed_action(source: &str, timing: CommonActionTiming) -> Option<Com
         .or_else(|| parse_become_monarch(&source))
         .or_else(|| parse_proliferate(&source))
         .or_else(|| parse_amass(&source))
+        .or_else(|| parse_open_attraction(&source))
+        .or_else(|| parse_clash(&source))
+}
+
+fn parse_clash(source: &str) -> Option<CommonActionKind> {
+    (strip_optional_terminal_period(source) == "clash with an opponent")
+        .then_some(CommonActionKind::ClashWithOpponent)
+}
+
+fn parse_open_attraction(source: &str) -> Option<CommonActionKind> {
+    const REMINDER: &str = "Put the top card of your Attraction deck onto the battlefield.";
+    let (core, reminder) = split_trailing_reminder(source);
+    (strip_optional_terminal_period(core) == "open an Attraction"
+        && reminder.is_none_or(|text| text == REMINDER))
+    .then_some(CommonActionKind::OpenAttraction)
 }
 
 fn parse_gain_energy(source: &str) -> Option<CommonActionKind> {
@@ -521,10 +546,10 @@ fn parse_gain_energy(source: &str) -> Option<CommonActionKind> {
         let count = parse_repeated_symbol(symbols, "{E}")?;
         ResolvedAmount::Fixed(count)
     };
-    if let Some(reminder) = reminder
-        && !energy_reminder_matches(amount, reminder)
-    {
-        return None;
+    if let Some(reminder) = reminder {
+        if !energy_reminder_matches(amount, reminder) {
+            return None;
+        }
     }
     Some(CommonActionKind::GainEnergy { amount })
 }
@@ -653,9 +678,10 @@ fn parse_amass(source: &str) -> Option<CommonActionKind> {
     let body = strip_optional_terminal_period(core).strip_prefix("amass ")?;
     let (subtype, amount_text) = if let Some(amount) = body.strip_prefix("Orcs ") {
         (ArmySubtype::Orc, amount)
-    } else {
-        let amount = body.strip_prefix("Zombies ")?;
+    } else if let Some(amount) = body.strip_prefix("Zombies ") {
         (ArmySubtype::Zombie, amount)
+    } else {
+        return None;
     };
     let amount = parse_amount(amount_text)?;
     let ResolvedAmount::Fixed(fixed) = amount else {
@@ -932,6 +958,7 @@ pub fn begin_resolving_common_action(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Zone {
+    AttractionDeck,
     Library,
     Hand,
     Battlefield,
@@ -992,6 +1019,9 @@ pub struct PlayerProcedureState {
     pub counters: BTreeMap<String, u32>,
     pub ring_temptation_count: u32,
     pub ring_bearer: Option<ObjectRef>,
+    /// Top card is the final element. `None` proves the player is not playing
+    /// with an Attraction deck; an empty vector is a known empty deck.
+    pub attraction_deck: Option<Vec<CardId>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1015,6 +1045,7 @@ pub struct DungeonProgress {
 pub struct CommonProcedureState {
     pub players: BTreeMap<PlayerId, PlayerProcedureState>,
     pub cards: BTreeMap<CardId, CardRecord>,
+    pub card_mana_values: BTreeMap<CardId, u32>,
     pub permanents: BTreeMap<ObjectRef, PermanentRecord>,
     pub monarch: Option<PlayerId>,
     pub initiative: Option<PlayerId>,
@@ -1029,6 +1060,30 @@ pub struct CommonProcedureState {
     pub outside_game_complete: bool,
     pub dungeon_catalog_complete: bool,
     pub team_assignments: Option<BTreeMap<PlayerId, u16>>,
+}
+
+impl Default for CommonProcedureState {
+    fn default() -> Self {
+        Self {
+            players: BTreeMap::new(),
+            cards: BTreeMap::new(),
+            card_mana_values: BTreeMap::new(),
+            permanents: BTreeMap::new(),
+            monarch: None,
+            initiative: None,
+            dungeons: BTreeMap::new(),
+            dungeon_progress: BTreeMap::new(),
+            pending_undercity_ventures: Vec::new(),
+            completed_dungeons: BTreeMap::new(),
+            next_object_id: 1,
+            public_players_complete: true,
+            battlefield_complete: true,
+            counter_state_complete: true,
+            outside_game_complete: false,
+            dungeon_catalog_complete: false,
+            team_assignments: None,
+        }
+    }
 }
 
 impl CommonProcedureState {
@@ -1079,6 +1134,7 @@ pub enum CommonActionRuntimeError {
     IncompleteDungeonCatalog,
     IncompleteLibraryEvidence,
     MissingLibraryCard(CardId),
+    MissingCardManaValue(CardId),
     LibraryZoneMismatch(CardId),
     InvalidExploreChoice,
     MissingExploreChoice,
@@ -1102,6 +1158,8 @@ pub enum CommonActionRuntimeError {
     IllegalRingBearer(ObjectRef),
     RingTemptationOverflow,
     MissingDungeonChoice,
+    MissingAttractionDeck,
+    InvalidAttractionCard(CardId),
     IllegalDungeonChoice(DungeonId),
     MissingRoomChoice,
     IllegalRoomChoice(RoomId),
@@ -1113,6 +1171,8 @@ pub enum CommonActionRuntimeError {
     MissingArmyChoice,
     IllegalArmyChoice(ObjectRef),
     ObjectIdOverflow,
+    IllegalClashOpponent(PlayerId),
+    InvalidClashChoice,
 }
 
 impl fmt::Display for CommonActionRuntimeError {
@@ -1708,6 +1768,221 @@ pub fn resolve_venture_into_dungeon(
         choice,
         state,
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenAttractionReceipt {
+    Opened {
+        player: PlayerId,
+        card: CardId,
+        permanent: ObjectRef,
+        program_digest: String,
+    },
+    EmptyDeck {
+        player: PlayerId,
+        program_digest: String,
+    },
+}
+
+pub fn resolve_open_attraction(
+    pending: &PendingCommonAction,
+    state: &mut CommonProcedureState,
+) -> Result<OpenAttractionReceipt, CommonActionRuntimeError> {
+    if pending.kind != CommonActionKind::OpenAttraction {
+        return Err(CommonActionRuntimeError::WrongActionFamily);
+    }
+    let top = state
+        .player(pending.controller)?
+        .attraction_deck
+        .as_ref()
+        .ok_or(CommonActionRuntimeError::MissingAttractionDeck)?
+        .last()
+        .copied();
+    let Some(card_id) = top else {
+        return Ok(OpenAttractionReceipt::EmptyDeck {
+            player: pending.controller,
+            program_digest: pending.program_digest.clone(),
+        });
+    };
+    let card = state
+        .cards
+        .get(&card_id)
+        .ok_or(CommonActionRuntimeError::InvalidAttractionCard(card_id))?;
+    if card.owner != pending.controller
+        || card.zone != Zone::AttractionDeck
+        || !card.card_types.contains(&CardType::Artifact)
+        || !card
+            .subtypes
+            .iter()
+            .any(|subtype| subtype.eq_ignore_ascii_case("Attraction"))
+    {
+        return Err(CommonActionRuntimeError::InvalidAttractionCard(card_id));
+    }
+    let card_types = card.card_types.clone();
+    let subtypes = card.subtypes.clone();
+    let permanent = allocate_object(state)?;
+    let removed = state
+        .player_mut(pending.controller)?
+        .attraction_deck
+        .as_mut()
+        .ok_or(CommonActionRuntimeError::MissingAttractionDeck)?
+        .pop();
+    if removed != Some(card_id) {
+        return Err(CommonActionRuntimeError::InvalidAttractionCard(card_id));
+    }
+    let card = state
+        .cards
+        .get_mut(&card_id)
+        .ok_or(CommonActionRuntimeError::InvalidAttractionCard(card_id))?;
+    card.zone = Zone::Battlefield;
+    card.public_identity = true;
+    state.permanents.insert(
+        permanent,
+        PermanentRecord {
+            object: permanent,
+            card_id: Some(card_id),
+            owner: pending.controller,
+            controller: pending.controller,
+            card_types,
+            subtypes,
+            counters: BTreeMap::new(),
+            is_token: false,
+        },
+    );
+    Ok(OpenAttractionReceipt::Opened {
+        player: pending.controller,
+        card: card_id,
+        permanent,
+        program_digest: pending.program_digest.clone(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClashResolutionInput {
+    pub opponent: PlayerId,
+    pub controller_put_on_bottom: Option<bool>,
+    pub opponent_put_on_bottom: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClashCardReceipt {
+    pub player: PlayerId,
+    pub card: Option<CardId>,
+    pub mana_value: u32,
+    pub put_on_bottom: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClashReceipt {
+    pub controller: ClashCardReceipt,
+    pub opponent: ClashCardReceipt,
+    pub winner: Option<PlayerId>,
+    pub program_digest: String,
+}
+
+pub fn resolve_clash(
+    pending: &PendingCommonAction,
+    input: ClashResolutionInput,
+    state: &mut CommonProcedureState,
+) -> Result<ClashReceipt, CommonActionRuntimeError> {
+    if pending.kind != CommonActionKind::ClashWithOpponent {
+        return Err(CommonActionRuntimeError::WrongActionFamily);
+    }
+    state.player(pending.controller)?;
+    state.player(input.opponent)?;
+    if input.opponent == pending.controller
+        || state.team_assignments.as_ref().is_some_and(|teams| {
+            teams.get(&pending.controller).is_some()
+                && teams.get(&pending.controller) == teams.get(&input.opponent)
+        })
+    {
+        return Err(CommonActionRuntimeError::IllegalClashOpponent(
+            input.opponent,
+        ));
+    }
+
+    let controller_card = state.player(pending.controller)?.library.last().copied();
+    let opponent_card = state.player(input.opponent)?.library.last().copied();
+    let validate_card = |player: PlayerId,
+                         card: Option<CardId>,
+                         choice: Option<bool>,
+                         state: &CommonProcedureState|
+     -> Result<(u32, bool), CommonActionRuntimeError> {
+        match card {
+            None if choice.is_none() => Ok((0, false)),
+            None => Err(CommonActionRuntimeError::InvalidClashChoice),
+            Some(card) => {
+                let record = state
+                    .cards
+                    .get(&card)
+                    .ok_or(CommonActionRuntimeError::MissingLibraryCard(card))?;
+                if record.owner != player || record.zone != Zone::Library {
+                    return Err(CommonActionRuntimeError::LibraryZoneMismatch(card));
+                }
+                let mana_value = *state
+                    .card_mana_values
+                    .get(&card)
+                    .ok_or(CommonActionRuntimeError::MissingCardManaValue(card))?;
+                Ok((
+                    mana_value,
+                    choice.ok_or(CommonActionRuntimeError::InvalidClashChoice)?,
+                ))
+            }
+        }
+    };
+    let (controller_mana_value, controller_bottom) = validate_card(
+        pending.controller,
+        controller_card,
+        input.controller_put_on_bottom,
+        state,
+    )?;
+    let (opponent_mana_value, opponent_bottom) = validate_card(
+        input.opponent,
+        opponent_card,
+        input.opponent_put_on_bottom,
+        state,
+    )?;
+
+    for (player, card, put_on_bottom) in [
+        (pending.controller, controller_card, controller_bottom),
+        (input.opponent, opponent_card, opponent_bottom),
+    ] {
+        if let Some(card) = card {
+            state
+                .cards
+                .get_mut(&card)
+                .expect("validated clash card remains present")
+                .public_identity = false;
+            if put_on_bottom {
+                let removed = state.player_mut(player)?.library.pop();
+                if removed != Some(card) {
+                    return Err(CommonActionRuntimeError::IncompleteLibraryEvidence);
+                }
+                state.player_mut(player)?.library.insert(0, card);
+            }
+        }
+    }
+    let winner = match controller_mana_value.cmp(&opponent_mana_value) {
+        std::cmp::Ordering::Greater => Some(pending.controller),
+        std::cmp::Ordering::Less => Some(input.opponent),
+        std::cmp::Ordering::Equal => None,
+    };
+    Ok(ClashReceipt {
+        controller: ClashCardReceipt {
+            player: pending.controller,
+            card: controller_card,
+            mana_value: controller_mana_value,
+            put_on_bottom: controller_bottom,
+        },
+        opponent: ClashCardReceipt {
+            player: input.opponent,
+            card: opponent_card,
+            mana_value: opponent_mana_value,
+            put_on_bottom: opponent_bottom,
+        },
+        winner,
+        program_digest: pending.program_digest.clone(),
+    })
 }
 
 pub fn resolve_pending_undercity_venture(

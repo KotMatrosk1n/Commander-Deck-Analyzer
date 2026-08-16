@@ -15,7 +15,9 @@ use crate::alternative_cast_runtime::{
 };
 use crate::bounded_oracle_runtime::{
     BoundedOracleCardContext, BoundedOracleClause, ClauseAddress, OracleClauseInput,
-    OracleFaceInput, Timing as BoundedOracleTiming, compile_bounded_oracle_clause_with_context,
+    OracleFaceInput, Timing as BoundedOracleTiming, bind_casting_sacrifice_selection_context,
+    bind_revealed_subtype_face_context, bind_sacrificed_mana_face_context,
+    bind_saga_lore_face_context, compile_bounded_oracle_clause_with_context,
     compile_bounded_oracle_face, normalize_oracle_clause,
 };
 use crate::characteristic_oracle_runtime::{
@@ -64,7 +66,7 @@ use crate::object_lifecycle_runtime::{
 use crate::oracle_clause_backend::{
     CompiledOracleClause, DelegatedKeywordClause, OracleClauseBackendInput,
     OracleClauseCardContext, OracleClauseSemanticContext,
-    compile_oracle_clause_backend_with_semantic_context,
+    compile_oracle_clause_backend_after_bounded_failure_with_semantic_context,
 };
 use crate::oracle_clause_syntax::{
     OracleClauseSyntaxError, OracleClauseSyntaxInput, OracleSyntaxProvenance,
@@ -75,7 +77,7 @@ use crate::utility_modal_runtime::{
     CompiledUtilityModal, UtilityModalCardInput, compile_utility_modal_runtime,
 };
 
-pub(crate) const EFFECT_DESCRIPTOR_VERSION: &str = "oracle-effects-0.49";
+pub(crate) const EFFECT_DESCRIPTOR_VERSION: &str = "oracle-effects-0.74";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EffectMagnitude {
@@ -1051,7 +1053,7 @@ fn append_additional_oracle_clauses(
             oracle_clause,
             printed_keywords,
         };
-        match compile_oracle_clause_backend_with_semantic_context(
+        match compile_oracle_clause_backend_after_bounded_failure_with_semantic_context(
             input,
             OracleClauseSemanticContext {
                 card: card_context,
@@ -1147,7 +1149,7 @@ fn compile_bounded_oracle_face_clauses(
         return face.clauses;
     }
 
-    oracle_clauses
+    let mut clauses = oracle_clauses
         .iter()
         .enumerate()
         .filter_map(|(clause_index, oracle_clause)| {
@@ -1170,7 +1172,42 @@ fn compile_bounded_oracle_face_clauses(
             ))
             .then_some(clause)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // A different unsupported clause can force the full-face compiler onto
+    // this per-clause fallback. Preserve the exact cross-clause Saga chapter
+    // binding even in that case so the lore lifecycle does not lose its
+    // highest printed chapter merely because an unrelated ability is pending.
+    let _ = bind_saga_lore_face_context(
+        &OracleFaceInput {
+            face_index,
+            source_name,
+            source_type_line,
+            oracle_clauses: &oracle_clauses,
+        },
+        &mut clauses,
+    );
+    // Preserve linked sacrificed-creature mana-value provenance when an
+    // unrelated unsupported clause forces the face onto this fallback too.
+    let _ = bind_sacrificed_mana_face_context(
+        &OracleFaceInput {
+            face_index,
+            source_name,
+            source_type_line,
+            oracle_clauses: &oracle_clauses,
+        },
+        &mut clauses,
+    );
+    let _ = bind_casting_sacrifice_selection_context(&mut clauses);
+    let _ = bind_revealed_subtype_face_context(
+        &OracleFaceInput {
+            face_index,
+            source_name,
+            source_type_line,
+            oracle_clauses: &oracle_clauses,
+        },
+        &mut clauses,
+    );
+    clauses
 }
 
 const BOUNDED_PRINTED_MECHANICS: [PrintedMechanic; 23] = [

@@ -10,7 +10,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const DAMAGE_TRANSACTION_RUNTIME_VERSION: &str = "damage-transaction-runtime-0.1";
+pub const DAMAGE_TRANSACTION_RUNTIME_VERSION: &str = "damage-transaction-runtime-0.3";
 pub const DAMAGE_SEMANTIC_INPUT_VERSION: &str = "damage-semantic-input-0.1";
 
 pub type PlayerId = u8;
@@ -187,6 +187,10 @@ pub struct DamagePlayerState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DamageCreatureState {
     pub controller: PlayerId,
+    pub has_flying: bool,
+    pub attacking: bool,
+    pub blocking: bool,
+    pub dealt_damage_this_turn: bool,
     pub marked_damage: u32,
     pub minus_one_minus_one_counters: u32,
     pub has_deathtouch_damage: bool,
@@ -296,6 +300,8 @@ pub enum LegalDamageTargetKind {
     Player,
     OpponentOf(PlayerId),
     Creature,
+    AttackingOrBlockingCreature,
+    CreatureDealtDamageThisTurn,
     Planeswalker,
     Battle,
     CreatureOrPlaneswalker,
@@ -308,6 +314,12 @@ pub enum DefinedDamageSet {
     EachPlayer,
     EachOpponentOf(PlayerId),
     EachCreature,
+    EachAttackingCreature,
+    EachCreatureWithFlying,
+    EachCreatureWithoutFlying,
+    EachCreatureControlledByOpponentsOf(PlayerId),
+    EachCreatureAndEachPlayer,
+    EachCreatureAndEachPlaneswalker,
     EachPlaneswalker,
     EachBattle,
 }
@@ -945,7 +957,7 @@ fn validate_selection(
         DamageSelection::Untargeted => Ok(()),
         DamageSelection::Targeted(legal) => {
             for assignment in assignments {
-                if !legal_target_accepts(legal, assignment.recipient) {
+                if !legal_target_accepts(state, legal, assignment.recipient) {
                     return Err(DamageTransactionError::IllegalTarget {
                         assignment: assignment.id,
                         recipient: assignment.recipient,
@@ -956,7 +968,14 @@ fn validate_selection(
             Ok(())
         }
         DamageSelection::DefinedSet(defined) => {
-            if !matches!(recipients, DamageRecipients::Set { .. }) {
+            let recipient_shape_matches = match defined {
+                DefinedDamageSet::EachCreatureAndEachPlayer
+                | DefinedDamageSet::EachCreatureAndEachPlaneswalker => {
+                    matches!(recipients, DamageRecipients::Mixed { .. })
+                }
+                _ => matches!(recipients, DamageRecipients::Set { .. }),
+            };
+            if !recipient_shape_matches {
                 return Err(DamageTransactionError::DefinedSetRequiresSetRecipients);
             }
             let expected = defined_set_recipients(state, defined);
@@ -977,13 +996,32 @@ fn validate_selection(
     }
 }
 
-fn legal_target_accepts(legal: LegalDamageTargetKind, recipient: DamageRecipient) -> bool {
+fn legal_target_accepts(
+    state: &DamageRuntimeState,
+    legal: LegalDamageTargetKind,
+    recipient: DamageRecipient,
+) -> bool {
     match legal {
         LegalDamageTargetKind::Player => matches!(recipient, DamageRecipient::Player(_)),
         LegalDamageTargetKind::OpponentOf(player) => {
             matches!(recipient, DamageRecipient::Player(target) if target != player)
         }
         LegalDamageTargetKind::Creature => matches!(recipient, DamageRecipient::Creature(_)),
+        LegalDamageTargetKind::AttackingOrBlockingCreature => match recipient {
+            DamageRecipient::Creature(object) => matches!(
+                state.objects.get(&object),
+                Some(DamageObjectState::Creature(creature))
+                    if creature.attacking || creature.blocking
+            ),
+            _ => false,
+        },
+        LegalDamageTargetKind::CreatureDealtDamageThisTurn => match recipient {
+            DamageRecipient::Creature(object) => matches!(
+                state.objects.get(&object),
+                Some(DamageObjectState::Creature(creature)) if creature.dealt_damage_this_turn
+            ),
+            _ => false,
+        },
         LegalDamageTargetKind::Planeswalker => {
             matches!(recipient, DamageRecipient::Planeswalker(_))
         }
@@ -1019,6 +1057,59 @@ fn defined_set_recipients(
             .map(DamageRecipient::Player)
             .collect(),
         DefinedDamageSet::EachCreature => objects_of_kind(state, DamageRecipientKind::Creature),
+        DefinedDamageSet::EachAttackingCreature => state
+            .objects
+            .iter()
+            .filter_map(|(object, value)| match value {
+                DamageObjectState::Creature(creature) if creature.attacking => {
+                    Some(DamageRecipient::Creature(*object))
+                }
+                _ => None,
+            })
+            .collect(),
+        DefinedDamageSet::EachCreatureWithFlying => state
+            .objects
+            .iter()
+            .filter_map(|(object, object_state)| match object_state {
+                DamageObjectState::Creature(creature) if creature.has_flying => {
+                    Some(DamageRecipient::Creature(*object))
+                }
+                _ => None,
+            })
+            .collect(),
+        DefinedDamageSet::EachCreatureWithoutFlying => state
+            .objects
+            .iter()
+            .filter_map(|(object, object_state)| match object_state {
+                DamageObjectState::Creature(creature) if !creature.has_flying => {
+                    Some(DamageRecipient::Creature(*object))
+                }
+                _ => None,
+            })
+            .collect(),
+        DefinedDamageSet::EachCreatureControlledByOpponentsOf(player) => state
+            .objects
+            .iter()
+            .filter_map(|(object, object_state)| match object_state {
+                DamageObjectState::Creature(creature) if creature.controller != player => {
+                    Some(DamageRecipient::Creature(*object))
+                }
+                _ => None,
+            })
+            .collect(),
+        DefinedDamageSet::EachCreatureAndEachPlayer => state
+            .players
+            .keys()
+            .copied()
+            .map(DamageRecipient::Player)
+            .chain(objects_of_kind(state, DamageRecipientKind::Creature))
+            .collect(),
+        DefinedDamageSet::EachCreatureAndEachPlaneswalker => {
+            objects_of_kind(state, DamageRecipientKind::Creature)
+                .into_iter()
+                .chain(objects_of_kind(state, DamageRecipientKind::Planeswalker))
+                .collect()
+        }
         DefinedDamageSet::EachPlaneswalker => {
             objects_of_kind(state, DamageRecipientKind::Planeswalker)
         }

@@ -3,8 +3,8 @@
 //! Recognition and execution are intentionally separate from production
 //! coverage. The programs in this module preserve the game objects, costs,
 //! targets, choices, zone changes, and linked exile state needed by these
-//! mechanics. The production adapter stays disconnected until the main
-//! simulation can provide the same complete evidence.
+//! mechanics. Production coverage is enabled only for mechanic lifecycles
+//! that the main simulation projects without losing that evidence.
 
 #![allow(dead_code)]
 
@@ -19,10 +19,6 @@ pub const GRAVEYARD_TRANSFORM_KEYWORD_RUNTIME_VERSION: &str =
     "graveyard-transform-keyword-runtime-0.1";
 pub const GRAVEYARD_TRANSFORM_KEYWORD_RULES_CONTEXT_VERSION: &str =
     "magic-comprehensive-rules-2026-06-19:118,400.7,601.2,603,608.2,614,702.46,702.146,702.167,712";
-
-pub const fn graveyard_transform_keyword_production_adapter_connected() -> bool {
-    false
-}
 
 /// Canonicalize only self references needed by the graveyard/transform
 /// lifecycle compiler. Snapshot coordinates, hashes, timestamps, and database
@@ -513,7 +509,12 @@ impl GraveyardTransformKeywordProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        graveyard_transform_keyword_production_adapter_connected()
+        matches!(
+            self.kind,
+            GraveyardTransformKeywordKind::Disturb(_)
+                | GraveyardTransformKeywordKind::Soulshift(_)
+                | GraveyardTransformKeywordKind::Craft(_)
+        )
     }
 }
 
@@ -1405,7 +1406,7 @@ pub struct CraftResolutionReceipt {
     pub resolution: CraftResolution,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GraveyardTransformKeywordRuntime {
     players: BTreeMap<PlayerId, PlayerState>,
     objects: BTreeMap<ObjectId, TrackedObject>,
@@ -1444,6 +1445,10 @@ impl GraveyardTransformKeywordRuntime {
         Ok(())
     }
 
+    pub fn replace_player(&mut self, player: PlayerState) {
+        self.players.insert(player.player, player);
+    }
+
     pub fn insert_object(
         &mut self,
         object: TrackedObject,
@@ -1460,6 +1465,28 @@ impl GraveyardTransformKeywordRuntime {
 
     pub fn object(&self, object_id: ObjectId) -> Option<&TrackedObject> {
         self.objects.get(&object_id)
+    }
+
+    /// Replaces only immutable card-definition evidence before any keyword is
+    /// installed on the physical object. This lets a host initially project a
+    /// generic hidden-zone card and later bind its exact content context.
+    pub fn replace_unbound_object_definition(
+        &mut self,
+        object_ref: ObjectRef,
+        definition: PhysicalCardDefinition,
+    ) -> Result<(), GraveyardTransformRuntimeError> {
+        if self
+            .bindings
+            .get(&object_ref.object_id)
+            .is_some_and(|bindings| !bindings.is_empty())
+        {
+            return Err(GraveyardTransformRuntimeError::DuplicateBinding);
+        }
+        let mut object = self.exact_object(object_ref)?.clone();
+        object.definition = definition;
+        validate_tracked_object(&object)?;
+        self.objects.insert(object_ref.object_id, object);
+        Ok(())
     }
 
     pub fn pending_soulshift_trigger(

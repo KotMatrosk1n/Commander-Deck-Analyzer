@@ -11,12 +11,11 @@ use sha2::{Digest, Sha256};
 pub const ORACLE_CLAUSE_SYNTAX_COMPILER_VERSION: &str = "oracle-clause-syntax-compiler-0.2";
 pub const ORACLE_CLAUSE_SYNTAX_RUNTIME_VERSION: &str = "oracle-clause-syntax-runtime-0.1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OracleSyntaxSemanticContext {
     /// Rules text printed on a card or one of its retained faces. This includes
     /// Dungeon, Attraction, and sticker-sheet card records. The other variants
     /// below are reserved for rules objects parsed outside a card record.
-    #[default]
     CardFace,
     Emblem,
     DungeonRoom,
@@ -33,6 +32,12 @@ impl OracleSyntaxSemanticContext {
             Self::AttractionLight => "attraction-light/v1",
             Self::StickerAbility => "sticker-ability/v1",
         }
+    }
+}
+
+impl Default for OracleSyntaxSemanticContext {
+    fn default() -> Self {
+        Self::CardFace
     }
 }
 
@@ -83,7 +88,7 @@ impl ByteSpan {
         self.start >= self.end
     }
 
-    pub fn slice(self, source: &str) -> Option<&str> {
+    pub fn slice<'a>(self, source: &'a str) -> Option<&'a str> {
         source.get(self.start..self.end)
     }
 }
@@ -1412,10 +1417,10 @@ fn recognize_atoms(
         if separator.is_empty() {
             continue;
         }
-        if let Some(previous) = non_overlapping.last()
-            && separator.start < previous.end
-        {
-            continue;
+        if let Some(previous) = non_overlapping.last() {
+            if separator.start < previous.end {
+                continue;
+            }
         }
         non_overlapping.push(separator);
     }
@@ -1592,6 +1597,7 @@ fn starts_with_known_keyword(text: &str) -> bool {
         "entwine",
         "epic",
         "equip",
+        "reconfigure",
         "escalate",
         "escape",
         "eternalize",
@@ -1630,6 +1636,7 @@ fn starts_with_known_keyword(text: &str) -> bool {
         "infect",
         "ingest",
         "intimidate",
+        "skulk",
         "jump-start",
         "kicker",
         "landcycling",

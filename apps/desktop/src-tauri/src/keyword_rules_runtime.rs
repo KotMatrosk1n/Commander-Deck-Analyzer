@@ -10,8 +10,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
-pub const KEYWORD_RULES_RUNTIME_VERSION: &str = "official-keyword-rules-2026-06-19/v12";
-pub const KEYWORD_RULES_EVIDENCE_VERSION: &str = "official-keyword-evidence/v1";
+pub const KEYWORD_RULES_RUNTIME_VERSION: &str = "official-keyword-rules-2026-06-19/v31";
+pub const KEYWORD_RULES_EVIDENCE_VERSION: &str = "official-keyword-evidence/v18";
 pub const KEYWORD_RULES_EFFECTIVE_DATE: &str = "2026-06-19";
 pub const KEYWORD_RULES_SOURCE_URL: &str =
     "https://media.wizards.com/2026/downloads/MagicCompRules%2020260619.txt";
@@ -33,6 +33,8 @@ pub const SOULBOND_CANONICAL_ORACLE_CLAUSE: &str = "Soulbond (You may pair this 
 pub const EVOLVE_CANONICAL_ORACLE_CLAUSE: &str = "Evolve (Whenever a creature you control enters, if that creature has greater power or toughness than this creature, put a +1/+1 counter on this creature.)";
 pub const IMPROVISE_CANONICAL_ORACLE_CLAUSE: &str = "Improvise (Your artifacts can help cast this spell. Each artifact you tap after you're done activating mana abilities pays for {1}.)";
 pub const INTIMIDATE_CANONICAL_ORACLE_CLAUSE: &str = "Intimidate (This creature can't be blocked except by artifact creatures and/or creatures that share a color with it.)";
+pub const SKULK_CANONICAL_ORACLE_CLAUSE: &str =
+    "Skulk (This creature can't be blocked by creatures with greater power.)";
 pub const SPREE_CANONICAL_ORACLE_CLAUSE: &str = "Spree (Choose one or more additional costs.)";
 pub const BARGAIN_CANONICAL_ORACLE_CLAUSE: &str =
     "Bargain (You may sacrifice an artifact, enchantment, or token as you cast this spell.)";
@@ -155,6 +157,8 @@ pub enum OfficialRule {
     EquipQuality,
     EquipMultipleAbilities,
     EquipPlaneswalker,
+    ReconfigureDefinition,
+    ReconfigureAttachedCharacteristics,
     AuraSpellTarget,
     AuraDefinition,
     AuraTarget,
@@ -366,6 +370,9 @@ pub enum OfficialRule {
     IntimidateDefinition,
     IntimidateBlocking,
     IntimidateRedundancy,
+    SkulkDefinition,
+    SkulkBlocking,
+    SkulkRedundancy,
     SpreeDefinition,
     SpreeSymbols,
     BargainDefinition,
@@ -506,6 +513,8 @@ impl OfficialRule {
             Self::EquipQuality => "702.6c",
             Self::EquipMultipleAbilities => "702.6d",
             Self::EquipPlaneswalker => "702.6e",
+            Self::ReconfigureDefinition => "702.151a",
+            Self::ReconfigureAttachedCharacteristics => "702.151a",
             Self::AuraSpellTarget => "115.1b",
             Self::AuraDefinition => "303.4",
             Self::AuraTarget => "303.4a",
@@ -717,6 +726,9 @@ impl OfficialRule {
             Self::IntimidateDefinition => "702.13a",
             Self::IntimidateBlocking => "702.13b",
             Self::IntimidateRedundancy => "702.13c",
+            Self::SkulkDefinition => "702.108a",
+            Self::SkulkBlocking => "702.108b",
+            Self::SkulkRedundancy => "702.108c",
             Self::SpreeDefinition => "702.172a",
             Self::SpreeSymbols => "702.172b",
             Self::BargainDefinition => "702.166a",
@@ -882,6 +894,15 @@ const EQUIP_RULES: &[OfficialRule] = &[
     OfficialRule::EquipQuality,
     OfficialRule::EquipMultipleAbilities,
     OfficialRule::EquipPlaneswalker,
+];
+const RECONFIGURE_RULES: &[OfficialRule] = &[
+    OfficialRule::Attach,
+    OfficialRule::EquipmentDefinition,
+    OfficialRule::EquipmentEntryAndEquip,
+    OfficialRule::EquipmentLegality,
+    OfficialRule::EquipmentControl,
+    OfficialRule::ReconfigureDefinition,
+    OfficialRule::ReconfigureAttachedCharacteristics,
 ];
 const ENCHANT_RULES: &[OfficialRule] = &[
     OfficialRule::Attach,
@@ -1204,6 +1225,13 @@ const INTIMIDATE_RULES: &[OfficialRule] = &[
     OfficialRule::IntimidateBlocking,
     OfficialRule::IntimidateRedundancy,
 ];
+const SKULK_RULES: &[OfficialRule] = &[
+    OfficialRule::AbilityDefaultZone,
+    OfficialRule::DeclareBlockerRestrictions,
+    OfficialRule::SkulkDefinition,
+    OfficialRule::SkulkBlocking,
+    OfficialRule::SkulkRedundancy,
+];
 const SPREE_RULES: &[OfficialRule] = &[
     OfficialRule::AbilityDefaultZone,
     OfficialRule::ResolveInstructionsInOrder,
@@ -1487,6 +1515,7 @@ pub enum OfficialKeyword {
     Devoid,
     Convoke,
     Equip,
+    Reconfigure,
     Enchant,
     Saga,
     CumulativeUpkeep,
@@ -1518,6 +1547,7 @@ pub enum OfficialKeyword {
     Evolve,
     Improvise,
     Intimidate,
+    Skulk,
     Spree,
     Bargain,
     Mentor,
@@ -1567,6 +1597,7 @@ impl OfficialKeyword {
             Self::Devoid => "Devoid",
             Self::Convoke => "Convoke",
             Self::Equip => "Equip",
+            Self::Reconfigure => "Reconfigure",
             Self::Enchant => "Enchant",
             Self::Saga => "Saga",
             Self::CumulativeUpkeep => "Cumulative upkeep",
@@ -1598,6 +1629,7 @@ impl OfficialKeyword {
             Self::Evolve => "Evolve",
             Self::Improvise => "Improvise",
             Self::Intimidate => "Intimidate",
+            Self::Skulk => "Skulk",
             Self::Spree => "Spree",
             Self::Bargain => "Bargain",
             Self::Mentor => "Mentor",
@@ -1818,6 +1850,20 @@ pub struct EquipProgram {
     pub target_filter: ObjectPredicate,
     pub planeswalker_as_creature: bool,
     pub sorcery_timing_only: bool,
+}
+
+/// The complete rules contract for a Reconfigure ability.
+///
+/// The activation is Equip-shaped, but the source is a creature Equipment and
+/// loses the creature card type for exactly the interval it is attached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconfigureProgram {
+    pub activation_cost: ManaCost,
+    pub target_filter: ObjectPredicate,
+    pub sorcery_timing_only: bool,
+    pub source_must_be_an_equipment_creature: bool,
+    pub attached_source_is_not_a_creature: bool,
+    pub unattached_source_remains_a_creature: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2304,6 +2350,12 @@ pub enum DayNightFaceRole {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DayNightDesignation {
+    Day,
+    Night,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DayNightGlobalLifecycle {
     SinglePersistentMutuallyExclusiveGameDesignationInitiallyNeither,
 }
@@ -2626,6 +2678,23 @@ pub enum IntimidateBlockerQualification {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkulkBlockerQualification {
+    CreatureWithCurrentPowerNotGreaterThanAttacker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkulkProgram {
+    pub is_static_evasion_ability: bool,
+    pub blocker_qualification: SkulkBlockerQualification,
+    pub every_declared_blocker_must_individually_qualify: bool,
+    pub checks_current_power_during_block_declaration: bool,
+    pub gain_or_loss_after_legal_declaration_does_not_change_block: bool,
+    pub later_attacker_or_blocker_power_changes_do_not_change_block: bool,
+    pub composes_with_other_block_restrictions: bool,
+    pub instances_are_redundant: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntimidateProgram {
     pub is_static_evasion_ability: bool,
     pub blocker_qualification: IntimidateBlockerQualification,
@@ -2943,6 +3012,7 @@ pub enum KeywordProgramKind {
     Evolve(EvolveProgram),
     Improvise(ImproviseProgram),
     Intimidate(IntimidateProgram),
+    Skulk(SkulkProgram),
     Spree(SpreeProgram),
     Bargain(BargainProgram),
     Mentor(MentorProgram),
@@ -2958,6 +3028,7 @@ pub enum KeywordProgramKind {
     Devoid,
     Convoke(ConvokeProgram),
     Equip(EquipProgram),
+    Reconfigure(ReconfigureProgram),
     Enchant(EnchantProgram),
     Saga(SagaProgram),
     CumulativeUpkeep(CumulativeUpkeepProgram),
@@ -3042,6 +3113,7 @@ impl KeywordProgram {
             KeywordProgramKind::Evolve(_) => OfficialKeyword::Evolve,
             KeywordProgramKind::Improvise(_) => OfficialKeyword::Improvise,
             KeywordProgramKind::Intimidate(_) => OfficialKeyword::Intimidate,
+            KeywordProgramKind::Skulk(_) => OfficialKeyword::Skulk,
             KeywordProgramKind::Spree(_) => OfficialKeyword::Spree,
             KeywordProgramKind::Bargain(_) => OfficialKeyword::Bargain,
             KeywordProgramKind::Mentor(_) => OfficialKeyword::Mentor,
@@ -3057,6 +3129,7 @@ impl KeywordProgram {
             KeywordProgramKind::Devoid => OfficialKeyword::Devoid,
             KeywordProgramKind::Convoke(_) => OfficialKeyword::Convoke,
             KeywordProgramKind::Equip(_) => OfficialKeyword::Equip,
+            KeywordProgramKind::Reconfigure(_) => OfficialKeyword::Reconfigure,
             KeywordProgramKind::Enchant(_) => OfficialKeyword::Enchant,
             KeywordProgramKind::Saga(_) => OfficialKeyword::Saga,
             KeywordProgramKind::CumulativeUpkeep(_) => OfficialKeyword::CumulativeUpkeep,
@@ -3150,6 +3223,7 @@ impl KeywordProgram {
             KeywordProgramKind::Evolve(_) => EVOLVE_RULES,
             KeywordProgramKind::Improvise(_) => IMPROVISE_RULES,
             KeywordProgramKind::Intimidate(_) => INTIMIDATE_RULES,
+            KeywordProgramKind::Skulk(_) => SKULK_RULES,
             KeywordProgramKind::Spree(_) => SPREE_RULES,
             KeywordProgramKind::Bargain(_) => BARGAIN_RULES,
             KeywordProgramKind::Mentor(_) => MENTOR_RULES,
@@ -3165,6 +3239,7 @@ impl KeywordProgram {
             KeywordProgramKind::Devoid => DEVOID_RULES,
             KeywordProgramKind::Convoke(_) => CONVOKE_RULES,
             KeywordProgramKind::Equip(_) => EQUIP_RULES,
+            KeywordProgramKind::Reconfigure(_) => RECONFIGURE_RULES,
             KeywordProgramKind::Enchant(_) => ENCHANT_RULES,
             KeywordProgramKind::Saga(_) => SAGA_RULES,
             KeywordProgramKind::CumulativeUpkeep(_) => CUMULATIVE_UPKEEP_RULES,
@@ -3454,6 +3529,7 @@ pub fn compile_keyword_program(
         "intimidate" => {
             KeywordProgramKind::Intimidate(parse_intimidate_program(input.oracle_fragment)?)
         }
+        "skulk" => KeywordProgramKind::Skulk(parse_skulk_program(input.oracle_fragment)?),
         "spree" => KeywordProgramKind::Spree(parse_spree_program(input.oracle_fragment)?),
         "bargain" => KeywordProgramKind::Bargain(parse_bargain_program(input.oracle_fragment)?),
         "mentor" => KeywordProgramKind::Mentor(parse_mentor_program(input.oracle_fragment)?),
@@ -3485,6 +3561,9 @@ pub fn compile_keyword_program(
             OfficialKeyword::Equip,
             input.oracle_fragment,
         )?)?),
+        "reconfigure" => KeywordProgramKind::Reconfigure(parse_reconfigure_program(
+            required_fragment(OfficialKeyword::Reconfigure, input.oracle_fragment)?,
+        )?),
         "enchant" => KeywordProgramKind::Enchant(parse_enchant_program(required_fragment(
             OfficialKeyword::Enchant,
             input.oracle_fragment,
@@ -3574,10 +3653,10 @@ fn normalized_label(label: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn required_fragment(
+fn required_fragment<'a>(
     keyword: OfficialKeyword,
-    fragment: Option<&str>,
-) -> Result<&str, KeywordCompileError> {
+    fragment: Option<&'a str>,
+) -> Result<&'a str, KeywordCompileError> {
     let fragment = fragment
         .map(str::trim)
         .filter(|fragment| !fragment.is_empty())
@@ -3588,10 +3667,10 @@ fn required_fragment(
     Ok(fragment)
 }
 
-fn required_multiline_fragment(
+fn required_multiline_fragment<'a>(
     keyword: OfficialKeyword,
-    fragment: Option<&str>,
-) -> Result<&str, KeywordCompileError> {
+    fragment: Option<&'a str>,
+) -> Result<&'a str, KeywordCompileError> {
     fragment
         .map(str::trim)
         .filter(|fragment| !fragment.is_empty())
@@ -3668,6 +3747,23 @@ fn normalized_oracle_phrase(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
+}
+
+fn backup_counter_text(count: u32) -> Option<String> {
+    let text = match count {
+        1 => return Some("a +1/+1 counter".to_owned()),
+        2 => "two",
+        3 => "three",
+        4 => "four",
+        5 => "five",
+        6 => "six",
+        7 => "seven",
+        8 => "eight",
+        9 => "nine",
+        10 => "ten",
+        _ => return None,
+    };
+    Some(format!("{text} +1/+1 counters"))
 }
 
 fn is_canonical_keyword_reminder(core: &str, reminder: &str) -> bool {
@@ -3749,6 +3845,7 @@ fn is_canonical_keyword_reminder(core: &str, reminder: &str) -> bool {
         "intimidate" => exact(
             "this creature can't be blocked except by artifact creatures and/or creatures that share a color with it.",
         ),
+        "skulk" => exact("this creature can't be blocked by creatures with greater power."),
         "spree" => exact("choose one or more additional costs."),
         "cascade" => exact_any(&[
             "when you cast this spell, exile cards from the top of your library until you exile a nonland card that costs less. you may cast it without paying its mana cost. put the exiled cards on the bottom in a random order.",
@@ -3829,6 +3926,26 @@ fn is_canonical_keyword_reminder(core: &str, reminder: &str) -> bool {
             "at the beginning of your upkeep, put an age counter on this object, then sacrifice it unless you pay its upkeep cost for each age counter on it.",
         ]),
         _ => {
+            if let Some(cost) = core.strip_prefix("reconfigure ") {
+                return exact(&format!(
+                    "{cost}: attach to target creature you control; or unattach from a creature. reconfigure only as a sorcery. while attached, this isn't a creature."
+                ));
+            }
+            if let Some(count) = core.strip_prefix("backup ") {
+                let Ok(count) = count.parse::<u32>() else {
+                    return false;
+                };
+                let Some(counter_text) = backup_counter_text(count) else {
+                    return false;
+                };
+                let singular = format!(
+                    "when this creature enters, put {counter_text} on target creature. if that's another creature, it gains the following ability until end of turn."
+                );
+                let plural = format!(
+                    "when this creature enters, put {counter_text} on target creature. if that's another creature, it gains the following abilities until end of turn."
+                );
+                return exact(&singular) || exact(&plural);
+            }
             if let Some(amount_text) = core.strip_prefix("toxic ") {
                 let Ok(amount) = amount_text.parse::<u32>() else {
                     return false;
@@ -4433,10 +4550,10 @@ fn parse_protection_quality(quality: &str) -> Result<ProtectionQualitySpec, Keyw
         "sorceries" | "sorcery" => Ok(ProtectionQualitySpec::CardType("sorcery".into())),
         "the chosen player" | "a player" => Ok(ProtectionQualitySpec::ChosenPlayer),
         _ => {
-            if let Some(name) = quality.strip_prefix("cards named ")
-                && !name.trim().is_empty()
-            {
-                return Ok(ProtectionQualitySpec::Named(name.trim().to_owned()));
+            if let Some(name) = quality.strip_prefix("cards named ") {
+                if !name.trim().is_empty() {
+                    return Ok(ProtectionQualitySpec::Named(name.trim().to_owned()));
+                }
             }
             if let Some(value) = quality
                 .strip_prefix("mana value ")
@@ -4983,7 +5100,7 @@ fn parse_intimidate_program(
     fragment: Option<&str>,
 ) -> Result<IntimidateProgram, KeywordCompileError> {
     let keyword = OfficialKeyword::Intimidate;
-    require_exact_canonical_keyword_clause(keyword, fragment, INTIMIDATE_CANONICAL_ORACLE_CLAUSE)?;
+    validate_fixed_keyword_fragment(keyword, fragment)?;
     Ok(IntimidateProgram {
         is_static_evasion_ability: true,
         blocker_qualification:
@@ -4993,6 +5110,21 @@ fn parse_intimidate_program(
         checks_current_characteristics_during_block_declaration: true,
         gain_or_loss_after_legal_declaration_does_not_change_block: true,
         later_attacker_or_blocker_characteristic_changes_do_not_change_block: true,
+        composes_with_other_block_restrictions: true,
+        instances_are_redundant: true,
+    })
+}
+
+fn parse_skulk_program(fragment: Option<&str>) -> Result<SkulkProgram, KeywordCompileError> {
+    validate_fixed_keyword_fragment(OfficialKeyword::Skulk, fragment)?;
+    Ok(SkulkProgram {
+        is_static_evasion_ability: true,
+        blocker_qualification:
+            SkulkBlockerQualification::CreatureWithCurrentPowerNotGreaterThanAttacker,
+        every_declared_blocker_must_individually_qualify: true,
+        checks_current_power_during_block_declaration: true,
+        gain_or_loss_after_legal_declaration_does_not_change_block: true,
+        later_attacker_or_blocker_power_changes_do_not_change_block: true,
         composes_with_other_block_restrictions: true,
         instances_are_redundant: true,
     })
@@ -5125,9 +5257,19 @@ fn parse_retrace_program(fragment: Option<&str>) -> Result<RetraceProgram, Keywo
 
 fn parse_backup_program(fragment: Option<&str>) -> Result<BackupProgram, KeywordCompileError> {
     let keyword = OfficialKeyword::Backup;
-    require_exact_canonical_keyword_clause(keyword, fragment, BACKUP_ONE_CANONICAL_ORACLE_CLAUSE)?;
+    let fragment = required_fragment(keyword, fragment)?;
+    let core = strip_reminder_suffix(fragment)?;
+    let Some(counter_count) = case_insensitive_prefix(core, "Backup ")
+        .and_then(|count| count.parse::<u32>().ok())
+        .filter(|count| *count > 0)
+    else {
+        return Err(KeywordCompileError::MismatchedOracleFragment {
+            keyword,
+            fragment: fragment.to_owned(),
+        });
+    };
     Ok(BackupProgram {
-        counter_count: 1,
+        counter_count,
         is_enters_battlefield_trigger: true,
         trigger_uses_stack: true,
         targets_one_creature: true,
@@ -5261,6 +5403,32 @@ fn parse_equip_program(fragment: &str) -> Result<EquipProgram, KeywordCompileErr
         target_filter,
         planeswalker_as_creature,
         sorcery_timing_only: true,
+    })
+}
+
+fn parse_reconfigure_program(fragment: &str) -> Result<ReconfigureProgram, KeywordCompileError> {
+    let fragment = strip_reminder_suffix(fragment)?;
+    let Some(cost) = case_insensitive_prefix(fragment, "Reconfigure ") else {
+        return Err(KeywordCompileError::MismatchedOracleFragment {
+            keyword: OfficialKeyword::Reconfigure,
+            fragment: fragment.to_owned(),
+        });
+    };
+    let activation_cost = parse_mana_cost(cost.trim())?;
+    if activation_cost.symbols.is_empty() {
+        return Err(KeywordCompileError::UnsupportedCost(cost.to_owned()));
+    }
+    Ok(ReconfigureProgram {
+        activation_cost,
+        target_filter: ObjectPredicate::All(vec![
+            ObjectPredicate::CardType(CardType::Creature),
+            ObjectPredicate::Controller(RelativePlayer::You),
+            ObjectPredicate::Zone(Zone::Battlefield),
+        ]),
+        sorcery_timing_only: true,
+        source_must_be_an_equipment_creature: true,
+        attached_source_is_not_a_creature: true,
+        unattached_source_remains_a_creature: true,
     })
 }
 
@@ -5726,7 +5894,10 @@ pub enum CombatKeyword {
     Reach,
     Menace,
     Fear,
+    Intimidate,
+    Skulk,
     Shadow,
+    Horsemanship,
     Defender,
     Haste,
     Vigilance,
@@ -5739,7 +5910,7 @@ pub enum CombatKeyword {
     Prowess,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectCharacteristics {
     pub name: Option<String>,
     pub card_types: BTreeSet<CardType>,
@@ -5750,6 +5921,22 @@ pub struct ObjectCharacteristics {
     pub power: Option<i32>,
     pub toughness: Option<i32>,
     pub oracle_text: Option<String>,
+}
+
+impl Default for ObjectCharacteristics {
+    fn default() -> Self {
+        Self {
+            name: None,
+            card_types: BTreeSet::new(),
+            supertypes: BTreeSet::new(),
+            subtypes: BTreeSet::new(),
+            colors: BTreeSet::new(),
+            mana_value: 0,
+            power: None,
+            toughness: None,
+            oracle_text: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5772,22 +5959,31 @@ pub enum ProtectionQuality {
 pub enum CastMethod {
     Ordinary,
     Flashback,
+    Aftermath,
+    Retrace,
+    Rebound,
+    Cascade,
+    Fuse,
     MorphFaceDown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeywordObject {
     pub id: ObjectId,
+    /// Monotonically identifies the rules object created by each zone change.
+    pub incarnation: u64,
     pub owner: PlayerId,
     pub controller: PlayerId,
     pub zone: Zone,
     pub printed: ObjectCharacteristics,
     pub is_token: bool,
+    pub is_spell_copy: bool,
     pub is_commander: bool,
     pub has_reconfigure: bool,
     pub controlled_since_turn_began: bool,
     pub tapped: bool,
     pub attacking: bool,
+    pub attacking_target: Option<ProtectionTarget>,
     pub blocking: bool,
     pub damage_marked: u32,
     pub damaged_by_deathtouch_since_state_check: bool,
@@ -5808,8 +6004,27 @@ pub struct KeywordObject {
     pub static_regeneration: bool,
     pub face_down: bool,
     pub cast_method: Option<CastMethod>,
+    /// Zone from which this spell's current cast began.
+    pub cast_origin: Option<Zone>,
     pub kicker_payments: Vec<usize>,
     pub morph_face_up_cost: Option<ManaCost>,
+    pub renowned: bool,
+    pub bargained: bool,
+    pub bargain_cost_paid: bool,
+    pub paired_with: Option<ObjectId>,
+    /// Exact printed ability text granted by Backup until end of turn.
+    pub temporary_backup_abilities: Vec<String>,
+    /// Creature object and incarnation carrying this card's Cipher encoding.
+    pub encoded_on: Option<(ObjectId, u64)>,
+    /// Printed-order Spree modes chosen for this spell object.
+    pub spree_chosen_modes: Vec<usize>,
+    /// Exact printed additional-cost table associated with those modes.
+    pub spree_mode_costs: Vec<ManaCost>,
+    pub daybound_front: Option<ObjectCharacteristics>,
+    pub nightbound_back: Option<ObjectCharacteristics>,
+    pub day_night_face: Option<DayNightFaceRole>,
+    pub fuse_halves: Option<(ObjectCharacteristics, ObjectCharacteristics)>,
+    pub fused_spell: bool,
 }
 
 impl KeywordObject {
@@ -5822,16 +6037,19 @@ impl KeywordObject {
     ) -> Self {
         Self {
             id,
+            incarnation: 0,
             owner,
             controller,
             zone,
             printed,
             is_token: false,
+            is_spell_copy: false,
             is_commander: false,
             has_reconfigure: false,
             controlled_since_turn_began: true,
             tapped: false,
             attacking: false,
+            attacking_target: None,
             blocking: false,
             damage_marked: 0,
             damaged_by_deathtouch_since_state_check: false,
@@ -5852,8 +6070,22 @@ impl KeywordObject {
             static_regeneration: false,
             face_down: false,
             cast_method: None,
+            cast_origin: None,
             kicker_payments: Vec::new(),
             morph_face_up_cost: None,
+            renowned: false,
+            bargained: false,
+            bargain_cost_paid: false,
+            paired_with: None,
+            temporary_backup_abilities: Vec::new(),
+            encoded_on: None,
+            spree_chosen_modes: Vec::new(),
+            spree_mode_costs: Vec::new(),
+            daybound_front: None,
+            nightbound_back: None,
+            day_night_face: None,
+            fuse_halves: None,
+            fused_spell: false,
         }
     }
 
@@ -5879,9 +6111,23 @@ impl KeywordObject {
         };
         if let Some(power) = characteristics.power.as_mut() {
             *power = power.saturating_add(self.temporary_power_delta);
+            *power = power
+                .saturating_add(
+                    i32::try_from(*self.counters.get("+1/+1").unwrap_or(&0)).unwrap_or(i32::MAX),
+                )
+                .saturating_sub(
+                    i32::try_from(*self.counters.get("-1/-1").unwrap_or(&0)).unwrap_or(i32::MAX),
+                );
         }
         if let Some(toughness) = characteristics.toughness.as_mut() {
             *toughness = toughness.saturating_add(self.temporary_toughness_delta);
+            *toughness = toughness
+                .saturating_add(
+                    i32::try_from(*self.counters.get("+1/+1").unwrap_or(&0)).unwrap_or(i32::MAX),
+                )
+                .saturating_sub(
+                    i32::try_from(*self.counters.get("-1/-1").unwrap_or(&0)).unwrap_or(i32::MAX),
+                );
         }
         characteristics
     }
@@ -5904,6 +6150,11 @@ pub struct ManaUnit {
 pub struct KeywordPlayerState {
     pub id: PlayerId,
     pub life: i32,
+    pub poison_counters: u32,
+    pub citys_blessing: bool,
+    /// `None` is the rules designation "no speed"; otherwise values are 1..=4.
+    pub speed: Option<u32>,
+    pub speed_increased_this_turn: bool,
     /// The front of the deque is the top of the library.
     pub library: VecDeque<ObjectId>,
     pub hand: Vec<ObjectId>,
@@ -5923,6 +6174,10 @@ impl KeywordPlayerState {
         Self {
             id,
             life,
+            poison_counters: 0,
+            citys_blessing: false,
+            speed: None,
+            speed_increased_this_turn: false,
             library: VecDeque::new(),
             hand: Vec::new(),
             graveyard: Vec::new(),
@@ -5954,6 +6209,19 @@ pub struct PendingSagaChapter {
     pub oracle_effect: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingMyriadToken {
+    pub token: ObjectId,
+    pub incarnation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingReboundCast {
+    pub card: ObjectId,
+    pub incarnation: u64,
+    pub controller: PlayerId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KeywordGameState {
     pub players: BTreeMap<PlayerId, KeywordPlayerState>,
@@ -5961,6 +6229,11 @@ pub struct KeywordGameState {
     pub next_object_id: u64,
     pub pending_equip: BTreeMap<ObjectId, PendingEquipActivation>,
     pub pending_saga_chapters: Vec<PendingSagaChapter>,
+    pub pending_myriad_exile: BTreeMap<u64, Vec<PendingMyriadToken>>,
+    pub pending_rebound_casts: BTreeMap<u64, PendingReboundCast>,
+    pub next_delayed_trigger_id: u64,
+    pub day_night: Option<DayNightDesignation>,
+    pub day_night_turn_spell_counts: BTreeMap<PlayerId, u32>,
     pub countered_abilities: BTreeSet<u64>,
 }
 
@@ -5993,7 +6266,7 @@ impl KeywordGameState {
             .ok_or(KeywordExecutionError::MissingObject(object))
     }
 
-    fn object_mut(
+    pub(crate) fn object_mut(
         &mut self,
         object: ObjectId,
     ) -> Result<&mut KeywordObject, KeywordExecutionError> {
@@ -6007,13 +6280,56 @@ impl KeywordGameState {
         object: ObjectId,
         destination: Zone,
     ) -> Result<(), KeywordExecutionError> {
-        let (owner, current_zone) = {
+        let (owner, current_zone, next_incarnation, paired_with) = {
             let object = self.object(object)?;
-            (object.owner, object.zone)
+            (
+                object.owner,
+                object.zone,
+                object
+                    .incarnation
+                    .checked_add(1)
+                    .ok_or(KeywordExecutionError::ObjectIncarnationOverflow)?,
+                object.paired_with,
+            )
         };
         self.remove_from_owned_zone(owner, object, current_zone)?;
         self.place_in_owned_zone(owner, object, destination)?;
-        self.object_mut(object)?.zone = destination;
+        let moved = self.object_mut(object)?;
+        moved.zone = destination;
+        moved.incarnation = next_incarnation;
+        moved.renowned = false;
+        moved.bargained = false;
+        moved.bargain_cost_paid = false;
+        moved.paired_with = None;
+        moved.temporary_backup_abilities.clear();
+        moved.encoded_on = None;
+        moved.cast_origin = None;
+        moved.spree_chosen_modes.clear();
+        moved.spree_mode_costs.clear();
+        moved.fused_spell = false;
+        if destination != Zone::Stack
+            && let Some((left, right)) = moved.fuse_halves.as_ref()
+        {
+            moved.printed = combined_fuse_characteristics(left, right);
+        }
+        if destination != Zone::Battlefield
+            && let Some(front) = moved.daybound_front.clone()
+        {
+            moved.printed = front;
+            moved.day_night_face = Some(DayNightFaceRole::DayboundFrontFace);
+        }
+        moved.attacking = false;
+        moved.blocking = false;
+        moved.attacking_target = None;
+        let moved_id = moved.id;
+        if let Some(partner) = paired_with
+            && self
+                .objects
+                .get(&partner)
+                .is_some_and(|candidate| candidate.paired_with == Some(moved_id))
+        {
+            self.object_mut(partner)?.paired_with = None;
+        }
         Ok(())
     }
 
@@ -6088,6 +6404,20 @@ pub enum SymbolPayment {
 pub struct ManaPayment {
     pub symbols: BTreeMap<usize, SymbolPayment>,
     pub x_value: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpreeModeChoiceInput {
+    pub mode_index: usize,
+    pub required_targets_legal: bool,
+    pub payment: ManaPayment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FuseHalfChoice {
+    Left,
+    Right,
+    Both,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6169,6 +6499,12 @@ pub enum RegenerationChoice {
     StaticReplacement,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BushidoResolutionTransition {
+    DeclaredAsBlocker,
+    AttackerBecameBlocked,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceProfile {
     pub owner: PlayerId,
@@ -6248,6 +6584,72 @@ pub enum KeywordAction {
         card: ObjectId,
         requested_destination: Zone,
     },
+    CastWithAftermath {
+        player: PlayerId,
+        card: ObjectId,
+        selected_half_mana_cost: ManaCost,
+        payment: ManaPayment,
+    },
+    LeaveStackAfterAftermath {
+        card: ObjectId,
+        requested_destination: Zone,
+    },
+    ReplaceReboundResolution {
+        card: ObjectId,
+        requested_destination: Zone,
+        resolved: bool,
+    },
+    ResolveReboundUpkeepTrigger {
+        delayed_trigger_id: u64,
+        active_player: PlayerId,
+        cast_card: bool,
+        timing_and_restrictions_legal: bool,
+        additional_costs_paid: bool,
+    },
+    ResolveCascadeTrigger {
+        source_spell: ObjectId,
+        cast_eligible_card: bool,
+        resulting_spell_mana_value: Option<u32>,
+        timing_and_restrictions_legal: bool,
+        additional_costs_paid: bool,
+        as_you_cascade_action_complete: bool,
+        /// Exact randomized order, first entry nearest the top after placement.
+        library_bottom_order: Vec<ObjectId>,
+    },
+    PaySpreeModeCosts {
+        player: PlayerId,
+        spell: ObjectId,
+        /// Complete exact printed mode-cost table in printed order.
+        mode_costs: Vec<ManaCost>,
+        choices: Vec<SpreeModeChoiceInput>,
+    },
+    CopySpreeSpell {
+        spell: ObjectId,
+    },
+    RegisterDayNightPermanent {
+        object: ObjectId,
+        daybound_front: ObjectCharacteristics,
+        nightbound_back: ObjectCharacteristics,
+    },
+    RecordDayNightSpellCast {
+        player: PlayerId,
+    },
+    EvaluateDayNightUntapStep {
+        /// Players whose shared turn just ended; one entry in a normal game.
+        previous_turn_players: Vec<PlayerId>,
+    },
+    CastWithFuse {
+        player: PlayerId,
+        card: ObjectId,
+        left: ObjectCharacteristics,
+        right: ObjectCharacteristics,
+        choice: FuseHalfChoice,
+        left_mana_cost: ManaCost,
+        right_mana_cost: ManaCost,
+        left_payment: Option<ManaPayment>,
+        right_payment: Option<ManaPayment>,
+        timing_and_restrictions_legal: bool,
+    },
     CastFaceDownWithMorph {
         player: PlayerId,
         card: ObjectId,
@@ -6268,6 +6670,140 @@ pub enum KeywordAction {
         total_cost: ManaCost,
         convoking_creatures: BTreeMap<usize, Vec<ObjectId>>,
         mana_payment: ManaPayment,
+    },
+    PayAffinityForArtifactsCost {
+        player: PlayerId,
+        spell: ObjectId,
+        total_cost: ManaCost,
+        affinity_instances: u32,
+        mana_payment: ManaPayment,
+    },
+    PayDelveCost {
+        player: PlayerId,
+        spell: ObjectId,
+        total_cost: ManaCost,
+        exiled_cards: Vec<ObjectId>,
+        mana_payment: ManaPayment,
+    },
+    CheckAscend {
+        player: PlayerId,
+        source: ObjectId,
+    },
+    ResolveDeathReturnTrigger {
+        card: ObjectId,
+        had_prohibited_counter_immediately_before_death: bool,
+    },
+    ResolveEvolveTrigger {
+        source: ObjectId,
+        entering_creature: ObjectId,
+        comparison_was_true_at_trigger: bool,
+    },
+    ResolveMentorTrigger {
+        source: ObjectId,
+        target: ObjectId,
+        restriction_was_legal_at_trigger: bool,
+    },
+    ResolveRenownTrigger {
+        source: ObjectId,
+        dealt_combat_damage_to_player: bool,
+    },
+    CheckStartYourEngines {
+        player: PlayerId,
+        source: ObjectId,
+    },
+    BeginSpeedControllerTurn {
+        player: PlayerId,
+    },
+    ResolveSpeedIncreaseTrigger {
+        player: PlayerId,
+        losing_opponent: PlayerId,
+        is_players_turn: bool,
+    },
+    PayImproviseCost {
+        player: PlayerId,
+        spell: ObjectId,
+        total_cost: ManaCost,
+        tapped_artifacts: Vec<ObjectId>,
+        mana_payment: ManaPayment,
+    },
+    ResolveExtortTrigger {
+        player: PlayerId,
+        payment: Option<ManaPayment>,
+    },
+    ResolveLivingWeaponTrigger {
+        equipment: ObjectId,
+    },
+    ResolveMyriadTrigger {
+        source: ObjectId,
+        defending_player: PlayerId,
+        /// One chosen player or planeswalker for each optional token created.
+        attack_targets: Vec<ProtectionTarget>,
+    },
+    ResolveMyriadEndOfCombat {
+        delayed_trigger_id: u64,
+    },
+    DeclareBargain {
+        player: PlayerId,
+        spell: ObjectId,
+    },
+    PayBargainCost {
+        player: PlayerId,
+        spell: ObjectId,
+        sacrificed_permanent: ObjectId,
+    },
+    CastWithRetrace {
+        player: PlayerId,
+        card: ObjectId,
+        discarded_land: ObjectId,
+        printed_mana_cost: ManaCost,
+        timing_and_restrictions_legal: bool,
+        payment: ManaPayment,
+    },
+    ResolveExploitTrigger {
+        source: ObjectId,
+        ability_controller: PlayerId,
+        sacrifice: Option<ObjectId>,
+    },
+    ResolveSoulbondTrigger {
+        source: ObjectId,
+        ability_controller: PlayerId,
+        partner: Option<ObjectId>,
+    },
+    CheckSoulbondPairState {
+        object: ObjectId,
+    },
+    ReplaceDestructionWithUmbraArmor {
+        aura: ObjectId,
+        enchanted_permanent: ObjectId,
+    },
+    ResolveBackupTrigger {
+        source: ObjectId,
+        target: ObjectId,
+        /// Snapshot of the non-Backup abilities printed below this instance,
+        /// captured when the trigger was put on the stack.
+        granted_abilities: Vec<String>,
+    },
+    CleanupBackupAbilities {
+        object: ObjectId,
+    },
+    EncodeCipher {
+        spell: ObjectId,
+        creature: Option<ObjectId>,
+    },
+    ResolveCipherCombatDamageTrigger {
+        encoded_card: ObjectId,
+        creature: ObjectId,
+        damaged_player: PlayerId,
+        cast_copy: bool,
+        timing_and_restrictions_legal: bool,
+        additional_costs_paid: bool,
+    },
+    ValidateCommanderPartnerPair {
+        source: ObjectId,
+        counterpart: ObjectId,
+        deck_card_count: u32,
+        source_color_identity: BTreeSet<ManaColor>,
+        counterpart_color_identity: BTreeSet<ManaColor>,
     },
     ActivateEquip {
         player: PlayerId,
@@ -6336,6 +6872,45 @@ pub enum KeywordAction {
     ResolveProwessTrigger {
         creature: ObjectId,
         spell: ObjectId,
+    },
+    ResolveExaltedTrigger {
+        ability_controller: PlayerId,
+        attacker: ObjectId,
+        declared_attackers: Vec<ObjectId>,
+    },
+    ResolveBushidoTrigger {
+        creature: ObjectId,
+        transition: BushidoResolutionTransition,
+    },
+    ResolveFlankingTrigger {
+        attacker: ObjectId,
+        blocker: ObjectId,
+        blocker_had_flanking_at_trigger: bool,
+    },
+    ApplyWitherCreatureDamage {
+        source: ObjectId,
+        source_controller_at_damage: PlayerId,
+        creature: ObjectId,
+        damage_dealt: u32,
+    },
+    ApplyInfectCreatureDamage {
+        source: ObjectId,
+        source_controller_at_damage: PlayerId,
+        creature: ObjectId,
+        damage_dealt: u32,
+    },
+    ApplyInfectPlayerDamage {
+        source: ObjectId,
+        source_controller_at_damage: PlayerId,
+        player: PlayerId,
+        damage_dealt: u32,
+    },
+    ApplyToxicCombatDamage {
+        source: ObjectId,
+        source_controller_at_damage: PlayerId,
+        player: PlayerId,
+        damage_dealt: u32,
+        step: CombatDamageStep,
     },
     ResolveWard {
         permanent: ObjectId,
@@ -6447,6 +7022,74 @@ pub enum KeywordEvidenceEvent {
         requested_destination: Zone,
         actual_destination: Zone,
     },
+    AftermathCast {
+        player: PlayerId,
+        card: ObjectId,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
+    },
+    AftermathDestinationReplaced {
+        card: ObjectId,
+        requested_destination: Zone,
+        actual_destination: Zone,
+    },
+    ReboundResolutionReplaced {
+        card: ObjectId,
+        controller: PlayerId,
+        delayed_trigger_id: u64,
+    },
+    ReboundResolutionNotReplaced {
+        card: ObjectId,
+        requested_destination: Zone,
+        actual_destination: Option<Zone>,
+    },
+    ReboundUpkeepResolved {
+        card: ObjectId,
+        controller: PlayerId,
+        delayed_trigger_id: u64,
+        cast: bool,
+    },
+    CascadeResolved {
+        source_spell: ObjectId,
+        exiled: Vec<ObjectId>,
+        eligible_card: Option<ObjectId>,
+        cast_card: Option<ObjectId>,
+        library_bottom_order: Vec<ObjectId>,
+    },
+    SpreeModeCostsPaid {
+        player: PlayerId,
+        spell: ObjectId,
+        chosen_modes: Vec<usize>,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
+    },
+    SpreeSpellCopied {
+        spell: ObjectId,
+        copy: ObjectId,
+        retained_modes: Vec<usize>,
+    },
+    DayNightPermanentRegistered {
+        object: ObjectId,
+        designation: DayNightDesignation,
+        face: DayNightFaceRole,
+    },
+    DayNightSpellCastRecorded {
+        player: PlayerId,
+        count: u32,
+    },
+    DayNightTransitionEvaluated {
+        before: Option<DayNightDesignation>,
+        after: Option<DayNightDesignation>,
+        transformed: Vec<ObjectId>,
+    },
+    FuseSpellCast {
+        player: PlayerId,
+        card: ObjectId,
+        choice: FuseHalfChoice,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
+        resolution_order: Vec<usize>,
+    },
     MorphCastFaceDown {
         player: PlayerId,
         card: ObjectId,
@@ -6470,6 +7113,168 @@ pub enum KeywordEvidenceEvent {
         convoking_creatures: Vec<ObjectId>,
         mana_spent: Vec<ManaUnitId>,
         life_paid: u32,
+    },
+    AffinityForArtifactsCostPaid {
+        player: PlayerId,
+        spell: ObjectId,
+        artifact_count: u32,
+        affinity_instances: u32,
+        generic_reduction: u32,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
+    },
+    DelveCostPaid {
+        player: PlayerId,
+        spell: ObjectId,
+        exiled_cards: Vec<ObjectId>,
+        generic_reduction: u32,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
+    },
+    AscendChecked {
+        player: PlayerId,
+        source: ObjectId,
+        controlled_permanents: u32,
+        blessing_before: bool,
+        blessing_after: bool,
+    },
+    DeathReturnResolved {
+        keyword: OfficialKeyword,
+        card: ObjectId,
+        owner: PlayerId,
+        graveyard_incarnation: u64,
+        battlefield_incarnation: u64,
+        counter: String,
+    },
+    EvolveResolved {
+        source: ObjectId,
+        entering_creature: ObjectId,
+        counters_added: u32,
+    },
+    MentorResolved {
+        source: ObjectId,
+        target: ObjectId,
+        counters_added: u32,
+    },
+    RenownResolved {
+        source: ObjectId,
+        counters_added: u32,
+        became_renowned: bool,
+    },
+    SpeedInitialized {
+        player: PlayerId,
+        source: ObjectId,
+        speed_before: Option<u32>,
+        speed_after: u32,
+    },
+    SpeedTurnBegan {
+        player: PlayerId,
+        speed: Option<u32>,
+    },
+    SpeedIncreaseResolved {
+        player: PlayerId,
+        losing_opponent: PlayerId,
+        speed_before: u32,
+        speed_after: u32,
+        increased: bool,
+    },
+    ImproviseCostPaid {
+        player: PlayerId,
+        spell: ObjectId,
+        tapped_artifacts: Vec<ObjectId>,
+        generic_paid: u32,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
+    },
+    ExtortResolved {
+        player: PlayerId,
+        paid: bool,
+        opponents: Vec<PlayerId>,
+        total_life_lost: u32,
+        life_gained: u32,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
+    },
+    LivingWeaponResolved {
+        equipment: ObjectId,
+        token: ObjectId,
+        controller: PlayerId,
+    },
+    MyriadResolved {
+        source: ObjectId,
+        tokens: Vec<ObjectId>,
+        delayed_trigger_id: Option<u64>,
+    },
+    MyriadTokensExiled {
+        delayed_trigger_id: u64,
+        tokens: Vec<ObjectId>,
+    },
+    BargainDeclared {
+        player: PlayerId,
+        spell: ObjectId,
+    },
+    BargainCostPaid {
+        player: PlayerId,
+        spell: ObjectId,
+        sacrificed_permanent: ObjectId,
+    },
+    RetraceCast {
+        player: PlayerId,
+        card: ObjectId,
+        discarded_land: ObjectId,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
+    },
+    ExploitResolved {
+        source: ObjectId,
+        ability_controller: PlayerId,
+        sacrificed_creature: Option<ObjectId>,
+        exploit_event_occurred: bool,
+    },
+    SoulbondResolved {
+        source: ObjectId,
+        partner: Option<ObjectId>,
+        paired: bool,
+    },
+    SoulbondPairChecked {
+        object: ObjectId,
+        partner: Option<ObjectId>,
+        remains_paired: bool,
+    },
+    UmbraArmorDestructionReplaced {
+        aura: ObjectId,
+        enchanted_permanent: ObjectId,
+        damage_removed: u32,
+        aura_destroyed: bool,
+    },
+    BackupResolved {
+        source: ObjectId,
+        target: ObjectId,
+        counters_added: u32,
+        granted_abilities: Vec<String>,
+    },
+    BackupAbilitiesExpired {
+        object: ObjectId,
+        removed_abilities: Vec<String>,
+    },
+    CipherEncoded {
+        card: ObjectId,
+        creature: Option<ObjectId>,
+        creature_incarnation: Option<u64>,
+    },
+    CipherCopyCast {
+        encoded_card: ObjectId,
+        creature: ObjectId,
+        damaged_player: PlayerId,
+        controller: PlayerId,
+        copy: Option<ObjectId>,
+    },
+    CommanderPartnerPairValidated {
+        variant: CommanderPartnerVariant,
+        source: ObjectId,
+        counterpart: ObjectId,
+        combined_color_identity: BTreeSet<ManaColor>,
+        deck_card_count: u32,
     },
     EquipActivated {
         player: PlayerId,
@@ -6559,6 +7364,57 @@ pub enum KeywordEvidenceEvent {
         spell: ObjectId,
         power_delta: i32,
         toughness_delta: i32,
+    },
+    ExaltedResolved {
+        attacker: ObjectId,
+        power_delta: i32,
+        toughness_delta: i32,
+    },
+    BushidoResolved {
+        creature: ObjectId,
+        transition: BushidoResolutionTransition,
+        power_delta: i32,
+        toughness_delta: i32,
+    },
+    FlankingResolved {
+        attacker: ObjectId,
+        blocker: ObjectId,
+        power_delta: i32,
+        toughness_delta: i32,
+    },
+    WitherDamageApplied {
+        source: ObjectId,
+        source_controller: PlayerId,
+        creature: ObjectId,
+        damage: u32,
+        counters_before: u32,
+        counters_after: u32,
+    },
+    InfectCreatureDamageApplied {
+        source: ObjectId,
+        source_controller: PlayerId,
+        creature: ObjectId,
+        damage: u32,
+        counters_before: u32,
+        counters_after: u32,
+    },
+    InfectPlayerDamageApplied {
+        source: ObjectId,
+        source_controller: PlayerId,
+        player: PlayerId,
+        damage: u32,
+        poison_before: u32,
+        poison_after: u32,
+    },
+    ToxicCombatDamageApplied {
+        source: ObjectId,
+        source_controller: PlayerId,
+        player: PlayerId,
+        damage: u32,
+        step: CombatDamageStep,
+        poison_added: u32,
+        poison_before: u32,
+        poison_after: u32,
     },
     WardPaid {
         permanent: ObjectId,
@@ -6669,9 +7525,33 @@ pub enum KeywordExecutionError {
     NotFaceDownMorph,
     InvalidStackDestination,
     ObjectIdOverflow,
+    ObjectIncarnationOverflow,
     InvalidRegenerationChoice,
     InvalidTiming,
     InvalidConvokeTotalCost,
+    InvalidAffinityTotalCost,
+    InvalidDelvePayment,
+    InvalidAscendSource,
+    InvalidDeathReturnTrigger,
+    InvalidCounterTrigger,
+    InvalidSpeedEvent,
+    InvalidImprovisePayment,
+    InvalidExtortResolution,
+    InvalidLivingWeaponResolution,
+    InvalidMyriadResolution,
+    InvalidBargainPayment,
+    InvalidRetraceCast,
+    InvalidExploitResolution,
+    InvalidSoulbondResolution,
+    InvalidUmbraArmorReplacement,
+    InvalidBackupResolution,
+    InvalidCipherResolution,
+    InvalidCommanderPartnerPair,
+    InvalidReboundResolution,
+    InvalidCascadeResolution,
+    InvalidSpreeCast,
+    InvalidDayNightState,
+    InvalidFuseCast,
     InvalidConvokeCreature(ObjectId),
     DuplicateConvokeCreature(ObjectId),
     PendingEquipAlreadyExists,
@@ -6697,6 +7577,12 @@ pub enum KeywordExecutionError {
     InvalidWardSource,
     InvalidLibraryDecision,
     InvalidProwessTrigger,
+    InvalidExaltedTrigger,
+    InvalidBushidoTrigger,
+    InvalidFlankingTrigger,
+    InvalidWitherDamage,
+    InvalidInfectDamage,
+    InvalidToxicDamage,
     IndestructibleRequiresOwnContract,
 }
 
@@ -6751,8 +7637,14 @@ fn execute_keyword_action_inner(
             | KeywordProgramKind::Defender
             | KeywordProgramKind::Reach
             | KeywordProgramKind::Fear(_)
+            | KeywordProgramKind::Intimidate(_)
+            | KeywordProgramKind::Skulk(_)
             | KeywordProgramKind::Shadow(_)
             | KeywordProgramKind::Landwalk(_)
+            | KeywordProgramKind::Horsemanship(_)
+            | KeywordProgramKind::Wither(_)
+            | KeywordProgramKind::Infect(_)
+            | KeywordProgramKind::Toxic(_)
             | KeywordProgramKind::Devoid
             | KeywordProgramKind::Haste
             | KeywordProgramKind::Vigilance
@@ -6866,6 +7758,141 @@ fn execute_keyword_action_inner(
             },
         ) => execute_flashback_stack_exit(state, card, requested_destination, flashback),
         (
+            KeywordProgramKind::Aftermath(aftermath),
+            KeywordAction::CastWithAftermath {
+                player,
+                card,
+                selected_half_mana_cost,
+                payment,
+            },
+        ) => execute_aftermath_cast(
+            state,
+            player,
+            card,
+            &selected_half_mana_cost,
+            aftermath,
+            &payment,
+        ),
+        (
+            KeywordProgramKind::Aftermath(aftermath),
+            KeywordAction::LeaveStackAfterAftermath {
+                card,
+                requested_destination,
+            },
+        ) => execute_aftermath_stack_exit(state, card, requested_destination, aftermath),
+        (
+            KeywordProgramKind::Rebound(rebound),
+            KeywordAction::ReplaceReboundResolution {
+                card,
+                requested_destination,
+                resolved,
+            },
+        ) => execute_rebound_resolution(state, card, requested_destination, resolved, rebound),
+        (
+            KeywordProgramKind::Rebound(rebound),
+            KeywordAction::ResolveReboundUpkeepTrigger {
+                delayed_trigger_id,
+                active_player,
+                cast_card,
+                timing_and_restrictions_legal,
+                additional_costs_paid,
+            },
+        ) => execute_rebound_upkeep(
+            state,
+            delayed_trigger_id,
+            active_player,
+            cast_card,
+            timing_and_restrictions_legal,
+            additional_costs_paid,
+            rebound,
+        ),
+        (
+            KeywordProgramKind::Cascade(cascade),
+            KeywordAction::ResolveCascadeTrigger {
+                source_spell,
+                cast_eligible_card,
+                resulting_spell_mana_value,
+                timing_and_restrictions_legal,
+                additional_costs_paid,
+                as_you_cascade_action_complete,
+                library_bottom_order,
+            },
+        ) => execute_cascade(
+            state,
+            source_spell,
+            cast_eligible_card,
+            resulting_spell_mana_value,
+            timing_and_restrictions_legal,
+            additional_costs_paid,
+            as_you_cascade_action_complete,
+            &library_bottom_order,
+            cascade,
+        ),
+        (
+            KeywordProgramKind::Spree(spree),
+            KeywordAction::PaySpreeModeCosts {
+                player,
+                spell,
+                mode_costs,
+                choices,
+            },
+        ) => execute_spree_costs(state, player, spell, &mode_costs, &choices, spree),
+        (KeywordProgramKind::Spree(spree), KeywordAction::CopySpreeSpell { spell }) => {
+            execute_spree_copy(state, spell, spree)
+        }
+        (
+            KeywordProgramKind::Daybound(day_night) | KeywordProgramKind::Nightbound(day_night),
+            KeywordAction::RegisterDayNightPermanent {
+                object,
+                daybound_front,
+                nightbound_back,
+            },
+        ) => execute_day_night_registration(
+            state,
+            object,
+            daybound_front,
+            nightbound_back,
+            day_night,
+        ),
+        (
+            KeywordProgramKind::Daybound(day_night) | KeywordProgramKind::Nightbound(day_night),
+            KeywordAction::RecordDayNightSpellCast { player },
+        ) => execute_day_night_spell_cast(state, player, day_night),
+        (
+            KeywordProgramKind::Daybound(day_night) | KeywordProgramKind::Nightbound(day_night),
+            KeywordAction::EvaluateDayNightUntapStep {
+                previous_turn_players,
+            },
+        ) => execute_day_night_untap(state, &previous_turn_players, day_night),
+        (
+            KeywordProgramKind::Fuse(fuse),
+            KeywordAction::CastWithFuse {
+                player,
+                card,
+                left,
+                right,
+                choice,
+                left_mana_cost,
+                right_mana_cost,
+                left_payment,
+                right_payment,
+                timing_and_restrictions_legal,
+            },
+        ) => execute_fuse_cast(
+            state,
+            player,
+            card,
+            left,
+            right,
+            choice,
+            &left_mana_cost,
+            &right_mana_cost,
+            left_payment.as_ref(),
+            right_payment.as_ref(),
+            timing_and_restrictions_legal,
+            fuse,
+        ),
+        (
             KeywordProgramKind::Morph(morph),
             KeywordAction::CastFaceDownWithMorph {
                 player,
@@ -6908,6 +7935,271 @@ fn execute_keyword_action_inner(
             &total_cost,
             &convoking_creatures,
             &mana_payment,
+        ),
+        (
+            KeywordProgramKind::Affinity(affinity),
+            KeywordAction::PayAffinityForArtifactsCost {
+                player,
+                spell,
+                total_cost,
+                affinity_instances,
+                mana_payment,
+            },
+        ) => execute_affinity_for_artifacts(
+            state,
+            player,
+            spell,
+            &total_cost,
+            affinity_instances,
+            affinity,
+            &mana_payment,
+        ),
+        (
+            KeywordProgramKind::Delve(delve),
+            KeywordAction::PayDelveCost {
+                player,
+                spell,
+                total_cost,
+                exiled_cards,
+                mana_payment,
+            },
+        ) => execute_delve(
+            state,
+            player,
+            spell,
+            &total_cost,
+            &exiled_cards,
+            delve,
+            &mana_payment,
+        ),
+        (KeywordProgramKind::Ascend(ascend), KeywordAction::CheckAscend { player, source }) => {
+            execute_ascend(state, player, source, ascend)
+        }
+        (
+            KeywordProgramKind::Persist(death_return),
+            KeywordAction::ResolveDeathReturnTrigger {
+                card,
+                had_prohibited_counter_immediately_before_death,
+            },
+        ) => execute_death_return(
+            state,
+            card,
+            had_prohibited_counter_immediately_before_death,
+            OfficialKeyword::Persist,
+            death_return,
+        ),
+        (
+            KeywordProgramKind::Undying(death_return),
+            KeywordAction::ResolveDeathReturnTrigger {
+                card,
+                had_prohibited_counter_immediately_before_death,
+            },
+        ) => execute_death_return(
+            state,
+            card,
+            had_prohibited_counter_immediately_before_death,
+            OfficialKeyword::Undying,
+            death_return,
+        ),
+        (
+            KeywordProgramKind::Evolve(evolve),
+            KeywordAction::ResolveEvolveTrigger {
+                source,
+                entering_creature,
+                comparison_was_true_at_trigger,
+            },
+        ) => execute_evolve(
+            state,
+            source,
+            entering_creature,
+            comparison_was_true_at_trigger,
+            evolve,
+        ),
+        (
+            KeywordProgramKind::Mentor(mentor),
+            KeywordAction::ResolveMentorTrigger {
+                source,
+                target,
+                restriction_was_legal_at_trigger,
+            },
+        ) => execute_mentor(
+            state,
+            source,
+            target,
+            restriction_was_legal_at_trigger,
+            mentor,
+        ),
+        (
+            KeywordProgramKind::Renown(renown),
+            KeywordAction::ResolveRenownTrigger {
+                source,
+                dealt_combat_damage_to_player,
+            },
+        ) => execute_renown(state, source, dealt_combat_damage_to_player, renown),
+        (
+            KeywordProgramKind::StartYourEngines(speed),
+            KeywordAction::CheckStartYourEngines { player, source },
+        ) => execute_start_your_engines(state, player, source, speed),
+        (
+            KeywordProgramKind::StartYourEngines(speed),
+            KeywordAction::BeginSpeedControllerTurn { player },
+        ) => execute_begin_speed_turn(state, player, speed),
+        (
+            KeywordProgramKind::StartYourEngines(speed),
+            KeywordAction::ResolveSpeedIncreaseTrigger {
+                player,
+                losing_opponent,
+                is_players_turn,
+            },
+        ) => execute_speed_increase(state, player, losing_opponent, is_players_turn, speed),
+        (
+            KeywordProgramKind::Improvise(improvise),
+            KeywordAction::PayImproviseCost {
+                player,
+                spell,
+                total_cost,
+                tapped_artifacts,
+                mana_payment,
+            },
+        ) => execute_improvise(
+            state,
+            player,
+            spell,
+            &total_cost,
+            &tapped_artifacts,
+            improvise,
+            &mana_payment,
+        ),
+        (
+            KeywordProgramKind::Extort(extort),
+            KeywordAction::ResolveExtortTrigger { player, payment },
+        ) => execute_extort(state, player, payment.as_ref(), extort),
+        (
+            KeywordProgramKind::LivingWeapon(living_weapon),
+            KeywordAction::ResolveLivingWeaponTrigger { equipment },
+        ) => execute_living_weapon(state, equipment, living_weapon),
+        (
+            KeywordProgramKind::Myriad(myriad),
+            KeywordAction::ResolveMyriadTrigger {
+                source,
+                defending_player,
+                attack_targets,
+            },
+        ) => execute_myriad(state, source, defending_player, &attack_targets, myriad),
+        (
+            KeywordProgramKind::Myriad(myriad),
+            KeywordAction::ResolveMyriadEndOfCombat { delayed_trigger_id },
+        ) => execute_myriad_end_of_combat(state, delayed_trigger_id, myriad),
+        (KeywordProgramKind::Bargain(bargain), KeywordAction::DeclareBargain { player, spell }) => {
+            execute_declare_bargain(state, player, spell, bargain)
+        }
+        (
+            KeywordProgramKind::Bargain(bargain),
+            KeywordAction::PayBargainCost {
+                player,
+                spell,
+                sacrificed_permanent,
+            },
+        ) => execute_pay_bargain(state, player, spell, sacrificed_permanent, bargain),
+        (
+            KeywordProgramKind::Retrace(retrace),
+            KeywordAction::CastWithRetrace {
+                player,
+                card,
+                discarded_land,
+                printed_mana_cost,
+                timing_and_restrictions_legal,
+                payment,
+            },
+        ) => execute_retrace_cast(
+            state,
+            player,
+            card,
+            discarded_land,
+            &printed_mana_cost,
+            timing_and_restrictions_legal,
+            retrace,
+            &payment,
+        ),
+        (
+            KeywordProgramKind::Exploit(exploit),
+            KeywordAction::ResolveExploitTrigger {
+                source,
+                ability_controller,
+                sacrifice,
+            },
+        ) => execute_exploit(state, source, ability_controller, sacrifice, exploit),
+        (
+            KeywordProgramKind::Soulbond(soulbond),
+            KeywordAction::ResolveSoulbondTrigger {
+                source,
+                ability_controller,
+                partner,
+            },
+        ) => execute_soulbond(state, source, ability_controller, partner, soulbond),
+        (
+            KeywordProgramKind::Soulbond(soulbond),
+            KeywordAction::CheckSoulbondPairState { object },
+        ) => execute_soulbond_pair_check(state, object, soulbond),
+        (
+            KeywordProgramKind::UmbraArmor(umbra_armor),
+            KeywordAction::ReplaceDestructionWithUmbraArmor {
+                aura,
+                enchanted_permanent,
+            },
+        ) => execute_umbra_armor(state, aura, enchanted_permanent, umbra_armor),
+        (
+            KeywordProgramKind::Backup(backup),
+            KeywordAction::ResolveBackupTrigger {
+                source,
+                target,
+                granted_abilities,
+            },
+        ) => execute_backup(state, source, target, &granted_abilities, backup),
+        (KeywordProgramKind::Backup(backup), KeywordAction::CleanupBackupAbilities { object }) => {
+            execute_backup_cleanup(state, object, backup)
+        }
+        (KeywordProgramKind::Cipher(cipher), KeywordAction::EncodeCipher { spell, creature }) => {
+            execute_cipher_encode(state, spell, creature, cipher)
+        }
+        (
+            KeywordProgramKind::Cipher(cipher),
+            KeywordAction::ResolveCipherCombatDamageTrigger {
+                encoded_card,
+                creature,
+                damaged_player,
+                cast_copy,
+                timing_and_restrictions_legal,
+                additional_costs_paid,
+            },
+        ) => execute_cipher_trigger(
+            state,
+            encoded_card,
+            creature,
+            damaged_player,
+            cast_copy,
+            timing_and_restrictions_legal,
+            additional_costs_paid,
+            cipher,
+        ),
+        (
+            KeywordProgramKind::ChooseABackground(partner)
+            | KeywordProgramKind::DoctorsCompanion(partner),
+            KeywordAction::ValidateCommanderPartnerPair {
+                source,
+                counterpart,
+                deck_card_count,
+                source_color_identity,
+                counterpart_color_identity,
+            },
+        ) => execute_commander_partner_pair(
+            state,
+            source,
+            counterpart,
+            deck_card_count,
+            &source_color_identity,
+            &counterpart_color_identity,
+            partner,
         ),
         (
             KeywordProgramKind::Equip(equip),
@@ -7025,6 +8317,107 @@ fn execute_keyword_action_inner(
         (KeywordProgramKind::Prowess, KeywordAction::ResolveProwessTrigger { creature, spell }) => {
             execute_resolve_prowess_trigger(state, creature, spell)
         }
+        (
+            KeywordProgramKind::Exalted(exalted),
+            KeywordAction::ResolveExaltedTrigger {
+                ability_controller,
+                attacker,
+                declared_attackers,
+            },
+        ) => execute_resolve_exalted_trigger(
+            state,
+            ability_controller,
+            attacker,
+            &declared_attackers,
+            exalted,
+        ),
+        (
+            KeywordProgramKind::Bushido(bushido),
+            KeywordAction::ResolveBushidoTrigger {
+                creature,
+                transition,
+            },
+        ) => execute_resolve_bushido_trigger(state, creature, transition, bushido),
+        (
+            KeywordProgramKind::Flanking(flanking),
+            KeywordAction::ResolveFlankingTrigger {
+                attacker,
+                blocker,
+                blocker_had_flanking_at_trigger,
+            },
+        ) => execute_resolve_flanking_trigger(
+            state,
+            attacker,
+            blocker,
+            blocker_had_flanking_at_trigger,
+            flanking,
+        ),
+        (
+            KeywordProgramKind::Wither(wither),
+            KeywordAction::ApplyWitherCreatureDamage {
+                source,
+                source_controller_at_damage,
+                creature,
+                damage_dealt,
+            },
+        ) => execute_apply_wither_creature_damage(
+            state,
+            source,
+            source_controller_at_damage,
+            creature,
+            damage_dealt,
+            wither,
+        ),
+        (
+            KeywordProgramKind::Infect(infect),
+            KeywordAction::ApplyInfectCreatureDamage {
+                source,
+                source_controller_at_damage,
+                creature,
+                damage_dealt,
+            },
+        ) => execute_apply_infect_creature_damage(
+            state,
+            source,
+            source_controller_at_damage,
+            creature,
+            damage_dealt,
+            infect,
+        ),
+        (
+            KeywordProgramKind::Infect(infect),
+            KeywordAction::ApplyInfectPlayerDamage {
+                source,
+                source_controller_at_damage,
+                player,
+                damage_dealt,
+            },
+        ) => execute_apply_infect_player_damage(
+            state,
+            source,
+            source_controller_at_damage,
+            player,
+            damage_dealt,
+            infect,
+        ),
+        (
+            KeywordProgramKind::Toxic(toxic),
+            KeywordAction::ApplyToxicCombatDamage {
+                source,
+                source_controller_at_damage,
+                player,
+                damage_dealt,
+                step,
+            },
+        ) => execute_apply_toxic_combat_damage(
+            state,
+            source,
+            source_controller_at_damage,
+            player,
+            damage_dealt,
+            step,
+            toxic,
+        ),
         (
             KeywordProgramKind::Ward(ward),
             KeywordAction::ResolveWard {
@@ -7205,10 +8598,10 @@ fn resolve_quality_specs(
     if (!expects_color && chosen_color.is_some()) || (!expects_player && chosen_player.is_some()) {
         return Err(KeywordExecutionError::UnexpectedProtectionChoice);
     }
-    if let Some(player) = chosen_player
-        && !state.players.contains_key(&player)
-    {
-        return Err(KeywordExecutionError::MissingPlayer);
+    if let Some(player) = chosen_player {
+        if !state.players.contains_key(&player) {
+            return Err(KeywordExecutionError::MissingPlayer);
+        }
     }
 
     let mut qualities = Vec::new();
@@ -7593,6 +8986,794 @@ fn execute_flashback_stack_exit(
     }])
 }
 
+fn execute_aftermath_cast(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    card: ObjectId,
+    selected_half_mana_cost: &ManaCost,
+    program: &AftermathProgram,
+    payment: &ManaPayment,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let object = state.object(card)?;
+    if object.zone != Zone::Graveyard {
+        return Err(KeywordExecutionError::WrongZone {
+            object: card,
+            expected: Zone::Graveyard,
+            actual: object.zone,
+        });
+    }
+    if object.owner != player {
+        return Err(KeywordExecutionError::WrongOwner);
+    }
+    let types = &object.printed.card_types;
+    if !types.contains(&CardType::Instant) && !types.contains(&CardType::Sorcery) {
+        return Err(KeywordExecutionError::NotInstantOrSorcery(card));
+    }
+    if !program.cast_this_half_from_graveyard
+        || !program.this_half_cannot_be_cast_from_other_zones
+        || !program.uses_selected_half_printed_mana_cost
+        || !program.stack_identity_is_selected_half_only
+        || !program.exile_replaces_every_stack_destination
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    let payment_evidence = pay_mana_cost(state, player, selected_half_mana_cost, payment)?;
+    state.move_object(card, Zone::Stack)?;
+    let object = state.object_mut(card)?;
+    object.controller = player;
+    object.cast_method = Some(CastMethod::Aftermath);
+    Ok(vec![KeywordEvidenceEvent::AftermathCast {
+        player,
+        card,
+        mana_spent: payment_evidence.mana_spent,
+        life_paid: payment_evidence.life_paid,
+    }])
+}
+
+fn execute_aftermath_stack_exit(
+    state: &mut KeywordGameState,
+    card: ObjectId,
+    requested_destination: Zone,
+    program: &AftermathProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if requested_destination == Zone::Stack {
+        return Err(KeywordExecutionError::InvalidStackDestination);
+    }
+    let object = state.object(card)?;
+    if object.zone != Zone::Stack {
+        return Err(KeywordExecutionError::WrongZone {
+            object: card,
+            expected: Zone::Stack,
+            actual: object.zone,
+        });
+    }
+    if object.cast_method != Some(CastMethod::Aftermath)
+        || !program.exile_replaces_every_stack_destination
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    state.move_object(card, Zone::Exile)?;
+    state.object_mut(card)?.cast_method = None;
+    Ok(vec![KeywordEvidenceEvent::AftermathDestinationReplaced {
+        card,
+        requested_destination,
+        actual_destination: Zone::Exile,
+    }])
+}
+
+fn validate_rebound_program(program: &ReboundProgram) -> Result<(), KeywordExecutionError> {
+    if !program.is_static_ability
+        || program.function_scope != SpellStackFunctionScope::WhileThisSpellIsOnTheStack
+        || program.replacement_event
+            != ReboundReplacementEvent::CardSpellCastFromHandWouldEnterOwnersGraveyardAsItResolves
+        || !program.replacement_exiles_the_same_card
+        || !program.creates_delayed_trigger_only_when_replacement_exiles_card
+        || program.delayed_trigger != ReboundDelayedTrigger::BeginningOfSpellControllersNextUpkeep
+        || !program.delayed_cast_from_exile_is_optional
+        || !program.delayed_cast_without_paying_mana_cost
+        || !program.casting_restrictions_and_additional_costs_still_apply
+        || !program.another_alternative_cost_cannot_be_used
+        || !program.no_effect_for_spell_copy_without_card_or_non_graveyard_destination
+        || !program.instances_are_redundant
+    {
+        return Err(KeywordExecutionError::InvalidReboundResolution);
+    }
+    Ok(())
+}
+
+fn execute_rebound_resolution(
+    state: &mut KeywordGameState,
+    card: ObjectId,
+    requested_destination: Zone,
+    resolved: bool,
+    program: &ReboundProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_rebound_program(program)?;
+    if requested_destination == Zone::Stack {
+        return Err(KeywordExecutionError::InvalidStackDestination);
+    }
+    let object = state.object(card)?;
+    if object.zone != Zone::Stack {
+        return Err(KeywordExecutionError::WrongZone {
+            object: card,
+            expected: Zone::Stack,
+            actual: object.zone,
+        });
+    }
+    let is_copy = object.is_spell_copy;
+    let qualifies = !is_copy
+        && resolved
+        && requested_destination == Zone::Graveyard
+        && object.cast_origin == Some(Zone::Hand);
+    if !qualifies {
+        if is_copy {
+            state.objects.remove(&card);
+        } else {
+            state.move_object(card, requested_destination)?;
+            state.object_mut(card)?.cast_method = None;
+        }
+        return Ok(vec![KeywordEvidenceEvent::ReboundResolutionNotReplaced {
+            card,
+            requested_destination,
+            actual_destination: (!is_copy).then_some(requested_destination),
+        }]);
+    }
+
+    let controller = object.controller;
+    state.move_object(card, Zone::Exile)?;
+    let incarnation = state.object(card)?.incarnation;
+    let delayed_trigger_id = state.next_delayed_trigger_id;
+    state.next_delayed_trigger_id = state
+        .next_delayed_trigger_id
+        .checked_add(1)
+        .ok_or(KeywordExecutionError::ObjectIdOverflow)?;
+    state.pending_rebound_casts.insert(
+        delayed_trigger_id,
+        PendingReboundCast {
+            card,
+            incarnation,
+            controller,
+        },
+    );
+    Ok(vec![KeywordEvidenceEvent::ReboundResolutionReplaced {
+        card,
+        controller,
+        delayed_trigger_id,
+    }])
+}
+
+fn execute_rebound_upkeep(
+    state: &mut KeywordGameState,
+    delayed_trigger_id: u64,
+    active_player: PlayerId,
+    cast_card: bool,
+    timing_and_restrictions_legal: bool,
+    additional_costs_paid: bool,
+    program: &ReboundProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_rebound_program(program)?;
+    let pending = state
+        .pending_rebound_casts
+        .remove(&delayed_trigger_id)
+        .ok_or(KeywordExecutionError::InvalidReboundResolution)?;
+    if active_player != pending.controller {
+        return Err(KeywordExecutionError::InvalidReboundResolution);
+    }
+    let card = state.object(pending.card)?;
+    if card.zone != Zone::Exile || card.incarnation != pending.incarnation {
+        return Err(KeywordExecutionError::InvalidReboundResolution);
+    }
+    if cast_card {
+        if !timing_and_restrictions_legal || !additional_costs_paid {
+            return Err(KeywordExecutionError::CastPermissionMissing);
+        }
+        state.move_object(pending.card, Zone::Stack)?;
+        let card = state.object_mut(pending.card)?;
+        card.controller = pending.controller;
+        card.cast_method = Some(CastMethod::Rebound);
+        card.cast_origin = Some(Zone::Exile);
+    }
+    Ok(vec![KeywordEvidenceEvent::ReboundUpkeepResolved {
+        card: pending.card,
+        controller: pending.controller,
+        delayed_trigger_id,
+        cast: cast_card,
+    }])
+}
+
+fn validate_cascade_program(program: &CascadeProgram) -> Result<(), KeywordExecutionError> {
+    if !program.is_triggered_ability
+        || program.function_scope != SpellStackFunctionScope::WhileThisSpellIsOnTheStack
+        || program.trigger_transition != CascadeTriggerTransition::ControllerCastsThisSpell
+        || program.exile_procedure
+            != CascadeExileProcedure::FromLibraryTopUntilFirstNonlandCardWithLesserManaValue
+        || !program.source_spell_mana_value_is_strict_upper_bound
+        || !program.resulting_spell_mana_value_is_rechecked_after_cast_choices
+        || !program.eligible_card_cast_is_optional
+        || !program.eligible_card_casts_without_paying_mana_cost
+        || !program.cast_occurs_during_resolution
+        || !program.casting_restrictions_and_additional_costs_still_apply
+        || !program.another_alternative_cost_cannot_be_used
+        || !program.as_you_cascade_action_window_precedes_cast_choice
+        || program.uncast_card_destination
+            != CascadeUncastCardDestination::LibraryBottomInRandomOrder
+        || !program.instances_trigger_separately
+    {
+        return Err(KeywordExecutionError::InvalidCascadeResolution);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_cascade(
+    state: &mut KeywordGameState,
+    source_spell: ObjectId,
+    cast_eligible_card: bool,
+    resulting_spell_mana_value: Option<u32>,
+    timing_and_restrictions_legal: bool,
+    additional_costs_paid: bool,
+    as_you_cascade_action_complete: bool,
+    library_bottom_order: &[ObjectId],
+    program: &CascadeProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_cascade_program(program)?;
+    if !as_you_cascade_action_complete {
+        return Err(KeywordExecutionError::InvalidCascadeResolution);
+    }
+    let source = state.object(source_spell)?;
+    if source.zone != Zone::Stack {
+        return Err(KeywordExecutionError::WrongZone {
+            object: source_spell,
+            expected: Zone::Stack,
+            actual: source.zone,
+        });
+    }
+    let controller = source.controller;
+    let upper_bound = source.effective_characteristics().mana_value;
+    if !state.players.contains_key(&controller) {
+        return Err(KeywordExecutionError::MissingPlayer);
+    }
+
+    let mut exiled = Vec::new();
+    let mut eligible_card = None;
+    loop {
+        let next = state
+            .players
+            .get(&controller)
+            .and_then(|player| player.library.front().copied());
+        let Some(card_id) = next else { break };
+        let card = state.object(card_id)?;
+        if card.owner != controller || card.zone != Zone::Library {
+            return Err(KeywordExecutionError::LibraryInvariant(card_id));
+        }
+        let characteristics = card.effective_characteristics();
+        let eligible = !characteristics.card_types.contains(&CardType::Land)
+            && characteristics.mana_value < upper_bound;
+        state.move_object(card_id, Zone::Exile)?;
+        exiled.push(card_id);
+        if eligible {
+            eligible_card = Some(card_id);
+            break;
+        }
+    }
+
+    let cast_card = if cast_eligible_card {
+        let card = eligible_card.ok_or(KeywordExecutionError::InvalidCascadeResolution)?;
+        let resulting_mana_value =
+            resulting_spell_mana_value.ok_or(KeywordExecutionError::InvalidCascadeResolution)?;
+        if resulting_mana_value >= upper_bound
+            || !timing_and_restrictions_legal
+            || !additional_costs_paid
+        {
+            return Err(KeywordExecutionError::CastPermissionMissing);
+        }
+        Some(card)
+    } else {
+        if resulting_spell_mana_value.is_some() {
+            return Err(KeywordExecutionError::InvalidCascadeResolution);
+        }
+        None
+    };
+
+    let expected_bottom = exiled
+        .iter()
+        .copied()
+        .filter(|card| Some(*card) != cast_card)
+        .collect::<BTreeSet<_>>();
+    let supplied_bottom = library_bottom_order
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if expected_bottom != supplied_bottom || supplied_bottom.len() != library_bottom_order.len() {
+        return Err(KeywordExecutionError::InvalidCascadeResolution);
+    }
+
+    if let Some(card) = cast_card {
+        state.move_object(card, Zone::Stack)?;
+        let card = state.object_mut(card)?;
+        card.controller = controller;
+        card.cast_method = Some(CastMethod::Cascade);
+        card.cast_origin = Some(Zone::Exile);
+    }
+    for card in library_bottom_order {
+        state.move_object(*card, Zone::Library)?;
+    }
+    let library = &mut state
+        .players
+        .get_mut(&controller)
+        .ok_or(KeywordExecutionError::MissingPlayer)?
+        .library;
+    for card in library_bottom_order {
+        if !remove_from_deque(library, *card) {
+            return Err(KeywordExecutionError::LibraryInvariant(*card));
+        }
+    }
+    library.extend(library_bottom_order.iter().copied());
+
+    Ok(vec![KeywordEvidenceEvent::CascadeResolved {
+        source_spell,
+        exiled,
+        eligible_card,
+        cast_card,
+        library_bottom_order: library_bottom_order.to_vec(),
+    }])
+}
+
+fn validate_spree_program(program: &SpreeProgram) -> Result<(), KeywordExecutionError> {
+    if !program.is_static_ability
+        || program.function_zone != SpreeFunctionZone::ModalSpellOnStack
+        || program.mode_choice != SpreeModeChoice::ControllerChoosesOneOrMoreLegalModesWhileCasting
+        || !program.choose_modes_before_targets
+        || !program.chosen_mode_must_have_legal_required_targets
+        || !program.same_mode_normally_cannot_be_chosen_more_than_once
+        || !program.retargeting_does_not_change_modes
+        || !program.spell_copy_retains_chosen_modes_without_new_choice
+        || !program.chosen_modes_resolve_in_printed_order
+        || program.mode_cost_binding
+            != SpreeModeCostBinding::EveryChosenModeRequiresItsAssociatedPrintedAdditionalCost
+        || !program.all_chosen_mode_costs_are_additional_costs
+        || !program.all_chosen_mode_costs_must_be_paid_without_partial_payment
+        || !program.mode_costs_do_not_change_mana_cost
+        || !program.requires_exact_associated_mode_table_from_source
+        || !program.plus_sign_icons_have_no_rules_meaning
+    {
+        return Err(KeywordExecutionError::InvalidSpreeCast);
+    }
+    Ok(())
+}
+
+fn execute_spree_costs(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    spell: ObjectId,
+    mode_costs: &[ManaCost],
+    choices: &[SpreeModeChoiceInput],
+    program: &SpreeProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_spree_program(program)?;
+    let spell_object = state.object(spell)?;
+    if spell_object.zone != Zone::Stack {
+        return Err(KeywordExecutionError::WrongZone {
+            object: spell,
+            expected: Zone::Stack,
+            actual: spell_object.zone,
+        });
+    }
+    if spell_object.controller != player {
+        return Err(KeywordExecutionError::WrongController);
+    }
+    if !spell_object.spree_chosen_modes.is_empty() || mode_costs.len() < 2 || choices.is_empty() {
+        return Err(KeywordExecutionError::InvalidSpreeCast);
+    }
+    let mut chosen_modes = choices
+        .iter()
+        .map(|choice| choice.mode_index)
+        .collect::<Vec<_>>();
+    chosen_modes.sort_unstable();
+    if chosen_modes.windows(2).any(|pair| pair[0] == pair[1])
+        || choices
+            .iter()
+            .any(|choice| choice.mode_index >= mode_costs.len() || !choice.required_targets_legal)
+    {
+        return Err(KeywordExecutionError::InvalidSpreeCast);
+    }
+
+    let mut mana_spent = Vec::new();
+    let mut life_paid = 0u32;
+    for choice in choices {
+        let paid = pay_mana_cost(
+            state,
+            player,
+            &mode_costs[choice.mode_index],
+            &choice.payment,
+        )?;
+        mana_spent.extend(paid.mana_spent);
+        life_paid = life_paid.saturating_add(paid.life_paid);
+    }
+    let spell_object = state.object_mut(spell)?;
+    spell_object.spree_chosen_modes = chosen_modes.clone();
+    spell_object.spree_mode_costs = mode_costs.to_vec();
+    Ok(vec![KeywordEvidenceEvent::SpreeModeCostsPaid {
+        player,
+        spell,
+        chosen_modes,
+        mana_spent,
+        life_paid,
+    }])
+}
+
+fn execute_spree_copy(
+    state: &mut KeywordGameState,
+    spell: ObjectId,
+    program: &SpreeProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_spree_program(program)?;
+    let original = state.object(spell)?;
+    if original.zone != Zone::Stack || original.spree_chosen_modes.is_empty() {
+        return Err(KeywordExecutionError::InvalidSpreeCast);
+    }
+    let owner = original.owner;
+    let controller = original.controller;
+    let printed = original.printed.clone();
+    let retained_modes = original.spree_chosen_modes.clone();
+    let retained_costs = original.spree_mode_costs.clone();
+    let copy = ObjectId(state.next_object_id);
+    state.next_object_id = state
+        .next_object_id
+        .checked_add(1)
+        .ok_or(KeywordExecutionError::ObjectIdOverflow)?;
+    let mut copied = KeywordObject::new(copy, owner, controller, Zone::Stack, printed);
+    copied.is_spell_copy = true;
+    copied.cast_method = Some(CastMethod::Ordinary);
+    copied.spree_chosen_modes = retained_modes.clone();
+    copied.spree_mode_costs = retained_costs;
+    state.insert_object(copied)?;
+    Ok(vec![KeywordEvidenceEvent::SpreeSpellCopied {
+        spell,
+        copy,
+        retained_modes,
+    }])
+}
+
+fn validate_day_night_program(program: &DayNightProgram) -> Result<(), KeywordExecutionError> {
+    let role_contract = match program.face_role {
+        DayNightFaceRole::DayboundFrontFace => {
+            program.initial_designation
+                == DayNightInitialDesignation::DayWhenDayboundPermanentIsControlledWhileNeither
+                && program.entry_behavior
+                    == DayNightEntryBehavior::EnterTransformedAtNightWhenRepresentedByDoubleFacedCard
+                && program.invalid_entry_destination
+                    == Some(DayNightInvalidEntryDestination::InstantOrSorceryBackFaceKeepsNonstackCardInPriorZoneOrPutsResolvingSpellIntoOwnersGraveyard)
+                && program.immediate_alignment
+                    == DayNightImmediateAlignment::TransformFrontFaceUpPermanentAtNight
+                && program.designation_transform
+                    == DayNightDesignationTransform::FrontToBackAsItBecomesNight
+                && program.zone_scope
+                    == DayNightZoneScope::EntryModificationWhileEnteringAndOtherAbilitiesOnBattlefield
+        }
+        DayNightFaceRole::NightboundBackFace => {
+            program.initial_designation
+                == DayNightInitialDesignation::NightWhenNightboundPermanentIsControlledWhileNeitherAndNoDayboundPermanentExists
+                && program.entry_behavior == DayNightEntryBehavior::NoEntryModification
+                && program.invalid_entry_destination.is_none()
+                && program.immediate_alignment
+                    == DayNightImmediateAlignment::TransformBackFaceUpPermanentAtDay
+                && program.designation_transform
+                    == DayNightDesignationTransform::BackToFrontAsItBecomesDay
+                && program.zone_scope == DayNightZoneScope::BattlefieldOnly
+        }
+    };
+    if !program.is_static_ability
+        || !role_contract
+        || program.global_lifecycle
+            != DayNightGlobalLifecycle::SinglePersistentMutuallyExclusiveGameDesignationInitiallyNeither
+        || !program
+            .spell_count_transition
+            .check_during_second_part_of_untap_step
+        || !program
+            .spell_count_transition
+            .inspect_previous_active_player_turn
+        || !program.spell_count_transition.day_to_night_when_zero_spells
+        || program.spell_count_transition.night_to_day_minimum_spells != 2
+        || !program.spell_count_transition.neither_designation_skips_check
+        || program.spell_count_transition.shared_team_turn_rule
+            != DayNightSharedTeamSpellCountRule::DayToNightIfTeamCastNoneAndNightToDayIfAnyOneTeamPlayerCastAtLeastTwo
+        || program.transform_batch
+            != DayNightTransformBatch::AllEligibleBattlefieldPermanentsSimultaneously
+        || !program.transform_requires_double_faced_card_or_token
+        || !program.transform_instruction_rejects_instant_or_sorcery_destination
+        || !program.transform_preserves_object_identity
+        || !program.other_transform_causes_are_prohibited
+        || !program.instances_are_redundant
+    {
+        return Err(KeywordExecutionError::InvalidDayNightState);
+    }
+    Ok(())
+}
+
+fn align_day_night_permanents(
+    state: &mut KeywordGameState,
+    designation: DayNightDesignation,
+) -> Result<Vec<ObjectId>, KeywordExecutionError> {
+    let ids = state
+        .objects
+        .values()
+        .filter(|object| {
+            object.zone == Zone::Battlefield
+                && object.daybound_front.is_some()
+                && object.nightbound_back.is_some()
+        })
+        .map(|object| object.id)
+        .collect::<Vec<_>>();
+    let mut transformed = Vec::new();
+    for id in ids {
+        let object = state.object_mut(id)?;
+        let desired = match designation {
+            DayNightDesignation::Day => DayNightFaceRole::DayboundFrontFace,
+            DayNightDesignation::Night => DayNightFaceRole::NightboundBackFace,
+        };
+        if object.day_night_face != Some(desired) {
+            object.printed = match designation {
+                DayNightDesignation::Day => object.daybound_front.clone(),
+                DayNightDesignation::Night => object.nightbound_back.clone(),
+            }
+            .ok_or(KeywordExecutionError::InvalidDayNightState)?;
+            object.day_night_face = Some(desired);
+            transformed.push(id);
+        }
+    }
+    Ok(transformed)
+}
+
+fn execute_day_night_registration(
+    state: &mut KeywordGameState,
+    object: ObjectId,
+    daybound_front: ObjectCharacteristics,
+    nightbound_back: ObjectCharacteristics,
+    program: &DayNightProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_day_night_program(program)?;
+    let permanent = state.object(object)?;
+    if permanent.zone != Zone::Battlefield {
+        return Err(KeywordExecutionError::WrongZone {
+            object,
+            expected: Zone::Battlefield,
+            actual: permanent.zone,
+        });
+    }
+    if nightbound_back.card_types.contains(&CardType::Instant)
+        || nightbound_back.card_types.contains(&CardType::Sorcery)
+    {
+        return Err(KeywordExecutionError::InvalidDayNightState);
+    }
+    let daybound_already_exists = state.objects.values().any(|candidate| {
+        candidate.zone == Zone::Battlefield
+            && candidate.id != object
+            && candidate.daybound_front.is_some()
+    });
+    {
+        let permanent = state.object_mut(object)?;
+        permanent.daybound_front = Some(daybound_front);
+        permanent.nightbound_back = Some(nightbound_back);
+        permanent.day_night_face = Some(program.face_role);
+    }
+    if state.day_night.is_none() {
+        state.day_night = match program.face_role {
+            DayNightFaceRole::DayboundFrontFace => Some(DayNightDesignation::Day),
+            DayNightFaceRole::NightboundBackFace if !daybound_already_exists => {
+                Some(DayNightDesignation::Night)
+            }
+            DayNightFaceRole::NightboundBackFace => Some(DayNightDesignation::Day),
+        };
+    }
+    let designation = state
+        .day_night
+        .ok_or(KeywordExecutionError::InvalidDayNightState)?;
+    align_day_night_permanents(state, designation)?;
+    Ok(vec![KeywordEvidenceEvent::DayNightPermanentRegistered {
+        object,
+        designation,
+        face: state
+            .object(object)?
+            .day_night_face
+            .ok_or(KeywordExecutionError::InvalidDayNightState)?,
+    }])
+}
+
+fn execute_day_night_spell_cast(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    program: &DayNightProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_day_night_program(program)?;
+    if !state.players.contains_key(&player) {
+        return Err(KeywordExecutionError::MissingPlayer);
+    }
+    let count = state.day_night_turn_spell_counts.entry(player).or_default();
+    *count = count.saturating_add(1);
+    Ok(vec![KeywordEvidenceEvent::DayNightSpellCastRecorded {
+        player,
+        count: *count,
+    }])
+}
+
+fn execute_day_night_untap(
+    state: &mut KeywordGameState,
+    previous_turn_players: &[PlayerId],
+    program: &DayNightProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_day_night_program(program)?;
+    let players = previous_turn_players
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if players.is_empty()
+        || players.len() != previous_turn_players.len()
+        || players
+            .iter()
+            .any(|player| !state.players.contains_key(player))
+    {
+        return Err(KeywordExecutionError::InvalidDayNightState);
+    }
+    let before = state.day_night;
+    let counts = players
+        .iter()
+        .map(|player| {
+            state
+                .day_night_turn_spell_counts
+                .get(player)
+                .copied()
+                .unwrap_or(0)
+        })
+        .collect::<Vec<_>>();
+    state.day_night = match before {
+        Some(DayNightDesignation::Day) if counts.iter().all(|count| *count == 0) => {
+            Some(DayNightDesignation::Night)
+        }
+        Some(DayNightDesignation::Night) if counts.iter().any(|count| *count >= 2) => {
+            Some(DayNightDesignation::Day)
+        }
+        other => other,
+    };
+    for player in players {
+        state.day_night_turn_spell_counts.remove(&player);
+    }
+    let transformed = if state.day_night != before {
+        align_day_night_permanents(
+            state,
+            state
+                .day_night
+                .ok_or(KeywordExecutionError::InvalidDayNightState)?,
+        )?
+    } else {
+        Vec::new()
+    };
+    Ok(vec![KeywordEvidenceEvent::DayNightTransitionEvaluated {
+        before,
+        after: state.day_night,
+        transformed,
+    }])
+}
+
+fn combined_fuse_characteristics(
+    left: &ObjectCharacteristics,
+    right: &ObjectCharacteristics,
+) -> ObjectCharacteristics {
+    let joined_name = match (&left.name, &right.name) {
+        (Some(left), Some(right)) => Some(format!("{left} // {right}")),
+        (Some(name), None) | (None, Some(name)) => Some(name.clone()),
+        (None, None) => None,
+    };
+    let joined_oracle = match (&left.oracle_text, &right.oracle_text) {
+        (Some(left), Some(right)) => Some(format!("{left}\n//\n{right}")),
+        (Some(text), None) | (None, Some(text)) => Some(text.clone()),
+        (None, None) => None,
+    };
+    ObjectCharacteristics {
+        name: joined_name,
+        card_types: left.card_types.union(&right.card_types).copied().collect(),
+        supertypes: left.supertypes.union(&right.supertypes).cloned().collect(),
+        subtypes: left.subtypes.union(&right.subtypes).cloned().collect(),
+        colors: left.colors.union(&right.colors).copied().collect(),
+        mana_value: left.mana_value.saturating_add(right.mana_value),
+        power: None,
+        toughness: None,
+        oracle_text: joined_oracle,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_fuse_cast(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    card: ObjectId,
+    left: ObjectCharacteristics,
+    right: ObjectCharacteristics,
+    choice: FuseHalfChoice,
+    left_mana_cost: &ManaCost,
+    right_mana_cost: &ManaCost,
+    left_payment: Option<&ManaPayment>,
+    right_payment: Option<&ManaPayment>,
+    timing_and_restrictions_legal: bool,
+    program: &FuseProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if !program.is_static_ability
+        || program.function_scope != FuseFunctionScope::CardInItsControllersHand
+        || !program.requires_one_physical_split_card_with_exactly_two_halves
+        || !program.requires_cast_origin_hand
+        || program.cast_choice != FuseCastChoice::OneHalfOrBothHalvesChosenBeforeCardIsPutOnStack
+        || !program.fused_result_is_one_spell
+        || !program.fused_spell_has_combined_characteristics_of_both_halves
+        || !program.total_cost_includes_each_halfs_mana_cost
+        || program.resolution_order != FuseResolutionOrder::LeftHalfThenRightHalf
+        || !timing_and_restrictions_legal
+    {
+        return Err(KeywordExecutionError::InvalidFuseCast);
+    }
+    let object = state.object(card)?;
+    if object.zone != Zone::Hand {
+        return Err(KeywordExecutionError::WrongZone {
+            object: card,
+            expected: Zone::Hand,
+            actual: object.zone,
+        });
+    }
+    if object.owner != player || object.controller != player {
+        return Err(KeywordExecutionError::WrongController);
+    }
+    if !left
+        .card_types
+        .iter()
+        .any(|card_type| matches!(card_type, CardType::Instant | CardType::Sorcery))
+        || !right
+            .card_types
+            .iter()
+            .any(|card_type| matches!(card_type, CardType::Instant | CardType::Sorcery))
+    {
+        return Err(KeywordExecutionError::InvalidFuseCast);
+    }
+    let (pay_left, pay_right, resolution_order) = match choice {
+        FuseHalfChoice::Left => (true, false, vec![0]),
+        FuseHalfChoice::Right => (false, true, vec![1]),
+        FuseHalfChoice::Both => (true, true, vec![0, 1]),
+    };
+    if pay_left != left_payment.is_some() || pay_right != right_payment.is_some() {
+        return Err(KeywordExecutionError::InvalidFuseCast);
+    }
+    let mut mana_spent = Vec::new();
+    let mut life_paid = 0u32;
+    if let Some(payment) = left_payment {
+        let paid = pay_mana_cost(state, player, left_mana_cost, payment)?;
+        mana_spent.extend(paid.mana_spent);
+        life_paid = life_paid.saturating_add(paid.life_paid);
+    }
+    if let Some(payment) = right_payment {
+        let paid = pay_mana_cost(state, player, right_mana_cost, payment)?;
+        mana_spent.extend(paid.mana_spent);
+        life_paid = life_paid.saturating_add(paid.life_paid);
+    }
+    state.move_object(card, Zone::Stack)?;
+    let object = state.object_mut(card)?;
+    object.controller = player;
+    object.cast_method = Some(CastMethod::Fuse);
+    object.cast_origin = Some(Zone::Hand);
+    object.fuse_halves = Some((left.clone(), right.clone()));
+    object.fused_spell = choice == FuseHalfChoice::Both;
+    object.printed = match choice {
+        FuseHalfChoice::Left => left,
+        FuseHalfChoice::Right => right,
+        FuseHalfChoice::Both => combined_fuse_characteristics(&left, &right),
+    };
+    Ok(vec![KeywordEvidenceEvent::FuseSpellCast {
+        player,
+        card,
+        choice,
+        mana_spent,
+        life_paid,
+        resolution_order,
+    }])
+}
+
 fn execute_morph_cast(
     state: &mut KeywordGameState,
     player: PlayerId,
@@ -7685,6 +9866,8 @@ fn execute_install_static_keyword(
     if matches!(
         program.kind(),
         KeywordProgramKind::Fear(_)
+            | KeywordProgramKind::Intimidate(_)
+            | KeywordProgramKind::Skulk(_)
             | KeywordProgramKind::Shadow(_)
             | KeywordProgramKind::Landwalk(_)
     ) {
@@ -7705,9 +9888,36 @@ fn execute_install_static_keyword(
         KeywordProgramKind::Fear(FearProgram {
             artifact_or_black_blockers_only: true,
         }) => Some(CombatKeyword::Fear),
+        KeywordProgramKind::Intimidate(IntimidateProgram {
+            is_static_evasion_ability: true,
+            blocker_qualification:
+                IntimidateBlockerQualification::ArtifactCreatureOrCreatureSharingAtLeastOneCurrentColorWithAttacker,
+            every_declared_blocker_must_individually_qualify: true,
+            colorless_attacker_requires_artifact_blocker: true,
+            checks_current_characteristics_during_block_declaration: true,
+            gain_or_loss_after_legal_declaration_does_not_change_block: true,
+            later_attacker_or_blocker_characteristic_changes_do_not_change_block: true,
+            composes_with_other_block_restrictions: true,
+            instances_are_redundant: true,
+        }) => Some(CombatKeyword::Intimidate),
+        KeywordProgramKind::Skulk(SkulkProgram {
+            is_static_evasion_ability: true,
+            blocker_qualification: SkulkBlockerQualification::CreatureWithCurrentPowerNotGreaterThanAttacker,
+            every_declared_blocker_must_individually_qualify: true,
+            checks_current_power_during_block_declaration: true,
+            gain_or_loss_after_legal_declaration_does_not_change_block: true,
+            later_attacker_or_blocker_power_changes_do_not_change_block: true,
+            composes_with_other_block_restrictions: true,
+            instances_are_redundant: true,
+        }) => Some(CombatKeyword::Skulk),
         KeywordProgramKind::Shadow(ShadowProgram {
             requires_matching_shadow_status: true,
         }) => Some(CombatKeyword::Shadow),
+        KeywordProgramKind::Horsemanship(HorsemanshipProgram {
+            block_restriction: HorsemanshipBlockRestriction::BlockerMustHaveHorsemanship,
+            creature_with_horsemanship_may_block_either_kind: true,
+            instances_are_redundant: true,
+        }) => Some(CombatKeyword::Horsemanship),
         KeywordProgramKind::Landwalk(LandwalkProgram {
             quality,
             checks_defending_player: true,
@@ -7718,8 +9928,11 @@ fn execute_install_static_keyword(
             None
         }
         KeywordProgramKind::Fear(_)
+        | KeywordProgramKind::Intimidate(_)
+        | KeywordProgramKind::Skulk(_)
         | KeywordProgramKind::Shadow(_)
-        | KeywordProgramKind::Landwalk(_) => {
+        | KeywordProgramKind::Landwalk(_)
+        | KeywordProgramKind::Horsemanship(_) => {
             return Err(KeywordExecutionError::ActionProgramMismatch);
         }
         KeywordProgramKind::Menace => Some(CombatKeyword::Menace),
@@ -7735,6 +9948,8 @@ fn execute_install_static_keyword(
         KeywordProgramKind::Indestructible => Some(CombatKeyword::Indestructible),
         KeywordProgramKind::Prowess => Some(CombatKeyword::Prowess),
         KeywordProgramKind::Flash | KeywordProgramKind::Devoid => None,
+        KeywordProgramKind::Wither(_) => None,
+        KeywordProgramKind::Infect(_) | KeywordProgramKind::Toxic(_) => None,
         _ => return Err(KeywordExecutionError::ActionProgramMismatch),
     };
     object_state.rules_keywords.insert(keyword);
@@ -8132,6 +10347,281 @@ fn execute_resolve_prowess_trigger(
     }])
 }
 
+fn execute_resolve_exalted_trigger(
+    state: &mut KeywordGameState,
+    ability_controller: PlayerId,
+    attacker: ObjectId,
+    declared_attackers: &[ObjectId],
+    program: &ExaltedProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if declared_attackers != [attacker] {
+        return Err(KeywordExecutionError::InvalidExaltedTrigger);
+    }
+    let attacker_object = state.object(attacker)?;
+    if attacker_object.zone != Zone::Battlefield
+        || !attacker_object.is_creature()
+        || !attacker_object.attacking
+        || attacker_object.controller != ability_controller
+    {
+        return Err(KeywordExecutionError::InvalidExaltedTrigger);
+    }
+    let attacker_object = state.object_mut(attacker)?;
+    attacker_object.temporary_power_delta = attacker_object
+        .temporary_power_delta
+        .saturating_add(program.power_delta);
+    attacker_object.temporary_toughness_delta = attacker_object
+        .temporary_toughness_delta
+        .saturating_add(program.toughness_delta);
+    Ok(vec![KeywordEvidenceEvent::ExaltedResolved {
+        attacker,
+        power_delta: program.power_delta,
+        toughness_delta: program.toughness_delta,
+    }])
+}
+
+fn execute_resolve_bushido_trigger(
+    state: &mut KeywordGameState,
+    creature: ObjectId,
+    transition: BushidoResolutionTransition,
+    program: &BushidoProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let creature_object = state.object(creature)?;
+    if creature_object.zone != Zone::Battlefield
+        || !creature_object.is_creature()
+        || match transition {
+            BushidoResolutionTransition::DeclaredAsBlocker => !creature_object.blocking,
+            BushidoResolutionTransition::AttackerBecameBlocked => !creature_object.attacking,
+        }
+    {
+        return Err(KeywordExecutionError::InvalidBushidoTrigger);
+    }
+    let creature_object = state.object_mut(creature)?;
+    creature_object.temporary_power_delta = creature_object
+        .temporary_power_delta
+        .saturating_add(program.power_delta);
+    creature_object.temporary_toughness_delta = creature_object
+        .temporary_toughness_delta
+        .saturating_add(program.toughness_delta);
+    Ok(vec![KeywordEvidenceEvent::BushidoResolved {
+        creature,
+        transition,
+        power_delta: program.power_delta,
+        toughness_delta: program.toughness_delta,
+    }])
+}
+
+fn execute_resolve_flanking_trigger(
+    state: &mut KeywordGameState,
+    attacker: ObjectId,
+    blocker: ObjectId,
+    blocker_had_flanking_at_trigger: bool,
+    program: &FlankingProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let attacker_object = state.object(attacker)?;
+    let blocker_object = state.object(blocker)?;
+    if attacker_object.zone != Zone::Battlefield
+        || blocker_object.zone != Zone::Battlefield
+        || !attacker_object.is_creature()
+        || !blocker_object.is_creature()
+        || !attacker_object.attacking
+        || !blocker_object.blocking
+        || attacker_object.controller == blocker_object.controller
+        || blocker_had_flanking_at_trigger
+    {
+        return Err(KeywordExecutionError::InvalidFlankingTrigger);
+    }
+    let blocker_object = state.object_mut(blocker)?;
+    blocker_object.temporary_power_delta = blocker_object
+        .temporary_power_delta
+        .saturating_add(program.power_delta);
+    blocker_object.temporary_toughness_delta = blocker_object
+        .temporary_toughness_delta
+        .saturating_add(program.toughness_delta);
+    Ok(vec![KeywordEvidenceEvent::FlankingResolved {
+        attacker,
+        blocker,
+        power_delta: program.power_delta,
+        toughness_delta: program.toughness_delta,
+    }])
+}
+
+fn execute_apply_wither_creature_damage(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    source_controller_at_damage: PlayerId,
+    creature: ObjectId,
+    damage_dealt: u32,
+    program: &WitherProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let source_object = state.object(source)?;
+    let creature_object = state.object(creature)?;
+    if !source_object
+        .rules_keywords
+        .contains(&OfficialKeyword::Wither)
+        || !state.players.contains_key(&source_controller_at_damage)
+        || creature_object.zone != Zone::Battlefield
+        || !creature_object.is_creature()
+        || damage_dealt == 0
+        || !matches!(
+            program.creature_damage,
+            WitherCreatureDamageApplication::MinusOneMinusOneCountersEqualToDamage
+        )
+        || !program.source_controller_places_counters
+    {
+        return Err(KeywordExecutionError::InvalidWitherDamage);
+    }
+    let counters = state
+        .object_mut(creature)?
+        .counters
+        .entry("-1/-1".to_owned())
+        .or_default();
+    let before = *counters;
+    *counters = counters.saturating_add(damage_dealt);
+    Ok(vec![KeywordEvidenceEvent::WitherDamageApplied {
+        source,
+        source_controller: source_controller_at_damage,
+        creature,
+        damage: damage_dealt,
+        counters_before: before,
+        counters_after: *counters,
+    }])
+}
+
+fn execute_apply_infect_creature_damage(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    source_controller_at_damage: PlayerId,
+    creature: ObjectId,
+    damage_dealt: u32,
+    program: &InfectProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let source_object = state.object(source)?;
+    let creature_object = state.object(creature)?;
+    if !source_object.rules_keywords.contains(&OfficialKeyword::Infect)
+        || !state.players.contains_key(&source_controller_at_damage)
+        || creature_object.zone != Zone::Battlefield
+        || !creature_object.is_creature()
+        || damage_dealt == 0
+        || !program.applies_to_combat_and_noncombat_damage
+        || !matches!(
+            program.creature_damage_result,
+            InfectCreatureDamageResult::SourceControllerPutsMinusOneMinusOneCountersEqualToDamageInsteadOfMarkedDamage
+        )
+    {
+        return Err(KeywordExecutionError::InvalidInfectDamage);
+    }
+    let counters = state
+        .object_mut(creature)?
+        .counters
+        .entry("-1/-1".to_owned())
+        .or_default();
+    let before = *counters;
+    *counters = counters.saturating_add(damage_dealt);
+    Ok(vec![KeywordEvidenceEvent::InfectCreatureDamageApplied {
+        source,
+        source_controller: source_controller_at_damage,
+        creature,
+        damage: damage_dealt,
+        counters_before: before,
+        counters_after: *counters,
+    }])
+}
+
+fn execute_apply_infect_player_damage(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    source_controller_at_damage: PlayerId,
+    player: PlayerId,
+    damage_dealt: u32,
+    program: &InfectProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let source_object = state.object(source)?;
+    if !source_object.rules_keywords.contains(&OfficialKeyword::Infect)
+        || !state.players.contains_key(&source_controller_at_damage)
+        || damage_dealt == 0
+        || !program.applies_to_combat_and_noncombat_damage
+        || !matches!(
+            program.player_damage_result,
+            InfectPlayerDamageResult::SourceControllerGivesPoisonCountersEqualToDamageInsteadOfLifeLoss
+        )
+    {
+        return Err(KeywordExecutionError::InvalidInfectDamage);
+    }
+    let damaged_player = state
+        .players
+        .get_mut(&player)
+        .ok_or(KeywordExecutionError::MissingPlayer)?;
+    let before = damaged_player.poison_counters;
+    damaged_player.poison_counters = damaged_player.poison_counters.saturating_add(damage_dealt);
+    Ok(vec![KeywordEvidenceEvent::InfectPlayerDamageApplied {
+        source,
+        source_controller: source_controller_at_damage,
+        player,
+        damage: damage_dealt,
+        poison_before: before,
+        poison_after: damaged_player.poison_counters,
+    }])
+}
+
+fn execute_apply_toxic_combat_damage(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    source_controller_at_damage: PlayerId,
+    player: PlayerId,
+    damage_dealt: u32,
+    step: CombatDamageStep,
+    program: &ToxicProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let source_object = state.object(source)?;
+    if !source_object
+        .rules_keywords
+        .contains(&OfficialKeyword::Toxic)
+        || source_object.zone != Zone::Battlefield
+        || !source_object.is_creature()
+        || !(source_object.attacking || source_object.blocking)
+        || !state.players.contains_key(&source_controller_at_damage)
+        || damage_dealt == 0
+        || !program.actual_damage_required
+        || !matches!(
+            program.damage_event,
+            ToxicDamageEvent::CombatDamageDealtToPlayerByCreature
+        )
+        || !program.poison_is_in_addition_to_other_damage_results
+    {
+        return Err(KeywordExecutionError::InvalidToxicDamage);
+    }
+    let damaged_player = state
+        .players
+        .get_mut(&player)
+        .ok_or(KeywordExecutionError::MissingPlayer)?;
+    let before = damaged_player.poison_counters;
+    damaged_player.poison_counters = damaged_player
+        .poison_counters
+        .saturating_add(program.amount);
+    Ok(vec![KeywordEvidenceEvent::ToxicCombatDamageApplied {
+        source,
+        source_controller: source_controller_at_damage,
+        player,
+        damage: damage_dealt,
+        step,
+        poison_added: program.amount,
+        poison_before: before,
+        poison_after: damaged_player.poison_counters,
+    }])
+}
+
+pub fn player_has_lost_to_poison(
+    state: &KeywordGameState,
+    player: PlayerId,
+) -> Result<bool, KeywordExecutionError> {
+    Ok(state
+        .players
+        .get(&player)
+        .ok_or(KeywordExecutionError::MissingPlayer)?
+        .poison_counters
+        >= 10)
+}
+
 pub fn clear_end_of_turn_keyword_effects(state: &mut KeywordGameState) {
     for object in state.objects.values_mut() {
         object.temporary_power_delta = 0;
@@ -8420,6 +10910,1470 @@ fn execute_cycle(
         failed_draw,
         mana_spent: payment_evidence.mana_spent,
         life_paid: payment_evidence.life_paid,
+    }])
+}
+
+fn execute_affinity_for_artifacts(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    spell: ObjectId,
+    total_cost: &ManaCost,
+    affinity_instances: u32,
+    program: &AffinityProgram,
+    mana_payment: &ManaPayment,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let spell_object = state.object(spell)?;
+    if spell_object.zone != Zone::Stack {
+        return Err(KeywordExecutionError::WrongZone {
+            object: spell,
+            expected: Zone::Stack,
+            actual: spell_object.zone,
+        });
+    }
+    if spell_object.controller != player {
+        return Err(KeywordExecutionError::WrongController);
+    }
+    if affinity_instances == 0
+        || !program.is_static_ability
+        || program.counted_objects
+            != AffinityCountedObjects::ArtifactPermanentsControlledBySpellController
+        || program.generic_mana_reduction_per_counted_object != 1
+        || total_cost
+            .symbols
+            .iter()
+            .any(|symbol| matches!(symbol, ManaSymbol::VariableX))
+    {
+        return Err(KeywordExecutionError::InvalidAffinityTotalCost);
+    }
+    let artifact_count = u32::try_from(
+        state
+            .objects
+            .values()
+            .filter(|object| {
+                object.zone == Zone::Battlefield
+                    && object.controller == player
+                    && object
+                        .effective_characteristics()
+                        .card_types
+                        .contains(&CardType::Artifact)
+            })
+            .count(),
+    )
+    .map_err(|_| KeywordExecutionError::InvalidAffinityTotalCost)?;
+    let available_reduction = artifact_count
+        .checked_mul(affinity_instances)
+        .ok_or(KeywordExecutionError::InvalidAffinityTotalCost)?;
+    let mut remaining_reduction = available_reduction;
+    let mut adjusted_symbols = total_cost.symbols.clone();
+    for symbol in &mut adjusted_symbols {
+        let ManaSymbol::Generic(amount) = symbol else {
+            continue;
+        };
+        let applied = (*amount).min(remaining_reduction);
+        *amount -= applied;
+        remaining_reduction -= applied;
+    }
+    let generic_reduction = available_reduction - remaining_reduction;
+    let adjusted_cost = ManaCost {
+        raw: total_cost.raw.clone(),
+        symbols: adjusted_symbols,
+    };
+    let payment = pay_mana_cost(state, player, &adjusted_cost, mana_payment)?;
+    Ok(vec![KeywordEvidenceEvent::AffinityForArtifactsCostPaid {
+        player,
+        spell,
+        artifact_count,
+        affinity_instances,
+        generic_reduction,
+        mana_spent: payment.mana_spent,
+        life_paid: payment.life_paid,
+    }])
+}
+
+fn execute_delve(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    spell: ObjectId,
+    total_cost: &ManaCost,
+    exiled_cards: &[ObjectId],
+    program: &DelveProgram,
+    mana_payment: &ManaPayment,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let spell_object = state.object(spell)?;
+    if spell_object.zone != Zone::Stack {
+        return Err(KeywordExecutionError::WrongZone {
+            object: spell,
+            expected: Zone::Stack,
+            actual: spell_object.zone,
+        });
+    }
+    if spell_object.controller != player {
+        return Err(KeywordExecutionError::WrongController);
+    }
+    if !program.is_static_ability
+        || program.payment_exchange
+            != DelvePaymentExchange::ExileOneCardFromSpellControllersGraveyardForOneGenericMana
+        || !program.applies_only_to_generic_mana_in_total_cost
+        || total_cost
+            .symbols
+            .iter()
+            .any(|symbol| matches!(symbol, ManaSymbol::VariableX))
+    {
+        return Err(KeywordExecutionError::InvalidDelvePayment);
+    }
+    let unique = exiled_cards.iter().copied().collect::<BTreeSet<_>>();
+    if unique.len() != exiled_cards.len() {
+        return Err(KeywordExecutionError::InvalidDelvePayment);
+    }
+    for card in exiled_cards {
+        let object = state.object(*card)?;
+        if object.zone != Zone::Graveyard || object.owner != player {
+            return Err(KeywordExecutionError::InvalidDelvePayment);
+        }
+    }
+    let available_generic = total_cost
+        .symbols
+        .iter()
+        .filter_map(|symbol| match symbol {
+            ManaSymbol::Generic(amount) => Some(*amount),
+            _ => None,
+        })
+        .try_fold(0u32, u32::checked_add)
+        .ok_or(KeywordExecutionError::InvalidDelvePayment)?;
+    let generic_reduction = u32::try_from(exiled_cards.len())
+        .map_err(|_| KeywordExecutionError::InvalidDelvePayment)?;
+    if generic_reduction > available_generic {
+        return Err(KeywordExecutionError::InvalidDelvePayment);
+    }
+    let mut remaining = generic_reduction;
+    let mut adjusted_symbols = total_cost.symbols.clone();
+    for symbol in &mut adjusted_symbols {
+        let ManaSymbol::Generic(amount) = symbol else {
+            continue;
+        };
+        let applied = (*amount).min(remaining);
+        *amount -= applied;
+        remaining -= applied;
+    }
+    let adjusted_cost = ManaCost {
+        raw: total_cost.raw.clone(),
+        symbols: adjusted_symbols,
+    };
+    let payment = pay_mana_cost(state, player, &adjusted_cost, mana_payment)?;
+    for card in exiled_cards {
+        state.move_object(*card, Zone::Exile)?;
+    }
+    Ok(vec![KeywordEvidenceEvent::DelveCostPaid {
+        player,
+        spell,
+        exiled_cards: exiled_cards.to_vec(),
+        generic_reduction,
+        mana_spent: payment.mana_spent,
+        life_paid: payment.life_paid,
+    }])
+}
+
+fn execute_ascend(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    source: ObjectId,
+    program: &AscendProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let source_object = state.object(source)?;
+    if source_object.controller != player {
+        return Err(KeywordExecutionError::WrongController);
+    }
+    let types = &source_object.effective_characteristics().card_types;
+    let valid_spell = source_object.zone == Zone::Stack
+        && (types.contains(&CardType::Instant) || types.contains(&CardType::Sorcery));
+    let valid_permanent = source_object.zone == Zone::Battlefield
+        && [
+            CardType::Artifact,
+            CardType::Battle,
+            CardType::Creature,
+            CardType::Enchantment,
+            CardType::Land,
+            CardType::Planeswalker,
+        ]
+        .iter()
+        .any(|card_type| types.contains(card_type));
+    if (!valid_spell && !valid_permanent)
+        || program.permanent_threshold == 0
+        || !program.citys_blessing_persists_for_rest_of_game
+    {
+        return Err(KeywordExecutionError::InvalidAscendSource);
+    }
+    let controlled_permanents = u32::try_from(
+        state
+            .objects
+            .values()
+            .filter(|object| object.zone == Zone::Battlefield && object.controller == player)
+            .count(),
+    )
+    .map_err(|_| KeywordExecutionError::InvalidAscendSource)?;
+    let blessing_before = state
+        .players
+        .get(&player)
+        .ok_or(KeywordExecutionError::MissingPlayer)?
+        .citys_blessing;
+    if !blessing_before && controlled_permanents >= program.permanent_threshold {
+        state
+            .players
+            .get_mut(&player)
+            .ok_or(KeywordExecutionError::MissingPlayer)?
+            .citys_blessing = true;
+    }
+    let blessing_after = state.players[&player].citys_blessing;
+    Ok(vec![KeywordEvidenceEvent::AscendChecked {
+        player,
+        source,
+        controlled_permanents,
+        blessing_before,
+        blessing_after,
+    }])
+}
+
+fn execute_death_return(
+    state: &mut KeywordGameState,
+    card: ObjectId,
+    had_prohibited_counter_immediately_before_death: bool,
+    keyword: OfficialKeyword,
+    program: &DeathReturnProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let object = state.object(card)?;
+    if object.zone != Zone::Graveyard {
+        return Err(KeywordExecutionError::WrongZone {
+            object: card,
+            expected: Zone::Graveyard,
+            actual: object.zone,
+        });
+    }
+    if !object.is_creature() || object.is_token || had_prohibited_counter_immediately_before_death {
+        return Err(KeywordExecutionError::InvalidDeathReturnTrigger);
+    }
+    let expected_counter = match keyword {
+        OfficialKeyword::Persist => DeathReturnCounterKind::MinusOneMinusOne,
+        OfficialKeyword::Undying => DeathReturnCounterKind::PlusOnePlusOne,
+        _ => return Err(KeywordExecutionError::ActionProgramMismatch),
+    };
+    if !program.is_triggered_ability
+        || program.trigger_transition
+            != DeathReturnTriggerTransition::BattlefieldPermanentPutIntoGraveyard
+        || program.prohibited_counter != expected_counter
+        || program.return_counter != expected_counter
+        || program.counter_condition
+            != DeathReturnCounterCondition::NoCounterOfKindImmediatelyBeforeDeathUsingLastKnownInformation
+        || program.resolution_requirement
+            != DeathReturnResolutionRequirement::LinkedCardRemainsInFirstGraveyard
+        || program.return_under != DeathReturnBattlefieldController::Owner
+        || !program.return_creates_new_battlefield_object
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    let owner = object.owner;
+    let graveyard_incarnation = object.incarnation;
+    state.move_object(card, Zone::Battlefield)?;
+    let object = state.object_mut(card)?;
+    object.controller = owner;
+    object.tapped = false;
+    object.attacking = false;
+    object.blocking = false;
+    object.damage_marked = 0;
+    object.damaged_by_deathtouch_since_state_check = false;
+    object.temporary_power_delta = 0;
+    object.temporary_toughness_delta = 0;
+    object.counters.clear();
+    object.attached_to = None;
+    object.regeneration_shields = 0;
+    object.face_down = false;
+    object.cast_method = None;
+    let counter = match expected_counter {
+        DeathReturnCounterKind::MinusOneMinusOne => "-1/-1",
+        DeathReturnCounterKind::PlusOnePlusOne => "+1/+1",
+    };
+    object.counters.insert(counter.to_owned(), 1);
+    let battlefield_incarnation = object.incarnation;
+    Ok(vec![KeywordEvidenceEvent::DeathReturnResolved {
+        keyword,
+        card,
+        owner,
+        graveyard_incarnation,
+        battlefield_incarnation,
+        counter: counter.to_owned(),
+    }])
+}
+
+fn creature_power_toughness(
+    state: &KeywordGameState,
+    object: ObjectId,
+) -> Result<(i32, i32), KeywordExecutionError> {
+    let object = state.object(object)?;
+    if object.zone != Zone::Battlefield || !object.is_creature() {
+        return Err(KeywordExecutionError::InvalidCounterTrigger);
+    }
+    let characteristics = object.effective_characteristics();
+    match (characteristics.power, characteristics.toughness) {
+        (Some(power), Some(toughness)) => Ok((power, toughness)),
+        _ => Err(KeywordExecutionError::InvalidCounterTrigger),
+    }
+}
+
+fn add_plus_one_plus_one_counters(
+    state: &mut KeywordGameState,
+    object: ObjectId,
+    amount: u32,
+) -> Result<(), KeywordExecutionError> {
+    let current = *state.object(object)?.counters.get("+1/+1").unwrap_or(&0);
+    let updated = current
+        .checked_add(amount)
+        .ok_or(KeywordExecutionError::InvalidCounterTrigger)?;
+    state
+        .object_mut(object)?
+        .counters
+        .insert("+1/+1".to_owned(), updated);
+    Ok(())
+}
+
+fn execute_evolve(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    entering_creature: ObjectId,
+    comparison_was_true_at_trigger: bool,
+    program: &EvolveProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if source == entering_creature || !comparison_was_true_at_trigger {
+        return Err(KeywordExecutionError::InvalidCounterTrigger);
+    }
+    let source_controller = state.object(source)?.controller;
+    if state.object(entering_creature)?.controller != source_controller {
+        return Err(KeywordExecutionError::InvalidCounterTrigger);
+    }
+    let (source_power, source_toughness) = creature_power_toughness(state, source)?;
+    let (entering_power, entering_toughness) = creature_power_toughness(state, entering_creature)?;
+    if entering_power <= source_power && entering_toughness <= source_toughness {
+        return Err(KeywordExecutionError::InvalidCounterTrigger);
+    }
+    if program.comparison
+        != EvolveComparison::EnteringPowerGreaterOrEnteringToughnessGreaterThanSource
+        || !program.uses_intervening_if_at_trigger_and_resolution
+        || !program.counter_recipient_is_source_incarnation_on_battlefield
+        || program.plus_one_plus_one_counters_per_resolution == 0
+        || program.uses_targeting
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    add_plus_one_plus_one_counters(
+        state,
+        source,
+        program.plus_one_plus_one_counters_per_resolution,
+    )?;
+    Ok(vec![KeywordEvidenceEvent::EvolveResolved {
+        source,
+        entering_creature,
+        counters_added: program.plus_one_plus_one_counters_per_resolution,
+    }])
+}
+
+fn execute_mentor(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    target: ObjectId,
+    restriction_was_legal_at_trigger: bool,
+    program: &MentorProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if source == target || !restriction_was_legal_at_trigger {
+        return Err(KeywordExecutionError::InvalidCounterTrigger);
+    }
+    let source_object = state.object(source)?;
+    let target_object = state.object(target)?;
+    let source_profile = SourceProfile::from_object(source_object);
+    let target_is_legal =
+        targeting_is_legal(state, ProtectionTarget::Object(target), &source_profile)?;
+    if !source_object.attacking || !target_object.attacking || !target_is_legal {
+        return Err(KeywordExecutionError::InvalidCounterTrigger);
+    }
+    let (source_power, _) = creature_power_toughness(state, source)?;
+    let (target_power, _) = creature_power_toughness(state, target)?;
+    if target_power >= source_power
+        || program.target_restriction
+            != MentorTargetRestriction::AttackingCreatureWithCurrentPowerLessThanSourceCurrentPower
+        || !program.restriction_checked_on_target_selection_and_resolution
+        || program.plus_one_plus_one_counters == 0
+        || !program.counter_is_placed_on_legal_target_on_resolution
+    {
+        return Err(KeywordExecutionError::InvalidCounterTrigger);
+    }
+    add_plus_one_plus_one_counters(state, target, program.plus_one_plus_one_counters)?;
+    Ok(vec![KeywordEvidenceEvent::MentorResolved {
+        source,
+        target,
+        counters_added: program.plus_one_plus_one_counters,
+    }])
+}
+
+fn execute_renown(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    dealt_combat_damage_to_player: bool,
+    program: &RenownProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    creature_power_toughness(state, source)?;
+    if !dealt_combat_damage_to_player
+        || !program.triggers_on_combat_damage_to_player
+        || !program.uses_intervening_if_not_renowned
+        || !program.puts_plus_one_plus_one_counters_on_source
+        || !program.source_becomes_renowned_after_counter_instruction
+        || !program.renowned_is_persistent_battlefield_designation
+        || program.counter_count == 0
+    {
+        return Err(KeywordExecutionError::InvalidCounterTrigger);
+    }
+    if state.object(source)?.renowned {
+        return Ok(vec![KeywordEvidenceEvent::RenownResolved {
+            source,
+            counters_added: 0,
+            became_renowned: false,
+        }]);
+    }
+    add_plus_one_plus_one_counters(state, source, program.counter_count)?;
+    state.object_mut(source)?.renowned = true;
+    Ok(vec![KeywordEvidenceEvent::RenownResolved {
+        source,
+        counters_added: program.counter_count,
+        became_renowned: true,
+    }])
+}
+
+fn validate_speed_program(program: &StartYourEnginesProgram) -> Result<(), KeywordExecutionError> {
+    if !program.is_static_ability
+        || program.source_scope != SpeedSourceScope::ControlledPermanentOnBattlefield
+        || program.initialization != SpeedInitialization::NoSpeedToOneAsStateBasedAction
+        || program.initial_speed != 1
+        || program.increase_event
+            != SpeedIncreaseEvent::OneOrMoreOpponentsLoseLifeDuringControllersTurn
+        || program.increase_limit != SpeedIncreaseLimit::OncePerControllerTurn
+        || !program.increase_requires_current_speed_below_maximum
+        || program.increase_amount != 1
+        || program.maximum_speed != 4
+        || program.persistence != SpeedPersistence::PlayerRetainsDesignationAfterSourceLeaves
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    Ok(())
+}
+
+fn execute_start_your_engines(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    source: ObjectId,
+    program: &StartYourEnginesProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_speed_program(program)?;
+    let source_object = state.object(source)?;
+    if source_object.zone != Zone::Battlefield || source_object.controller != player {
+        return Err(KeywordExecutionError::InvalidSpeedEvent);
+    }
+    let player_state = state
+        .players
+        .get_mut(&player)
+        .ok_or(KeywordExecutionError::MissingPlayer)?;
+    let speed_before = player_state.speed;
+    if player_state.speed.is_none() {
+        player_state.speed = Some(program.initial_speed);
+    }
+    Ok(vec![KeywordEvidenceEvent::SpeedInitialized {
+        player,
+        source,
+        speed_before,
+        speed_after: player_state.speed.unwrap_or(program.initial_speed),
+    }])
+}
+
+fn execute_begin_speed_turn(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    program: &StartYourEnginesProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_speed_program(program)?;
+    let player_state = state
+        .players
+        .get_mut(&player)
+        .ok_or(KeywordExecutionError::MissingPlayer)?;
+    player_state.speed_increased_this_turn = false;
+    Ok(vec![KeywordEvidenceEvent::SpeedTurnBegan {
+        player,
+        speed: player_state.speed,
+    }])
+}
+
+fn execute_speed_increase(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    losing_opponent: PlayerId,
+    is_players_turn: bool,
+    program: &StartYourEnginesProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_speed_program(program)?;
+    if player == losing_opponent
+        || !state.players.contains_key(&losing_opponent)
+        || !is_players_turn
+    {
+        return Err(KeywordExecutionError::InvalidSpeedEvent);
+    }
+    let player_state = state
+        .players
+        .get_mut(&player)
+        .ok_or(KeywordExecutionError::MissingPlayer)?;
+    let speed_before = player_state
+        .speed
+        .ok_or(KeywordExecutionError::InvalidSpeedEvent)?;
+    if !(1..=program.maximum_speed).contains(&speed_before) {
+        return Err(KeywordExecutionError::InvalidSpeedEvent);
+    }
+    let increased = !player_state.speed_increased_this_turn && speed_before < program.maximum_speed;
+    let speed_after = if increased {
+        speed_before
+            .checked_add(program.increase_amount)
+            .ok_or(KeywordExecutionError::InvalidSpeedEvent)?
+    } else {
+        speed_before
+    };
+    if increased {
+        player_state.speed = Some(speed_after);
+        player_state.speed_increased_this_turn = true;
+    }
+    Ok(vec![KeywordEvidenceEvent::SpeedIncreaseResolved {
+        player,
+        losing_opponent,
+        speed_before,
+        speed_after,
+        increased,
+    }])
+}
+
+fn execute_improvise(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    spell: ObjectId,
+    total_cost: &ManaCost,
+    tapped_artifacts: &[ObjectId],
+    program: &ImproviseProgram,
+    mana_payment: &ManaPayment,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let spell_object = state.object(spell)?;
+    if spell_object.zone != Zone::Stack || spell_object.controller != player {
+        return Err(KeywordExecutionError::InvalidImprovisePayment);
+    }
+    if !program.is_static_ability
+        || program.function_zone != ImproviseFunctionZone::SpellStackOnly
+        || program.payment_exchange
+            != ImprovisePaymentExchange::TapOneUntappedControlledArtifactForOneGenericMana
+        || !program.applies_only_to_generic_mana_in_locked_total_cost
+        || !program.one_artifact_cannot_pay_more_than_once
+        || total_cost
+            .symbols
+            .iter()
+            .any(|symbol| matches!(symbol, ManaSymbol::VariableX))
+    {
+        return Err(KeywordExecutionError::InvalidImprovisePayment);
+    }
+    let unique = tapped_artifacts.iter().copied().collect::<BTreeSet<_>>();
+    if unique.len() != tapped_artifacts.len() {
+        return Err(KeywordExecutionError::InvalidImprovisePayment);
+    }
+    for artifact in tapped_artifacts {
+        let object = state.object(*artifact)?;
+        if object.zone != Zone::Battlefield
+            || object.controller != player
+            || object.tapped
+            || !object
+                .effective_characteristics()
+                .card_types
+                .contains(&CardType::Artifact)
+        {
+            return Err(KeywordExecutionError::InvalidImprovisePayment);
+        }
+    }
+    let available_generic = total_cost
+        .symbols
+        .iter()
+        .filter_map(|symbol| match symbol {
+            ManaSymbol::Generic(amount) => Some(*amount),
+            _ => None,
+        })
+        .try_fold(0u32, u32::checked_add)
+        .ok_or(KeywordExecutionError::InvalidImprovisePayment)?;
+    let generic_paid = u32::try_from(tapped_artifacts.len())
+        .map_err(|_| KeywordExecutionError::InvalidImprovisePayment)?;
+    if generic_paid > available_generic {
+        return Err(KeywordExecutionError::InvalidImprovisePayment);
+    }
+    let mut remaining = generic_paid;
+    let mut adjusted_symbols = total_cost.symbols.clone();
+    for symbol in &mut adjusted_symbols {
+        let ManaSymbol::Generic(amount) = symbol else {
+            continue;
+        };
+        let applied = (*amount).min(remaining);
+        *amount -= applied;
+        remaining -= applied;
+    }
+    let adjusted_cost = ManaCost {
+        raw: total_cost.raw.clone(),
+        symbols: adjusted_symbols,
+    };
+    let payment = pay_mana_cost(state, player, &adjusted_cost, mana_payment)?;
+    for artifact in tapped_artifacts {
+        state.object_mut(*artifact)?.tapped = true;
+    }
+    Ok(vec![KeywordEvidenceEvent::ImproviseCostPaid {
+        player,
+        spell,
+        tapped_artifacts: tapped_artifacts.to_vec(),
+        generic_paid,
+        mana_spent: payment.mana_spent,
+        life_paid: payment.life_paid,
+    }])
+}
+
+fn execute_extort(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    payment: Option<&ManaPayment>,
+    program: &ExtortProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if !state.players.contains_key(&player) {
+        return Err(KeywordExecutionError::MissingPlayer);
+    }
+    if program.trigger_transition != ExtortTriggerTransition::ControllerCastsSpell
+        || !program.optional_hybrid_white_black_payment_on_resolution
+        || !program.payment_may_be_made_at_most_once_per_trigger
+        || program.each_opponent_loses_life_simultaneously != 1
+        || !program.controller_gains_life_equal_to_total_life_actually_lost
+        || program.uses_targeting
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    let Some(payment) = payment else {
+        return Ok(vec![KeywordEvidenceEvent::ExtortResolved {
+            player,
+            paid: false,
+            opponents: Vec::new(),
+            total_life_lost: 0,
+            life_gained: 0,
+            mana_spent: Vec::new(),
+            life_paid: 0,
+        }]);
+    };
+    let cost = ManaCost {
+        raw: "{W/B}".to_owned(),
+        symbols: vec![ManaSymbol::Hybrid(ManaColor::White, ManaColor::Black)],
+    };
+    let paid = pay_mana_cost(state, player, &cost, payment)?;
+    let opponents = state
+        .players
+        .keys()
+        .copied()
+        .filter(|candidate| *candidate != player)
+        .collect::<Vec<_>>();
+    let total_life_lost = u32::try_from(opponents.len())
+        .map_err(|_| KeywordExecutionError::InvalidExtortResolution)?;
+    for opponent in &opponents {
+        let opponent_state = state
+            .players
+            .get_mut(opponent)
+            .ok_or(KeywordExecutionError::MissingPlayer)?;
+        opponent_state.life = opponent_state
+            .life
+            .checked_sub(1)
+            .ok_or(KeywordExecutionError::InvalidExtortResolution)?;
+    }
+    let life_gained = total_life_lost;
+    let gain =
+        i32::try_from(life_gained).map_err(|_| KeywordExecutionError::InvalidExtortResolution)?;
+    let player_state = state
+        .players
+        .get_mut(&player)
+        .ok_or(KeywordExecutionError::MissingPlayer)?;
+    player_state.life = player_state
+        .life
+        .checked_add(gain)
+        .ok_or(KeywordExecutionError::InvalidExtortResolution)?;
+    Ok(vec![KeywordEvidenceEvent::ExtortResolved {
+        player,
+        paid: true,
+        opponents,
+        total_life_lost,
+        life_gained,
+        mana_spent: paid.mana_spent,
+        life_paid: paid.life_paid,
+    }])
+}
+
+fn execute_living_weapon(
+    state: &mut KeywordGameState,
+    equipment: ObjectId,
+    program: &LivingWeaponProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let equipment_object = state.object(equipment)?;
+    let characteristics = equipment_object.effective_characteristics();
+    if equipment_object.zone != Zone::Battlefield
+        || !characteristics.card_types.contains(&CardType::Artifact)
+        || !characteristics.subtypes.contains("Equipment")
+        || !program.is_enters_battlefield_trigger
+        || program.token != LivingWeaponTokenDefinition::ZeroZeroBlackPhyrexianGermCreature
+        || program.token_count != 1
+        || !program.token_creation_precedes_attachment
+        || !program.attach_source_equipment_to_created_token
+        || !program.attachment_does_not_target
+    {
+        return Err(KeywordExecutionError::InvalidLivingWeaponResolution);
+    }
+    let controller = equipment_object.controller;
+    let token = ObjectId(state.next_object_id);
+    state.next_object_id = state
+        .next_object_id
+        .checked_add(1)
+        .ok_or(KeywordExecutionError::ObjectIdOverflow)?;
+    let mut germ = KeywordObject::new(
+        token,
+        controller,
+        controller,
+        Zone::Battlefield,
+        ObjectCharacteristics {
+            name: Some("Phyrexian Germ".to_owned()),
+            card_types: BTreeSet::from([CardType::Creature]),
+            supertypes: BTreeSet::new(),
+            subtypes: BTreeSet::from(["Phyrexian".to_owned(), "Germ".to_owned()]),
+            colors: BTreeSet::from([ManaColor::Black]),
+            mana_value: 0,
+            power: Some(0),
+            toughness: Some(0),
+            oracle_text: None,
+        },
+    );
+    germ.is_token = true;
+    state.insert_object(germ)?;
+    state.object_mut(equipment)?.attached_to = Some(ProtectionTarget::Object(token));
+    Ok(vec![KeywordEvidenceEvent::LivingWeaponResolved {
+        equipment,
+        token,
+        controller,
+    }])
+}
+
+fn execute_myriad(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    defending_player: PlayerId,
+    attack_targets: &[ProtectionTarget],
+    program: &MyriadProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let source_object = state.object(source)?;
+    if source_object.zone != Zone::Battlefield
+        || !source_object.is_creature()
+        || !source_object.attacking
+        || source_object.controller == defending_player
+        || !state.players.contains_key(&defending_player)
+        || program.trigger_transition != MyriadTriggerTransition::SourceCreatureDeclaredAsAttacker
+        || !program.trigger_uses_stack
+        || !program.one_optional_copy_for_each_opponent_other_than_defending_player
+        || !program.copy_is_token_with_source_copiable_values
+        || !program.token_enters_tapped_and_attacking
+        || !program.token_controller_chooses_that_opponent_or_their_planeswalker
+        || !program.entering_attacking_does_not_trigger_declared_attacker_abilities
+        || !program.creates_delayed_end_of_combat_exile_trigger_when_any_token_was_created
+        || !program.delayed_trigger_exiles_only_tokens_created_by_this_resolution
+    {
+        return Err(KeywordExecutionError::InvalidMyriadResolution);
+    }
+    let controller = source_object.controller;
+    let printed = source_object.printed.clone();
+    let expected_opponents = state
+        .players
+        .keys()
+        .copied()
+        .filter(|player| *player != controller && *player != defending_player)
+        .collect::<BTreeSet<_>>();
+    let mut chosen_opponents = BTreeSet::new();
+    let mut normalized_targets = Vec::with_capacity(attack_targets.len());
+    for target in attack_targets {
+        let opponent = match *target {
+            ProtectionTarget::Player(player) => player,
+            ProtectionTarget::Object(planeswalker) => {
+                let object = state.object(planeswalker)?;
+                if object.zone != Zone::Battlefield
+                    || !object
+                        .effective_characteristics()
+                        .card_types
+                        .contains(&CardType::Planeswalker)
+                {
+                    return Err(KeywordExecutionError::InvalidMyriadResolution);
+                }
+                object.controller
+            }
+        };
+        if !expected_opponents.contains(&opponent) || !chosen_opponents.insert(opponent) {
+            return Err(KeywordExecutionError::InvalidMyriadResolution);
+        }
+        normalized_targets.push(*target);
+    }
+
+    let mut pending = Vec::with_capacity(normalized_targets.len());
+    let mut tokens = Vec::with_capacity(normalized_targets.len());
+    for target in normalized_targets {
+        let token_id = ObjectId(state.next_object_id);
+        state.next_object_id = state
+            .next_object_id
+            .checked_add(1)
+            .ok_or(KeywordExecutionError::ObjectIdOverflow)?;
+        let mut token = KeywordObject::new(
+            token_id,
+            controller,
+            controller,
+            Zone::Battlefield,
+            printed.clone(),
+        );
+        token.is_token = true;
+        token.tapped = true;
+        token.attacking = true;
+        token.attacking_target = Some(target);
+        token.controlled_since_turn_began = false;
+        let incarnation = token.incarnation;
+        state.insert_object(token)?;
+        tokens.push(token_id);
+        pending.push(PendingMyriadToken {
+            token: token_id,
+            incarnation,
+        });
+    }
+    let delayed_trigger_id = if pending.is_empty() {
+        None
+    } else {
+        let id = state.next_delayed_trigger_id;
+        state.next_delayed_trigger_id = state
+            .next_delayed_trigger_id
+            .checked_add(1)
+            .ok_or(KeywordExecutionError::ObjectIdOverflow)?;
+        state.pending_myriad_exile.insert(id, pending);
+        Some(id)
+    };
+    Ok(vec![KeywordEvidenceEvent::MyriadResolved {
+        source,
+        tokens,
+        delayed_trigger_id,
+    }])
+}
+
+fn execute_myriad_end_of_combat(
+    state: &mut KeywordGameState,
+    delayed_trigger_id: u64,
+    program: &MyriadProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if !program.delayed_trigger_exiles_only_tokens_created_by_this_resolution {
+        return Err(KeywordExecutionError::InvalidMyriadResolution);
+    }
+    let pending = state
+        .pending_myriad_exile
+        .remove(&delayed_trigger_id)
+        .ok_or(KeywordExecutionError::InvalidMyriadResolution)?;
+    let mut exiled = Vec::new();
+    for pending_token in pending {
+        let should_exile = state
+            .objects
+            .get(&pending_token.token)
+            .is_some_and(|token| {
+                token.is_token
+                    && token.zone == Zone::Battlefield
+                    && token.incarnation == pending_token.incarnation
+            });
+        if !should_exile {
+            continue;
+        }
+        let owner = state.object(pending_token.token)?.owner;
+        state.move_object(pending_token.token, Zone::Exile)?;
+        state.remove_from_owned_zone(owner, pending_token.token, Zone::Exile)?;
+        state.objects.remove(&pending_token.token);
+        exiled.push(pending_token.token);
+    }
+    Ok(vec![KeywordEvidenceEvent::MyriadTokensExiled {
+        delayed_trigger_id,
+        tokens: exiled,
+    }])
+}
+
+fn validate_bargain_program(program: &BargainProgram) -> Result<(), KeywordExecutionError> {
+    if !program.is_static_ability_on_spell_stack
+        || !program.is_optional_additional_cost
+        || program.sacrifice_choice
+            != BargainSacrificeChoice::OneControlledArtifactEnchantmentOrTokenPermanent
+        || !program.sacrifice_is_declared_before_targets
+        || !program.sacrifice_is_paid_with_total_cost
+        || !program.bargain_does_not_change_mana_cost
+        || !program.bargained_status_is_set_when_intention_is_declared
+        || !program.casting_must_later_pay_declared_cost_to_complete
+        || !program.conditional_targets_are_chosen_only_when_bargained
+        || !program.cost_can_be_paid_at_most_once
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    Ok(())
+}
+
+fn execute_declare_bargain(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    spell: ObjectId,
+    program: &BargainProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_bargain_program(program)?;
+    let spell_object = state.object(spell)?;
+    if spell_object.zone != Zone::Stack
+        || spell_object.controller != player
+        || spell_object.bargained
+        || spell_object.bargain_cost_paid
+    {
+        return Err(KeywordExecutionError::InvalidBargainPayment);
+    }
+    state.object_mut(spell)?.bargained = true;
+    Ok(vec![KeywordEvidenceEvent::BargainDeclared {
+        player,
+        spell,
+    }])
+}
+
+fn execute_pay_bargain(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    spell: ObjectId,
+    sacrificed_permanent: ObjectId,
+    program: &BargainProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_bargain_program(program)?;
+    let spell_object = state.object(spell)?;
+    if spell_object.zone != Zone::Stack
+        || spell_object.controller != player
+        || !spell_object.bargained
+        || spell_object.bargain_cost_paid
+        || spell == sacrificed_permanent
+    {
+        return Err(KeywordExecutionError::InvalidBargainPayment);
+    }
+    let permanent = state.object(sacrificed_permanent)?;
+    let types = &permanent.effective_characteristics().card_types;
+    if permanent.zone != Zone::Battlefield
+        || permanent.controller != player
+        || (!permanent.is_token
+            && !types.contains(&CardType::Artifact)
+            && !types.contains(&CardType::Enchantment))
+    {
+        return Err(KeywordExecutionError::InvalidBargainPayment);
+    }
+    state.move_object(sacrificed_permanent, Zone::Graveyard)?;
+    state.object_mut(spell)?.bargain_cost_paid = true;
+    Ok(vec![KeywordEvidenceEvent::BargainCostPaid {
+        player,
+        spell,
+        sacrificed_permanent,
+    }])
+}
+
+fn execute_retrace_cast(
+    state: &mut KeywordGameState,
+    player: PlayerId,
+    card: ObjectId,
+    discarded_land: ObjectId,
+    printed_mana_cost: &ManaCost,
+    timing_and_restrictions_legal: bool,
+    program: &RetraceProgram,
+    payment: &ManaPayment,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if card == discarded_land || !timing_and_restrictions_legal {
+        return Err(KeywordExecutionError::InvalidRetraceCast);
+    }
+    let card_object = state.object(card)?;
+    let card_types = &card_object.printed.card_types;
+    if card_object.zone != Zone::Graveyard
+        || card_object.owner != player
+        || (!card_types.contains(&CardType::Instant) && !card_types.contains(&CardType::Sorcery))
+    {
+        return Err(KeywordExecutionError::InvalidRetraceCast);
+    }
+    let land = state.object(discarded_land)?;
+    if land.zone != Zone::Hand
+        || land.owner != player
+        || !land
+            .effective_characteristics()
+            .card_types
+            .contains(&CardType::Land)
+    {
+        return Err(KeywordExecutionError::InvalidRetraceCast);
+    }
+    if !program.is_static_ability
+        || program.function_zone != RetraceFunctionZone::OwnersGraveyard
+        || !program.permits_casting_card_from_graveyard
+        || !program.discard_one_land_card_is_additional_cost
+        || !program.printed_and_other_costs_are_still_paid
+        || !program.normal_casting_timing_and_restrictions_still_apply
+        || !program.does_not_change_mana_cost
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    let paid = pay_mana_cost(state, player, printed_mana_cost, payment)?;
+    state.move_object(discarded_land, Zone::Graveyard)?;
+    state.move_object(card, Zone::Stack)?;
+    let card_object = state.object_mut(card)?;
+    card_object.controller = player;
+    card_object.cast_method = Some(CastMethod::Retrace);
+    Ok(vec![KeywordEvidenceEvent::RetraceCast {
+        player,
+        card,
+        discarded_land,
+        mana_spent: paid.mana_spent,
+        life_paid: paid.life_paid,
+    }])
+}
+
+fn execute_exploit(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    ability_controller: PlayerId,
+    sacrifice: Option<ObjectId>,
+    program: &ExploitProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    state.object(source)?;
+    if !state.players.contains_key(&ability_controller)
+        || program.trigger_transition != ExploitTriggerTransition::SourceCreatureEntersBattlefield
+        || program.sacrifice_choice
+            != ExploitSacrificeChoice::OptionalOneCreatureControlledByAbilityControllerOnResolution
+        || program.sacrifice_uses_targeting
+        || !program.source_may_be_chosen_for_sacrifice
+        || !program.source_need_not_remain_on_battlefield_for_resolution
+        || !program.sacrifice_moves_controlled_permanent_from_battlefield_to_owners_graveyard
+        || !program.sacrifice_is_not_destruction
+        || program.exploit_event
+            != ExploitEventDefinition::SourceExploitsChosenCreatureWhenControllerSacrificesItDuringThisResolution
+        || !program.exploit_event_requires_completed_sacrifice_action
+    {
+        return Err(KeywordExecutionError::InvalidExploitResolution);
+    }
+    let Some(creature) = sacrifice else {
+        return Ok(vec![KeywordEvidenceEvent::ExploitResolved {
+            source,
+            ability_controller,
+            sacrificed_creature: None,
+            exploit_event_occurred: false,
+        }]);
+    };
+    let object = state.object(creature)?;
+    if object.zone != Zone::Battlefield
+        || object.controller != ability_controller
+        || !object.is_creature()
+    {
+        return Err(KeywordExecutionError::InvalidExploitResolution);
+    }
+    state.move_object(creature, Zone::Graveyard)?;
+    Ok(vec![KeywordEvidenceEvent::ExploitResolved {
+        source,
+        ability_controller,
+        sacrificed_creature: Some(creature),
+        exploit_event_occurred: true,
+    }])
+}
+
+fn validate_soulbond_program(program: &SoulbondProgram) -> Result<(), KeywordExecutionError> {
+    if !program.represents_two_triggered_abilities
+        || program.trigger_set
+            != SoulbondTriggerSet::SourceEntersOrAnotherCreatureControlledBySourceControllerEnters
+        || program.eligibility
+            != SoulbondEligibility::BothObjectsAreUnpairedCreaturesOnBattlefieldControlledByAbilityControllerAtTriggerAndResolution
+        || program.pair_choice != SoulbondPairChoice::OptionalNontargetedChoiceOnResolution
+        || program.pair_lifecycle
+            != SoulbondPairLifecycle::SymmetricExclusivePairWhileBothRemainCreaturesOnBattlefieldUnderSameController
+        || program.maximum_partners_per_creature != 1
+        || program.unpair_transition
+            != SoulbondUnpairTransition::EitherLeavesBattlefieldStopsBeingCreatureOrChangesController
+    {
+        return Err(KeywordExecutionError::ActionProgramMismatch);
+    }
+    Ok(())
+}
+
+fn execute_soulbond(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    ability_controller: PlayerId,
+    partner: Option<ObjectId>,
+    program: &SoulbondProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_soulbond_program(program)?;
+    if !state.players.contains_key(&ability_controller) {
+        return Err(KeywordExecutionError::MissingPlayer);
+    }
+    let Some(partner) = partner else {
+        return Ok(vec![KeywordEvidenceEvent::SoulbondResolved {
+            source,
+            partner: None,
+            paired: false,
+        }]);
+    };
+    if source == partner {
+        return Err(KeywordExecutionError::InvalidSoulbondResolution);
+    }
+    for object_id in [source, partner] {
+        let object = state.object(object_id)?;
+        if object.zone != Zone::Battlefield
+            || object.controller != ability_controller
+            || !object.is_creature()
+            || object.paired_with.is_some()
+        {
+            return Err(KeywordExecutionError::InvalidSoulbondResolution);
+        }
+    }
+    state.object_mut(source)?.paired_with = Some(partner);
+    state.object_mut(partner)?.paired_with = Some(source);
+    Ok(vec![KeywordEvidenceEvent::SoulbondResolved {
+        source,
+        partner: Some(partner),
+        paired: true,
+    }])
+}
+
+fn execute_soulbond_pair_check(
+    state: &mut KeywordGameState,
+    object: ObjectId,
+    program: &SoulbondProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_soulbond_program(program)?;
+    let Some(partner) = state.object(object)?.paired_with else {
+        return Ok(vec![KeywordEvidenceEvent::SoulbondPairChecked {
+            object,
+            partner: None,
+            remains_paired: false,
+        }]);
+    };
+    let first = state.object(object)?;
+    let second = state.object(partner)?;
+    let remains_paired = first.zone == Zone::Battlefield
+        && second.zone == Zone::Battlefield
+        && first.is_creature()
+        && second.is_creature()
+        && first.controller == second.controller
+        && second.paired_with == Some(object);
+    if !remains_paired {
+        state.object_mut(object)?.paired_with = None;
+        if state.object(partner)?.paired_with == Some(object) {
+            state.object_mut(partner)?.paired_with = None;
+        }
+    }
+    Ok(vec![KeywordEvidenceEvent::SoulbondPairChecked {
+        object,
+        partner: Some(partner),
+        remains_paired,
+    }])
+}
+
+fn execute_umbra_armor(
+    state: &mut KeywordGameState,
+    aura: ObjectId,
+    enchanted_permanent: ObjectId,
+    program: &UmbraArmorProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let aura_object = state.object(aura)?;
+    let enchanted = state.object(enchanted_permanent)?;
+    if aura_object.zone != Zone::Battlefield
+        || enchanted.zone != Zone::Battlefield
+        || aura_object.attached_to != Some(ProtectionTarget::Object(enchanted_permanent))
+        || !program.is_static_replacement_effect
+        || !program.replaces_destruction_of_enchanted_permanent
+        || !program.replacement_is_mandatory
+        || !program.removes_all_damage_marked_on_enchanted_permanent
+        || !program.destroys_source_aura
+        || !program.source_aura_is_destroyed_by_replacement_instruction
+        || !program.does_not_regenerate_enchanted_permanent
+    {
+        return Err(KeywordExecutionError::InvalidUmbraArmorReplacement);
+    }
+    let damage_removed = enchanted.damage_marked;
+    let aura_indestructible = aura_object
+        .rules_keywords
+        .contains(&OfficialKeyword::Indestructible);
+    let enchanted = state.object_mut(enchanted_permanent)?;
+    enchanted.damage_marked = 0;
+    enchanted.damaged_by_deathtouch_since_state_check = false;
+    if !aura_indestructible {
+        state.move_object(aura, Zone::Graveyard)?;
+    }
+    Ok(vec![KeywordEvidenceEvent::UmbraArmorDestructionReplaced {
+        aura,
+        enchanted_permanent,
+        damage_removed,
+        aura_destroyed: !aura_indestructible,
+    }])
+}
+
+fn execute_backup(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    target: ObjectId,
+    granted_abilities: &[String],
+    program: &BackupProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    let source_object = state.object(source)?;
+    let target_object = state.object(target)?;
+    let source_profile = SourceProfile::from_object(source_object);
+    let target_is_legal =
+        targeting_is_legal(state, ProtectionTarget::Object(target), &source_profile)?;
+    if source_object.zone != Zone::Battlefield
+        || target_object.zone != Zone::Battlefield
+        || !source_object.is_creature()
+        || !target_object.is_creature()
+        || !target_is_legal
+        || program.counter_count == 0
+        || !program.is_enters_battlefield_trigger
+        || !program.trigger_uses_stack
+        || !program.targets_one_creature
+        || !program.places_plus_one_plus_one_counters_on_legal_target
+        || !program.grants_abilities_only_if_target_is_another_creature
+        || !program.granted_abilities_last_until_end_of_turn
+        || !program.printed_ability_order_is_copiable_and_preserved
+        || !program.gained_or_created_abilities_are_not_granted
+        || !program.granted_ability_set_is_fixed_when_trigger_enters_stack
+        || granted_abilities
+            .iter()
+            .any(|ability| ability.trim().is_empty())
+    {
+        return Err(KeywordExecutionError::InvalidBackupResolution);
+    }
+
+    let target_object = state.object_mut(target)?;
+    let counter = target_object
+        .counters
+        .entry("+1/+1".to_owned())
+        .or_default();
+    *counter = counter.saturating_add(program.counter_count);
+    let actually_granted = if target != source {
+        target_object
+            .temporary_backup_abilities
+            .extend(granted_abilities.iter().cloned());
+        granted_abilities.to_vec()
+    } else {
+        Vec::new()
+    };
+    Ok(vec![KeywordEvidenceEvent::BackupResolved {
+        source,
+        target,
+        counters_added: program.counter_count,
+        granted_abilities: actually_granted,
+    }])
+}
+
+fn execute_backup_cleanup(
+    state: &mut KeywordGameState,
+    object: ObjectId,
+    program: &BackupProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if !program.granted_abilities_last_until_end_of_turn {
+        return Err(KeywordExecutionError::InvalidBackupResolution);
+    }
+    let removed_abilities =
+        std::mem::take(&mut state.object_mut(object)?.temporary_backup_abilities);
+    Ok(vec![KeywordEvidenceEvent::BackupAbilitiesExpired {
+        object,
+        removed_abilities,
+    }])
+}
+
+fn validate_cipher_program(program: &CipherProgram) -> Result<(), KeywordExecutionError> {
+    if !program.spell_ability_functions_on_stack
+        || !program.requires_spell_represented_by_card
+        || program.encode_choice_on_resolution
+            != CipherEncodeChoice::OptionalNontargetedCreatureControlledBySpellController
+        || !program.exiles_spell_card_encoded_on_chosen_creature
+        || !program.static_ability_functions_while_card_is_exiled
+        || !program.relationship_requires_card_in_exile_and_same_creature_object_on_battlefield
+        || !program.relationship_survives_creature_control_change_or_loss_of_creature_type
+        || !program.combat_damage_to_player_triggers_for_current_creature_controller
+        || !program.trigger_copies_encoded_card
+        || !program.copied_card_may_be_cast_without_paying_mana_cost
+        || !program.casting_copy_is_optional_and_obeys_other_casting_restrictions
+        || !program
+            .casting_copy_still_requires_additional_costs_and_cannot_use_another_alternative_cost
+        || !program.spell_copy_without_a_card_cannot_be_encoded
+    {
+        return Err(KeywordExecutionError::InvalidCipherResolution);
+    }
+    Ok(())
+}
+
+fn execute_cipher_encode(
+    state: &mut KeywordGameState,
+    spell: ObjectId,
+    creature: Option<ObjectId>,
+    program: &CipherProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_cipher_program(program)?;
+    let spell_object = state.object(spell)?;
+    let spell_characteristics = spell_object.effective_characteristics();
+    let spell_types = &spell_characteristics.card_types;
+    if spell_object.zone != Zone::Stack
+        || spell_object.is_spell_copy
+        || (!spell_types.contains(&CardType::Instant) && !spell_types.contains(&CardType::Sorcery))
+    {
+        return Err(KeywordExecutionError::InvalidCipherResolution);
+    }
+    let Some(creature) = creature else {
+        return Ok(vec![KeywordEvidenceEvent::CipherEncoded {
+            card: spell,
+            creature: None,
+            creature_incarnation: None,
+        }]);
+    };
+    let chosen = state.object(creature)?;
+    if chosen.zone != Zone::Battlefield
+        || !chosen.is_creature()
+        || chosen.controller != spell_object.controller
+    {
+        return Err(KeywordExecutionError::InvalidCipherResolution);
+    }
+    let incarnation = chosen.incarnation;
+    state.move_object(spell, Zone::Exile)?;
+    state.object_mut(spell)?.encoded_on = Some((creature, incarnation));
+    Ok(vec![KeywordEvidenceEvent::CipherEncoded {
+        card: spell,
+        creature: Some(creature),
+        creature_incarnation: Some(incarnation),
+    }])
+}
+
+fn execute_cipher_trigger(
+    state: &mut KeywordGameState,
+    encoded_card: ObjectId,
+    creature: ObjectId,
+    damaged_player: PlayerId,
+    cast_copy: bool,
+    timing_and_restrictions_legal: bool,
+    additional_costs_paid: bool,
+    program: &CipherProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    validate_cipher_program(program)?;
+    if !state.players.contains_key(&damaged_player) {
+        return Err(KeywordExecutionError::MissingPlayer);
+    }
+    let card = state.object(encoded_card)?;
+    let carrier = state.object(creature)?;
+    if card.zone != Zone::Exile
+        || card.encoded_on != Some((creature, carrier.incarnation))
+        || carrier.zone != Zone::Battlefield
+    {
+        return Err(KeywordExecutionError::InvalidCipherResolution);
+    }
+    let controller = carrier.controller;
+    let printed = card.printed.clone();
+    if !cast_copy {
+        return Ok(vec![KeywordEvidenceEvent::CipherCopyCast {
+            encoded_card,
+            creature,
+            damaged_player,
+            controller,
+            copy: None,
+        }]);
+    }
+    if !timing_and_restrictions_legal || !additional_costs_paid {
+        return Err(KeywordExecutionError::InvalidCipherResolution);
+    }
+    let copy_id = ObjectId(state.next_object_id);
+    state.next_object_id = state
+        .next_object_id
+        .checked_add(1)
+        .ok_or(KeywordExecutionError::ObjectIdOverflow)?;
+    let mut copy = KeywordObject::new(copy_id, controller, controller, Zone::Stack, printed);
+    copy.is_spell_copy = true;
+    copy.cast_method = Some(CastMethod::Ordinary);
+    state.insert_object(copy)?;
+    Ok(vec![KeywordEvidenceEvent::CipherCopyCast {
+        encoded_card,
+        creature,
+        damaged_player,
+        controller,
+        copy: Some(copy_id),
+    }])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_commander_partner_pair(
+    state: &mut KeywordGameState,
+    source: ObjectId,
+    counterpart: ObjectId,
+    deck_card_count: u32,
+    source_color_identity: &BTreeSet<ManaColor>,
+    counterpart_color_identity: &BTreeSet<ManaColor>,
+    program: &CommanderPartnerProgram,
+) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
+    if source == counterpart
+        || !program.functions_only_before_game_for_deck_construction
+        || program.counterpart_needs_same_partner_ability
+        || program.commander_count_when_used != 2
+        || program.maximum_commanders_from_partner_abilities != 2
+        || deck_card_count != program.deck_card_count_including_commanders
+        || !program.both_commanders_start_in_command_zone
+        || !program.commander_designation_persists_across_zones
+        || !program.combined_color_identity_for_deck_construction_and_references
+        || program.independent_tracking
+            != CommanderPartnerTracking::SeparateCastCountsTaxAndCombatDamagePerCommanderPerDamagedPlayer
+        || program.commander_reference
+            != CommanderPartnerReference::EitherCommanderAndAffectedPlayerChoosesOneWhenBothCouldBeAffected
+        || !program.different_partner_variants_cannot_combine
+        || !program.choose_only_one_when_source_has_multiple_partner_abilities
+    {
+        return Err(KeywordExecutionError::InvalidCommanderPartnerPair);
+    }
+    let source_object = state.object(source)?;
+    let counterpart_object = state.object(counterpart)?;
+    let source_characteristics = source_object.effective_characteristics();
+    let counterpart_characteristics = counterpart_object.effective_characteristics();
+    let both_distinct_owned_command_cards = source_object.zone == Zone::Command
+        && counterpart_object.zone == Zone::Command
+        && source_object.owner == counterpart_object.owner
+        && source_characteristics.supertypes.contains("Legendary")
+        && counterpart_characteristics.supertypes.contains("Legendary");
+    let requirements_met = match (
+        program.source_requirement,
+        program.counterpart_requirement,
+    ) {
+        (
+            CommanderPartnerSourceRequirement::DistinctLegendaryCardWithThisAbility,
+            CommanderPartnerCounterpartRequirement::LegendaryBackgroundEnchantmentCard,
+        ) => {
+            counterpart_characteristics
+                .card_types
+                .contains(&CardType::Enchantment)
+                && counterpart_characteristics.subtypes.contains("Background")
+        }
+        (
+            CommanderPartnerSourceRequirement::DistinctLegendaryCreatureCardWithThisAbility,
+            CommanderPartnerCounterpartRequirement::LegendaryTimeLordDoctorCreatureCardWithNoOtherCreatureTypes,
+        ) => {
+            source_characteristics.card_types.contains(&CardType::Creature)
+                && counterpart_characteristics.card_types.contains(&CardType::Creature)
+                && counterpart_characteristics.subtypes
+                    == BTreeSet::from(["Doctor".to_owned(), "Time Lord".to_owned()])
+        }
+        _ => false,
+    };
+    if !both_distinct_owned_command_cards || !requirements_met {
+        return Err(KeywordExecutionError::InvalidCommanderPartnerPair);
+    }
+    state.object_mut(source)?.is_commander = true;
+    state.object_mut(counterpart)?.is_commander = true;
+    let mut combined_color_identity = source_color_identity.clone();
+    combined_color_identity.extend(counterpart_color_identity.iter().copied());
+    Ok(vec![KeywordEvidenceEvent::CommanderPartnerPairValidated {
+        variant: program.variant,
+        source,
+        counterpart,
+        combined_color_identity,
+        deck_card_count,
     }])
 }
 
@@ -9333,6 +13287,15 @@ pub fn can_block_for_defending_player(
     }
     if attacker_object
         .combat_keywords
+        .contains(&CombatKeyword::Horsemanship)
+        && !blocker_object
+            .combat_keywords
+            .contains(&CombatKeyword::Horsemanship)
+    {
+        return Ok(false);
+    }
+    if attacker_object
+        .combat_keywords
         .contains(&CombatKeyword::Fear)
     {
         let blocker_characteristics = blocker_object.effective_characteristics();
@@ -9342,6 +13305,37 @@ pub fn can_block_for_defending_player(
         let is_black = blocker_characteristics.colors.contains(&ManaColor::Black);
         if !is_artifact && !is_black {
             return Ok(false);
+        }
+    }
+    if attacker_object
+        .combat_keywords
+        .contains(&CombatKeyword::Intimidate)
+    {
+        let attacker_characteristics = attacker_object.effective_characteristics();
+        let blocker_characteristics = blocker_object.effective_characteristics();
+        let is_artifact = blocker_characteristics
+            .card_types
+            .contains(&CardType::Artifact);
+        let shares_color = attacker_characteristics
+            .colors
+            .iter()
+            .any(|color| blocker_characteristics.colors.contains(color));
+        if !is_artifact && !shares_color {
+            return Ok(false);
+        }
+    }
+    if attacker_object
+        .combat_keywords
+        .contains(&CombatKeyword::Skulk)
+    {
+        let attacker_power = attacker_object.effective_characteristics().power;
+        let blocker_power = blocker_object.effective_characteristics().power;
+        match (attacker_power, blocker_power) {
+            (Some(attacker_power), Some(blocker_power)) if blocker_power > attacker_power => {
+                return Ok(false);
+            }
+            (Some(_), Some(_)) => {}
+            _ => return Ok(false),
         }
     }
     if attacker_object

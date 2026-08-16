@@ -8,6 +8,7 @@ use url::Url;
 use crate::domain::{CardDefinition, DeckEntry, LineRequirement, WinSpeedReport};
 use crate::effects::EffectMagnitude;
 use crate::parser::normalize_card_name;
+use crate::pregame_clause_runtime::{PregameClauseKind, compile_pregame_clause_program};
 use crate::semantics::CompiledDeck;
 
 pub(crate) const BUNDLED_POLICY_JSON: &str = include_str!("../data/commander-policy.json");
@@ -620,6 +621,19 @@ pub fn evaluate_commander_policy(
         }
 
         if let Some(card) = definition {
+            if pregame_programs(card).any(|program| program.requires_source_removed_without_ante())
+            {
+                push_format_violation(
+                    &mut format_violations,
+                    &mut seen_format_violations,
+                    "requiresAnteDeckRemoval",
+                    Some(entry.display_name.clone()),
+                    format!(
+                        "{} must be removed from the deck when the game is not played for ante.",
+                        entry.display_name
+                    ),
+                );
+            }
             for category in &policy.categorical_bans {
                 if category_matches(category, card) {
                     has_specific_ban = true;
@@ -711,7 +725,7 @@ pub fn evaluate_commander_policy(
     if policy.format_rules.singleton {
         for entry in aggregated.values().filter(|entry| entry.quantity > 1) {
             match find_definition(&definition_index, &entry.display_name) {
-                Some(card) if card_allows_multiple_copies(policy, card) => {}
+                Some(card) if card_allows_multiple_copies(policy, card, entry.quantity) => {}
                 Some(_) => duplicate_violations.push(DuplicateViolation {
                     card_name: entry.display_name.clone(),
                     quantity: entry.quantity,
@@ -1334,7 +1348,6 @@ fn evaluate_commander_eligibility(
     }
 
     let type_line = card.type_line.to_lowercase();
-    let oracle_text = card.oracle_text.to_lowercase();
     if policy.format_rules.legendary_creatures_eligible && type_line.contains("legendary creature")
     {
         return CommanderEligibility {
@@ -1344,7 +1357,7 @@ fn evaluate_commander_eligibility(
         };
     }
     if policy.format_rules.explicit_oracle_permission_eligible
-        && oracle_text.contains("can be your commander")
+        && pregame_programs(card).any(|program| program.explicitly_allows_source_as_commander())
     {
         return CommanderEligibility {
             card_name: commander_name.into(),
@@ -1408,15 +1421,40 @@ fn commander_pair_is_supported(first: &CardDefinition, second: &CardDefinition) 
         || second_text.contains(&format!("partner with {}", first.name.to_lowercase()))
 }
 
-fn card_allows_multiple_copies(policy: &CommanderPolicyPackage, card: &CardDefinition) -> bool {
+fn card_allows_multiple_copies(
+    policy: &CommanderPolicyPackage,
+    card: &CardDefinition,
+    copies: u16,
+) -> bool {
     if policy.format_rules.basic_lands_exempt
         && card.type_line.to_lowercase().contains("basic land")
     {
         return true;
     }
-    let oracle_text = card.oracle_text.to_lowercase();
-    oracle_text.contains("a deck can have any number of cards named")
-        || (oracle_text.contains("a deck can have up to") && oracle_text.contains("cards named"))
+    pregame_programs(card).any(|program| {
+        program.permits_named_card_count(&card.name, u32::from(copies)) == Some(true)
+    })
+}
+
+fn pregame_programs(
+    card: &CardDefinition,
+) -> impl Iterator<Item = crate::pregame_clause_runtime::PregameClauseProgram> + '_ {
+    card.oracle_text.lines().filter_map(|exact_source| {
+        let exact_source = exact_source.trim();
+        let normalized_source = crate::bounded_oracle_runtime::normalize_oracle_clause(
+            exact_source,
+            &card.name,
+            &card.type_line,
+        );
+        compile_pregame_clause_program(exact_source, &normalized_source).filter(|program| {
+            matches!(
+                program.kind(),
+                PregameClauseKind::ExplicitSelfCommanderPermission
+                    | PregameClauseKind::RemoveFromDeckWithoutAnte
+                    | PregameClauseKind::DeckCopyLimit(_)
+            )
+        })
+    })
 }
 
 fn normalized_colors(colors: &[String]) -> BTreeSet<String> {

@@ -20,12 +20,36 @@ use crate::ability_program::{
     compile_executable_ability_program, compile_face_bound_ability_program,
     normalize_oracle_clause_for_receipt,
 };
+use crate::characteristic_oracle_runtime::{CharacteristicOracleProgram, CombatKeyword};
+use crate::continuous_trigger_runtime::{ContinuousTriggerProgram, Keyword as ContinuousKeyword};
+use crate::enchant_production_runtime::ENCHANT_PRODUCTION_RUNTIME_VERSION;
+use crate::equip_production_runtime::EQUIP_PRODUCTION_RUNTIME_VERSION;
 use crate::face_layout_runtime::{
     FACE_LAYOUT_EXECUTOR_ID, FaceLayoutFaceSource, FaceLayoutProgram, FaceLayoutRuntimeInput,
     FaceLayoutRuntimeReceipt, FaceRulesProfile, RelatedLayoutSource, compile_face_layout_runtime,
 };
 use crate::keyword_production_bridge::{
-    DEVOID_PRODUCTION_BRIDGE_VERSION, STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+    AFFINITY_PRODUCTION_BRIDGE_VERSION, AFTERMATH_PRODUCTION_BRIDGE_VERSION,
+    ASCEND_PRODUCTION_BRIDGE_VERSION, BACKUP_PRODUCTION_BRIDGE_VERSION,
+    BARGAIN_PRODUCTION_BRIDGE_VERSION, CASCADE_PRODUCTION_BRIDGE_VERSION,
+    CHANGELING_PRODUCTION_BRIDGE_VERSION, CIPHER_PRODUCTION_BRIDGE_VERSION,
+    COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION, COMBAT_TRIGGER_PRODUCTION_BRIDGE_VERSION,
+    COMMANDER_PARTNER_PRODUCTION_BRIDGE_VERSION, CONVOKE_PRODUCTION_BRIDGE_VERSION,
+    CREATURE_COUNTER_TRIGGER_PRODUCTION_BRIDGE_VERSION,
+    CUMULATIVE_UPKEEP_PRODUCTION_BRIDGE_VERSION, DAY_NIGHT_PRODUCTION_BRIDGE_VERSION,
+    DEATH_RETURN_PRODUCTION_BRIDGE_VERSION, DELVE_PRODUCTION_BRIDGE_VERSION,
+    DEVOID_PRODUCTION_BRIDGE_VERSION, EXPLOIT_PRODUCTION_BRIDGE_VERSION,
+    EXTORT_PRODUCTION_BRIDGE_VERSION, FLASHBACK_PRODUCTION_BRIDGE_VERSION,
+    FUSE_PRODUCTION_BRIDGE_VERSION, IMPROVISE_PRODUCTION_BRIDGE_VERSION,
+    KICKER_PRODUCTION_BRIDGE_VERSION, LIVING_WEAPON_PRODUCTION_BRIDGE_VERSION,
+    MILL_PRODUCTION_BRIDGE_VERSION, MORPH_PRODUCTION_BRIDGE_VERSION,
+    MYRIAD_PRODUCTION_BRIDGE_VERSION, PLAYER_SPEED_PRODUCTION_BRIDGE_VERSION,
+    POISON_DAMAGE_PRODUCTION_BRIDGE_VERSION, PROTECTION_PRODUCTION_BRIDGE_VERSION,
+    REBOUND_PRODUCTION_BRIDGE_VERSION, REGENERATE_PRODUCTION_BRIDGE_VERSION,
+    RETRACE_PRODUCTION_BRIDGE_VERSION, SOULBOND_PRODUCTION_BRIDGE_VERSION,
+    SPREE_PRODUCTION_BRIDGE_VERSION, STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+    UMBRA_ARMOR_PRODUCTION_BRIDGE_VERSION, WITHER_PRODUCTION_BRIDGE_VERSION,
+    static_keyword_has_complete_production_contract,
 };
 use crate::keyword_rules_runtime::OfficialKeyword;
 use crate::mana_network_runtime::{
@@ -35,8 +59,8 @@ use crate::mana_network_runtime::{
 };
 use crate::mechanic_runtime::MechanicProcedure;
 use crate::oracle_clause_backend::{
-    CompiledOracleClause, LiveBridgeCapability, OracleClauseBackendInput, OracleClauseCardContext,
-    compile_oracle_clause_backend_with_context,
+    CompiledOracleClause, DelegatedKeywordClause, LiveBridgeCapability, OracleClauseBackendInput,
+    OracleClauseCardContext, compile_oracle_clause_backend_with_context,
 };
 use crate::runtime_receipts::{
     ALTERNATIVE_CAST_EXECUTOR_VERSION, ATOMIC_TRANSACTION_EXECUTOR_VERSION, AtomicRuntimeReceipt,
@@ -72,7 +96,7 @@ use crate::runtime_receipts::{
 use crate::semantics::{CompiledCard, role};
 
 pub const EXECUTION_COVERAGE_SCHEMA_VERSION: &str = "commander-execution-coverage-manifest/v8";
-pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-1.21";
+pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-2.16";
 pub const COMPACT_BLOCKER_SAMPLE_LIMIT: usize = 20;
 
 const METRICS: [ExecutionMetric; 7] = [
@@ -1311,10 +1335,10 @@ fn compile_card(
                 attraction_lights: &face.attraction_lights,
                 type_line: face.type_line.as_deref(),
                 keywords: &face.keywords,
-                root_alignment: if has_exact_faces {
-                    CharacteristicRootAlignment::EXACT
-                } else {
+                root_alignment: if exact_normal_single_face {
                     characteristic_root_alignment(record, face, has_exact_faces)
+                } else {
+                    CharacteristicRootAlignment::EXACT
                 },
             })
         })
@@ -1322,6 +1346,11 @@ fn compile_card(
     let printed_cost_receipts = faces
         .iter()
         .filter_map(|face| {
+            if exact_normal_single_face
+                && !characteristic_root_alignment(record, face, has_exact_faces).mana_cost
+            {
+                return None;
+            }
             let printed_cost = face.mana_cost.as_deref()?.trim();
             (!printed_cost.is_empty()).then_some(())?;
             compile_printed_cost_runtime_receipt(
@@ -1933,12 +1962,45 @@ fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<Retaine
             );
         }
     }
+    let retained_keyword_receipts =
+        compile_retained_keyword_rules_runtime_receipts_from_compiled(record, &compiled);
     let complete_root_claimed = receipts.iter().any(|receipt| {
         runtime_receipt_has_exact_contract(receipt)
             && runtime_receipt_parts(receipt)
                 .1
                 .contains(&RuntimeCapability::CompleteOracleRoot)
     });
+    if !complete_root_claimed {
+        let claimed_clauses = receipts
+            .iter()
+            .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
+            .flat_map(|receipt| {
+                runtime_receipt_parts(receipt)
+                    .2
+                    .covered_oracle_clauses
+                    .iter()
+                    .cloned()
+            })
+            .collect::<BTreeSet<_>>();
+        let registry = production_keyword_live_bridge_registry();
+        receipts.extend(
+            retained_keyword_receipts
+                .iter()
+                .cloned()
+                .filter(|receipt| {
+                    keyword_live_bridge_registry_has_registration(
+                        registry,
+                        receipt.keyword_rules.keyword,
+                        receipt.delegated_clause.required_live_bridge_capabilities(),
+                    ) && receipt
+                        .source_evidence
+                        .covered_oracle_clauses
+                        .iter()
+                        .all(|clause| !claimed_clauses.contains(clause))
+                })
+                .map(|receipt| RetainedRuntimeReceipt::KeywordRules(Box::new(receipt))),
+        );
+    }
     if !complete_root_claimed {
         let claimed_clauses = receipts
             .iter()
@@ -1991,7 +2053,7 @@ fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<Retaine
         })
         .collect::<BTreeSet<_>>();
     receipts.extend(
-        compile_retained_keyword_rules_runtime_receipts(record)
+        retained_keyword_receipts
             .into_iter()
             .filter(|receipt| {
                 !incomplete_atomic_root
@@ -2103,6 +2165,23 @@ fn exact_oracle_clause_evidence(
 fn compile_retained_keyword_rules_runtime_receipts(
     record: &CombinedCardRecord,
 ) -> Vec<ExactKeywordRulesRuntimeReceipt> {
+    compile_retained_keyword_rules_runtime_receipts_with_delegated(record, None)
+}
+
+fn compile_retained_keyword_rules_runtime_receipts_from_compiled(
+    record: &CombinedCardRecord,
+    compiled: &CompiledCard,
+) -> Vec<ExactKeywordRulesRuntimeReceipt> {
+    compile_retained_keyword_rules_runtime_receipts_with_delegated(
+        record,
+        Some(&compiled.effects.delegated_oracle),
+    )
+}
+
+fn compile_retained_keyword_rules_runtime_receipts_with_delegated(
+    record: &CombinedCardRecord,
+    retained_delegated: Option<&[DelegatedKeywordClause]>,
+) -> Vec<ExactKeywordRulesRuntimeReceipt> {
     struct FaceSource<'a> {
         face_index: u16,
         name: &'a str,
@@ -2183,23 +2262,39 @@ fn compile_retained_keyword_rules_runtime_receipts(
             let Ok(clause_index) = u16::try_from(clause_index) else {
                 continue;
             };
-            let Ok(CompiledOracleClause::Delegated(delegated_clause)) =
-                compile_oracle_clause_backend_with_context(
-                    OracleClauseBackendInput {
-                        face_index: source.face_index,
-                        clause_index,
-                        source_name: source.name,
-                        source_type_line: source.type_line,
-                        oracle_clause,
-                        printed_keywords: &printed_keywords,
-                    },
-                    OracleClauseCardContext {
-                        layout: &layout,
-                        face_count,
-                    },
-                )
-            else {
-                continue;
+            let delegated_clause = if let Some(retained_delegated) = retained_delegated {
+                let address = crate::bounded_oracle_runtime::ClauseAddress {
+                    face_index: source.face_index,
+                    clause_index,
+                };
+                let Some(delegated) = retained_delegated
+                    .iter()
+                    .find(|clause| clause.address() == address)
+                    .cloned()
+                else {
+                    continue;
+                };
+                delegated
+            } else {
+                let Ok(CompiledOracleClause::Delegated(delegated)) =
+                    compile_oracle_clause_backend_with_context(
+                        OracleClauseBackendInput {
+                            face_index: source.face_index,
+                            clause_index,
+                            source_name: source.name,
+                            source_type_line: source.type_line,
+                            oracle_clause,
+                            printed_keywords: &printed_keywords,
+                        },
+                        OracleClauseCardContext {
+                            layout: &layout,
+                            face_count,
+                        },
+                    )
+                else {
+                    continue;
+                };
+                delegated
             };
             let keyword = delegated_clause.keyword_program().keyword();
             let Some(receipt) =
@@ -2224,10 +2319,23 @@ fn compile_retained_keyword_rules_runtime_receipts(
     candidates
         .into_iter()
         .flat_map(|((_, keyword), mut receipts)| {
+            let distinct_fragments = receipts
+                .iter()
+                .filter_map(|receipt| {
+                    receipt
+                        .keyword_rules
+                        .program
+                        .source()
+                        .oracle_fragment
+                        .as_deref()
+                        .map(|fragment| fragment.trim().to_ascii_lowercase())
+                })
+                .collect::<BTreeSet<_>>();
             if matches!(
                 keyword,
                 OfficialKeyword::Fear | OfficialKeyword::Shadow | OfficialKeyword::Landwalk
-            ) {
+            ) || (distinct_fragments.len() == receipts.len() && !distinct_fragments.is_empty())
+            {
                 receipts
             } else if receipts.len() == 1 {
                 vec![receipts.remove(0)]
@@ -2257,6 +2365,7 @@ fn sort_retained_runtime_receipts(receipts: &mut [RetainedRuntimeReceipt]) {
             })
     });
 }
+
 fn compile_retained_card(record: &CombinedCardRecord) -> CompiledCard {
     let retained_definition = retained_card_definition(record);
     let root = OracleCardInput {
@@ -3683,6 +3792,12 @@ fn keyword_receipt_dispositions(
     }
     let required_capability = match keyword.trim().to_ascii_lowercase().as_str() {
         "flashback" => Some(RuntimeCapability::ExactFlashbackKeyword),
+        "retrace" => Some(RuntimeCapability::ExactRetraceKeyword),
+        "jump-start" => Some(RuntimeCapability::ExactJumpStartKeyword),
+        "foretell" => Some(RuntimeCapability::ExactForetellKeyword),
+        "plot" => Some(RuntimeCapability::ExactPlotKeyword),
+        "warp" => Some(RuntimeCapability::ExactWarpKeyword),
+        "suspend" => Some(RuntimeCapability::ExactSuspendKeyword),
         "bargain" => Some(RuntimeCapability::ExactBargainKeyword),
         "imprint" => Some(RuntimeCapability::ExactImprintAbilityWord),
         "metalcraft" => Some(RuntimeCapability::ExactMetalcraftAbilityWord),
@@ -3691,6 +3806,11 @@ fn keyword_receipt_dispositions(
         "storm" => Some(RuntimeCapability::ExactStormKeyword),
         "overload" => Some(RuntimeCapability::ExactOverloadKeyword),
         "escape" => Some(RuntimeCapability::ExactEscapeKeyword),
+        "unearth" => Some(RuntimeCapability::ExactUnearthKeyword),
+        "madness" => Some(RuntimeCapability::ExactMadnessKeyword),
+        "buyback" => Some(RuntimeCapability::ExactBuybackKeyword),
+        "entwine" => Some(RuntimeCapability::ExactEntwineKeyword),
+        "replicate" => Some(RuntimeCapability::ExactReplicateKeyword),
         "enchant" => Some(RuntimeCapability::ExactEnchantKeyword),
         "equip" => Some(RuntimeCapability::ExactEquipKeyword),
         "scry" => Some(RuntimeCapability::ExactScryKeyword),
@@ -3723,6 +3843,7 @@ fn keyword_receipt_dispositions(
         "ward" => Some(LiveAbilityShape::Ward),
         "enchant" => Some(LiveAbilityShape::AuraSpellTargeting),
         "scry" => Some(LiveAbilityShape::ScryResolution),
+        "cumulative upkeep" => Some(LiveAbilityShape::CumulativeUpkeep),
         _ => None,
     };
     // Retained receipts are sorted by exact executor and source evidence. A
@@ -3746,12 +3867,50 @@ fn keyword_receipt_dispositions(
                         .eq_ignore_ascii_case(keyword),
                 }
         });
-        let receipt = matches.next();
-        (receipt.is_some() && matches.next().is_none())
-            .then_some(receipt)
-            .flatten()
+        matches.next()
     };
     let runtime_receipt = exact_keyword_receipt
+        .or_else(|| {
+            runtime_receipts.iter().find(|receipt| {
+                let RetainedRuntimeReceipt::Reviewed(reviewed) = receipt else {
+                    return false;
+                };
+                let ReviewedRuntimeProgram::CharacteristicOracle(compiled) = &reviewed.program
+                else {
+                    return false;
+                };
+                let CharacteristicOracleProgram::PureCombatKeyword(program) = &compiled.program
+                else {
+                    return false;
+                };
+                reviewed_combat_keyword_matches(program.owned_keyword, keyword)
+                    && runtime_receipt_has_exact_contract(receipt)
+                    && face_index
+                        .is_none_or(|face_index| compiled.ownership.face_index == face_index)
+            })
+        })
+        .or_else(|| {
+            runtime_receipts.iter().find(|receipt| {
+                let RetainedRuntimeReceipt::Reviewed(reviewed) = receipt else {
+                    return false;
+                };
+                let ReviewedRuntimeProgram::ContinuousTrigger(compiled) = &reviewed.program else {
+                    return false;
+                };
+                let ContinuousTriggerProgram::ContinuousCreatureModifier(program) =
+                    &compiled.program
+                else {
+                    return false;
+                };
+                program
+                    .granted_keywords
+                    .iter()
+                    .any(|granted| continuous_keyword_matches(*granted, keyword))
+                    && runtime_receipt_has_exact_contract(receipt)
+                    && face_index
+                        .is_none_or(|face_index| compiled.ownership.face_index == face_index)
+            })
+        })
         .or_else(|| {
             required_capability.and_then(|required| {
                 runtime_receipts.iter().find(|receipt| {
@@ -3797,10 +3956,27 @@ fn keyword_receipt_dispositions(
         })
         .or_else(|| {
             runtime_receipts.iter().find(|receipt| {
+                let RetainedRuntimeReceipt::LiveAbility(live) = receipt else {
+                    return false;
+                };
+                live.owns_exact_static_modifier_keyword(keyword)
+                    && complete_static_keyword_contract_by_name(keyword)
+                    && runtime_receipt_has_exact_contract(receipt)
+                    && face_index.is_none_or(|face_index| {
+                        live.source_evidence
+                            .covered_oracle_clauses
+                            .iter()
+                            .all(|clause| clause.face_index == face_index)
+                    })
+            })
+        })
+        .or_else(|| {
+            runtime_receipts.iter().find(|receipt| {
                 let RetainedRuntimeReceipt::BoundedOracle(bounded) = receipt else {
                     return false;
                 };
-                bounded.owns_exact_ability_word(keyword)
+                (bounded.owns_exact_ability_word(keyword)
+                    || bounded.owns_exact_static_keyword(keyword))
                     && runtime_receipt_has_exact_contract(receipt)
                     && face_index.is_none_or(|face_index| {
                         bounded
@@ -3860,6 +4036,59 @@ fn keyword_receipt_dispositions(
             }
         })
         .collect()
+}
+
+fn reviewed_combat_keyword_matches(keyword: CombatKeyword, printed: &str) -> bool {
+    let canonical = match keyword {
+        CombatKeyword::Deathtouch => "deathtouch",
+        CombatKeyword::DoubleStrike => "double strike",
+        CombatKeyword::FirstStrike => "first strike",
+        CombatKeyword::Flying => "flying",
+        CombatKeyword::Haste => "haste",
+        CombatKeyword::Hexproof => "hexproof",
+        CombatKeyword::Indestructible => "indestructible",
+        CombatKeyword::Lifelink => "lifelink",
+        CombatKeyword::Menace => "menace",
+        CombatKeyword::Reach => "reach",
+        CombatKeyword::Shroud => "shroud",
+        CombatKeyword::Trample => "trample",
+        CombatKeyword::Vigilance => "vigilance",
+        CombatKeyword::Defender => "defender",
+    };
+    printed.trim().eq_ignore_ascii_case(canonical)
+        && complete_static_keyword_contract_by_name(canonical)
+}
+
+fn complete_static_keyword_contract_by_name(keyword: &str) -> bool {
+    let official = match keyword.trim().to_ascii_lowercase().as_str() {
+        "deathtouch" => OfficialKeyword::Deathtouch,
+        "double strike" => OfficialKeyword::DoubleStrike,
+        "first strike" => OfficialKeyword::FirstStrike,
+        "flying" => OfficialKeyword::Flying,
+        "haste" => OfficialKeyword::Haste,
+        "hexproof" => OfficialKeyword::Hexproof,
+        "indestructible" => OfficialKeyword::Indestructible,
+        "lifelink" => OfficialKeyword::Lifelink,
+        "menace" => OfficialKeyword::Menace,
+        "reach" => OfficialKeyword::Reach,
+        "shroud" => OfficialKeyword::Shroud,
+        "trample" => OfficialKeyword::Trample,
+        "vigilance" => OfficialKeyword::Vigilance,
+        "defender" => OfficialKeyword::Defender,
+        _ => return false,
+    };
+    static_keyword_has_complete_production_contract(official)
+}
+
+fn continuous_keyword_matches(keyword: ContinuousKeyword, printed: &str) -> bool {
+    let canonical = match keyword {
+        ContinuousKeyword::DoubleStrike => "double strike",
+        ContinuousKeyword::Flying => "flying",
+        ContinuousKeyword::Lifelink => "lifelink",
+        ContinuousKeyword::Vigilance => "vigilance",
+    };
+    printed.trim().eq_ignore_ascii_case(canonical)
+        && complete_static_keyword_contract_by_name(canonical)
 }
 
 fn characteristic_subject_for_leaf(subject: &CoverageLeafSubject) -> Option<CharacteristicSubject> {
@@ -4114,11 +4343,33 @@ fn runtime_receipt_supports_metric(
             production_keyword_live_bridge_registry(),
         );
     }
+    if let RetainedRuntimeReceipt::Reviewed(reviewed) = receipt
+        && let ReviewedRuntimeProgram::CharacteristicOracle(compiled) = &reviewed.program
+        && let CharacteristicOracleProgram::PureCombatKeyword(program) = &compiled.program
+        && !complete_static_keyword_contract_by_name(match program.owned_keyword {
+            CombatKeyword::Deathtouch => "deathtouch",
+            CombatKeyword::DoubleStrike => "double strike",
+            CombatKeyword::FirstStrike => "first strike",
+            CombatKeyword::Flying => "flying",
+            CombatKeyword::Haste => "haste",
+            CombatKeyword::Hexproof => "hexproof",
+            CombatKeyword::Indestructible => "indestructible",
+            CombatKeyword::Lifelink => "lifelink",
+            CombatKeyword::Menace => "menace",
+            CombatKeyword::Reach => "reach",
+            CombatKeyword::Shroud => "shroud",
+            CombatKeyword::Trample => "trample",
+            CombatKeyword::Vigilance => "vigilance",
+            CombatKeyword::Defender => "defender",
+        })
+    {
+        return false;
+    }
     let (binding, _, _) = runtime_receipt_parts(receipt);
     executor_id_supports_metric(binding.executor_id, binding.executor_version, metric)
 }
 
-pub(crate) const KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION: &str = "keyword-live-bridge-registry/v1";
+pub(crate) const KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION: &str = "keyword-live-bridge-registry/v38";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct KeywordLiveBridgeRegistration {
@@ -4186,19 +4437,472 @@ const STATIC_ATTACK_LEGALITY_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] =
     LiveBridgeCapability::StaticKeywordInstallation,
     LiveBridgeCapability::CombatAttackLegality,
 ];
+const CHANGELING_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] =
+    &[LiveBridgeCapability::StaticKeywordInstallation];
 const VIGILANCE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
     LiveBridgeCapability::StaticKeywordInstallation,
     LiveBridgeCapability::CombatAttackDeclaration,
 ];
+const STATIC_TARGETING_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::TargetingLegality,
+];
+const STATIC_CAST_TIMING_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::CastTimingPermission,
+];
+const HASTE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::CombatAttackLegality,
+    LiveBridgeCapability::SummoningSicknessPermission,
+    LiveBridgeCapability::TapAbilityActivationLegality,
+];
+const INDESTRUCTIBLE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::DestructionPrevention,
+];
+const LIBRARY_ACTION_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] =
+    &[LiveBridgeCapability::LibraryProcedure];
+const REGENERATE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] =
+    &[LiveBridgeCapability::RegenerationReplacementLifecycle];
+const REGENERATE_TARGET_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::TargetingLegality,
+    LiveBridgeCapability::RegenerationReplacementLifecycle,
+];
+const REGENERATE_CONTROLLED_SET_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::ControlledObjectSetResolution,
+    LiveBridgeCapability::RegenerationReplacementLifecycle,
+];
+const ENCHANT_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::TargetingLegality,
+    LiveBridgeCapability::AttachmentLifecycle,
+];
+const EQUIP_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::TargetingLegality,
+    LiveBridgeCapability::ResourceCostPayment,
+    LiveBridgeCapability::AttachmentLifecycle,
+    LiveBridgeCapability::ActivatedAbilityExecution,
+];
+const COMBAT_EVASION_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::CombatBlockLegality,
+];
+const INTIMIDATE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::EffectiveColorCharacteristics,
+    LiveBridgeCapability::CombatBlockLegality,
+];
+const EXALTED_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::CombatAttackDeclaration,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::TemporaryPowerToughnessMutation,
+];
+const BUSHIDO_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::CombatBlockTransition,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::TemporaryPowerToughnessMutation,
+];
+const FLANKING_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::CombatBlockTransition,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::TemporaryPowerToughnessMutation,
+];
+const WITHER_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::DamageEventModification,
+    LiveBridgeCapability::CounterLifecycle,
+];
+const INFECT_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::DamageEventModification,
+    LiveBridgeCapability::CounterLifecycle,
+];
+const TOXIC_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::CombatDamageSteps,
+    LiveBridgeCapability::DamageTransaction,
+    LiveBridgeCapability::CounterLifecycle,
+    LiveBridgeCapability::PoisonCounterLifecycle,
+];
+const CONVOKE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::SpellCostPayment,
+    LiveBridgeCapability::CreatureTapCostPayment,
+];
+const KICKER_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::AdditionalCostPayment,
+    LiveBridgeCapability::LinkedAbilityState,
+];
+const FLASHBACK_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::AlternativeCastingLifecycle,
+    LiveBridgeCapability::ZoneChangeReplacement,
+];
+const MORPH_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::AlternativeCastingLifecycle,
+    LiveBridgeCapability::FaceDownCharacteristics,
+    LiveBridgeCapability::SpecialActionExecution,
+];
+const PROTECTION_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::CombatBlockLegality,
+    LiveBridgeCapability::DamagePrevention,
+    LiveBridgeCapability::TargetingLegality,
+    LiveBridgeCapability::AttachmentLifecycle,
+];
+const AFFINITY_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] =
+    &[LiveBridgeCapability::SpellCostPayment];
+const CASCADE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::AlternativeCastingLifecycle,
+    LiveBridgeCapability::SpellCostPayment,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::LibraryProcedure,
+];
+const FUSE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::AlternativeCastingLifecycle,
+    LiveBridgeCapability::SpellCostPayment,
+];
+const DELVE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::SpellCostPayment,
+    LiveBridgeCapability::ResourceCostPayment,
+];
+const ASCEND_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticEffectLifecycle,
+    LiveBridgeCapability::StateBasedActionLifecycle,
+    LiveBridgeCapability::LinkedAbilityState,
+];
+const AFTERMATH_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::AlternativeCastingLifecycle,
+    LiveBridgeCapability::SpellCostPayment,
+    LiveBridgeCapability::ZoneChangeReplacement,
+];
+const REBOUND_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::AlternativeCastingLifecycle,
+    LiveBridgeCapability::SpellCostPayment,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::ZoneChangeReplacement,
+];
+const DEATH_RETURN_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::CounterLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::ZoneChangeReplacement,
+    LiveBridgeCapability::ZoneChangeTriggerLifecycle,
+    LiveBridgeCapability::PublicZoneObjectTracking,
+    LiveBridgeCapability::TokenZoneLifecycle,
+];
+const EVOLVE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::CounterLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::ZoneChangeTriggerLifecycle,
+    LiveBridgeCapability::DynamicPowerToughnessEvaluation,
+    LiveBridgeCapability::EvolveEventTracking,
+];
+const MENTOR_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::CombatAttackDeclaration,
+    LiveBridgeCapability::TargetingLegality,
+    LiveBridgeCapability::CounterLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::DynamicPowerToughnessEvaluation,
+];
+const RENOWN_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::DamageTransaction,
+    LiveBridgeCapability::LinkedAbilityState,
+    LiveBridgeCapability::CounterLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::ZoneChangeTriggerLifecycle,
+    LiveBridgeCapability::BattlefieldDesignationLifecycle,
+];
+const START_YOUR_ENGINES_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::StaticEffectLifecycle,
+    LiveBridgeCapability::PlayerSpeedLifecycle,
+    LiveBridgeCapability::OpponentLifeLossEventTracking,
+    LiveBridgeCapability::StateBasedActionLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+];
+const IMPROVISE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticEffectLifecycle,
+    LiveBridgeCapability::SpellCostPayment,
+    LiveBridgeCapability::ResourceCostPayment,
+    LiveBridgeCapability::ArtifactTapCostPayment,
+];
+const EXTORT_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::OpponentLifeLossEventTracking,
+    LiveBridgeCapability::ResourceCostPayment,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::PlayerLifeTotalMutation,
+];
+const LIVING_WEAPON_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::TokenCreation,
+    LiveBridgeCapability::AttachmentLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::ZoneChangeTriggerLifecycle,
+];
+const BARGAIN_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticEffectLifecycle,
+    LiveBridgeCapability::TargetingLegality,
+    LiveBridgeCapability::AdditionalCostPayment,
+    LiveBridgeCapability::LinkedAbilityState,
+    LiveBridgeCapability::SpellCostPayment,
+    LiveBridgeCapability::PermanentSacrifice,
+];
+const RETRACE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticEffectLifecycle,
+    LiveBridgeCapability::AdditionalCostPayment,
+    LiveBridgeCapability::AlternativeCastingLifecycle,
+    LiveBridgeCapability::SpellCostPayment,
+];
+const EXPLOIT_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::ZoneChangeReplacement,
+    LiveBridgeCapability::ZoneChangeTriggerLifecycle,
+    LiveBridgeCapability::PermanentSacrifice,
+    LiveBridgeCapability::ExploitEventTracking,
+    LiveBridgeCapability::OptionalCreatureSacrificeChoice,
+];
+const SOULBOND_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::ZoneChangeTriggerLifecycle,
+    LiveBridgeCapability::CreaturePairingLifecycle,
+    LiveBridgeCapability::ControlChangeTracking,
+];
+const UMBRA_ARMOR_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticEffectLifecycle,
+    LiveBridgeCapability::DamagePrevention,
+    LiveBridgeCapability::DestructionPrevention,
+    LiveBridgeCapability::AttachmentLifecycle,
+    LiveBridgeCapability::ZoneChangeReplacement,
+];
+const BACKUP_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::TargetingLegality,
+    LiveBridgeCapability::CounterLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::ZoneChangeTriggerLifecycle,
+    LiveBridgeCapability::TemporaryAbilityGrantLifecycle,
+];
+const MYRIAD_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::CombatAttackDeclaration,
+    LiveBridgeCapability::TokenCreation,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::TokenZoneLifecycle,
+    LiveBridgeCapability::DelayedTriggeredAbilityLifecycle,
+];
+const CIPHER_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::DamageTransaction,
+    LiveBridgeCapability::LinkedAbilityState,
+    LiveBridgeCapability::AlternativeCastingLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::PublicZoneObjectTracking,
+    LiveBridgeCapability::SpellCopyLifecycle,
+    LiveBridgeCapability::CastWithoutManaCost,
+];
+const COMMANDER_PARTNER_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::CommanderDeckConstructionLifecycle,
+    LiveBridgeCapability::CommanderPairRulesLifecycle,
+];
+const SPREE_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticEffectLifecycle,
+    LiveBridgeCapability::TargetingLegality,
+    LiveBridgeCapability::AdditionalCostPayment,
+    LiveBridgeCapability::SpellCostPayment,
+    LiveBridgeCapability::ModalSpellChoice,
+    LiveBridgeCapability::ModeAssociatedAdditionalCostBinding,
+];
+const DAY_NIGHT_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::StaticKeywordInstallation,
+    LiveBridgeCapability::StaticEffectLifecycle,
+    LiveBridgeCapability::GlobalDayNightLifecycle,
+    LiveBridgeCapability::TurnSpellCountTracking,
+    LiveBridgeCapability::DoubleFacedTransformLifecycle,
+];
+const CUMULATIVE_UPKEEP_LIVE_BRIDGE_REQUIREMENTS: &[LiveBridgeCapability] = &[
+    LiveBridgeCapability::ResourceCostPayment,
+    LiveBridgeCapability::CounterLifecycle,
+    LiveBridgeCapability::TriggeredAbilityResolution,
+    LiveBridgeCapability::PermanentSacrifice,
+];
 const DEVOID_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.devoid-characteristics";
+const CHANGELING_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.changeling-characteristics";
 const STATIC_KEYWORD_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.static-state";
+const ENCHANT_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.enchant-lifecycle";
+const EQUIP_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.equip-lifecycle";
+const COMBAT_EVASION_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.combat-evasion";
+const COMBAT_TRIGGER_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.combat-trigger";
+const WITHER_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.wither-damage";
+const POISON_DAMAGE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.poison-damage";
+const CONVOKE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.convoke-payment";
+const KICKER_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.kicker-payment";
+const FLASHBACK_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.flashback-lifecycle";
+const MORPH_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.morph-lifecycle";
+const PROTECTION_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.protection-legality";
+const AFFINITY_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.affinity-payment";
+const DELVE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.delve-payment";
+const ASCEND_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.ascend-designation";
+const AFTERMATH_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.aftermath-lifecycle";
+const DEATH_RETURN_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.death-return-lifecycle";
+const CREATURE_COUNTER_TRIGGER_PRODUCTION_ADAPTER_ID: &str =
+    "abstract-play.keyword.creature-counter-trigger";
+const PLAYER_SPEED_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.player-speed";
+const IMPROVISE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.improvise-payment";
+const EXTORT_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.extort-resolution";
+const LIVING_WEAPON_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.living-weapon";
+const BARGAIN_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.bargain-payment";
+const RETRACE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.retrace-cast";
+const EXPLOIT_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.exploit-resolution";
+const SOULBOND_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.soulbond-pairing";
+const UMBRA_ARMOR_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.umbra-armor";
+const BACKUP_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.backup";
+const MYRIAD_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.myriad";
+const CIPHER_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.cipher";
+const COMMANDER_PARTNER_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.commander-partner";
+const REBOUND_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.rebound-lifecycle";
+const CASCADE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.cascade-resolution";
+const SPREE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.spree-casting";
+const DAY_NIGHT_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.day-night-lifecycle";
+const FUSE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.fuse-casting";
+const CUMULATIVE_UPKEEP_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.cumulative-upkeep";
+const MILL_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.mill";
+const REGENERATE_PRODUCTION_ADAPTER_ID: &str = "abstract-play.keyword.regenerate";
 
-static PRODUCTION_KEYWORD_LIVE_BRIDGE_REGISTRATIONS: [KeywordLiveBridgeRegistration; 3] = [
+static PRODUCTION_KEYWORD_LIVE_BRIDGE_REGISTRATIONS: [KeywordLiveBridgeRegistration; 63] = [
+    KeywordLiveBridgeRegistration::new(
+        MILL_PRODUCTION_ADAPTER_ID,
+        MILL_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Mill,
+        LIBRARY_ACTION_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        REGENERATE_PRODUCTION_ADAPTER_ID,
+        REGENERATE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Regenerate,
+        REGENERATE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        "abstract-play.keyword.regenerate-controlled-set",
+        REGENERATE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Regenerate,
+        REGENERATE_CONTROLLED_SET_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        "abstract-play.keyword.regenerate-target",
+        REGENERATE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Regenerate,
+        REGENERATE_TARGET_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        PROTECTION_PRODUCTION_ADAPTER_ID,
+        PROTECTION_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Protection,
+        PROTECTION_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        KICKER_PRODUCTION_ADAPTER_ID,
+        KICKER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Kicker,
+        KICKER_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        FLASHBACK_PRODUCTION_ADAPTER_ID,
+        FLASHBACK_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Flashback,
+        FLASHBACK_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        MORPH_PRODUCTION_ADAPTER_ID,
+        MORPH_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Morph,
+        MORPH_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
+        STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Flash,
+        STATIC_CAST_TIMING_LIVE_BRIDGE_REQUIREMENTS,
+    ),
     KeywordLiveBridgeRegistration::new(
         STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
         STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
         OfficialKeyword::Defender,
         STATIC_ATTACK_LEGALITY_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        CHANGELING_PRODUCTION_ADAPTER_ID,
+        CHANGELING_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Changeling,
+        CHANGELING_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        POISON_DAMAGE_PRODUCTION_ADAPTER_ID,
+        POISON_DAMAGE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Infect,
+        INFECT_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_EVASION_PRODUCTION_ADAPTER_ID,
+        COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Fear,
+        COMBAT_EVASION_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_EVASION_PRODUCTION_ADAPTER_ID,
+        COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Shadow,
+        COMBAT_EVASION_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_EVASION_PRODUCTION_ADAPTER_ID,
+        COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Landwalk,
+        COMBAT_EVASION_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        AFFINITY_PRODUCTION_ADAPTER_ID,
+        AFFINITY_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Affinity,
+        AFFINITY_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        CASCADE_PRODUCTION_ADAPTER_ID,
+        CASCADE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Cascade,
+        CASCADE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        DELVE_PRODUCTION_ADAPTER_ID,
+        DELVE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Delve,
+        DELVE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        FUSE_PRODUCTION_ADAPTER_ID,
+        FUSE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Fuse,
+        FUSE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        AFTERMATH_PRODUCTION_ADAPTER_ID,
+        AFTERMATH_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Aftermath,
+        AFTERMATH_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        REBOUND_PRODUCTION_ADAPTER_ID,
+        REBOUND_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Rebound,
+        REBOUND_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_TRIGGER_PRODUCTION_ADAPTER_ID,
+        COMBAT_TRIGGER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Exalted,
+        EXALTED_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        ASCEND_PRODUCTION_ADAPTER_ID,
+        ASCEND_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Ascend,
+        ASCEND_LIVE_BRIDGE_REQUIREMENTS,
     ),
     KeywordLiveBridgeRegistration::new(
         DEVOID_PRODUCTION_ADAPTER_ID,
@@ -4207,10 +4911,238 @@ static PRODUCTION_KEYWORD_LIVE_BRIDGE_REGISTRATIONS: [KeywordLiveBridgeRegistrat
         DEVOID_LIVE_BRIDGE_REQUIREMENTS,
     ),
     KeywordLiveBridgeRegistration::new(
+        CONVOKE_PRODUCTION_ADAPTER_ID,
+        CONVOKE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Convoke,
+        CONVOKE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        EQUIP_PRODUCTION_ADAPTER_ID,
+        EQUIP_PRODUCTION_RUNTIME_VERSION,
+        OfficialKeyword::Equip,
+        EQUIP_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        EQUIP_PRODUCTION_ADAPTER_ID,
+        EQUIP_PRODUCTION_RUNTIME_VERSION,
+        OfficialKeyword::Reconfigure,
+        EQUIP_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        ENCHANT_PRODUCTION_ADAPTER_ID,
+        ENCHANT_PRODUCTION_RUNTIME_VERSION,
+        OfficialKeyword::Enchant,
+        ENCHANT_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        CUMULATIVE_UPKEEP_PRODUCTION_ADAPTER_ID,
+        CUMULATIVE_UPKEEP_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::CumulativeUpkeep,
+        CUMULATIVE_UPKEEP_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
+        STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Haste,
+        HASTE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
         STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
         STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
         OfficialKeyword::Vigilance,
         VIGILANCE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
+        STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Hexproof,
+        STATIC_TARGETING_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
+        STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Shroud,
+        STATIC_TARGETING_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        STATIC_KEYWORD_PRODUCTION_ADAPTER_ID,
+        STATIC_KEYWORD_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Indestructible,
+        INDESTRUCTIBLE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_TRIGGER_PRODUCTION_ADAPTER_ID,
+        COMBAT_TRIGGER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Bushido,
+        BUSHIDO_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        WITHER_PRODUCTION_ADAPTER_ID,
+        WITHER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Wither,
+        WITHER_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_EVASION_PRODUCTION_ADAPTER_ID,
+        COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Horsemanship,
+        COMBAT_EVASION_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_TRIGGER_PRODUCTION_ADAPTER_ID,
+        COMBAT_TRIGGER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Flanking,
+        FLANKING_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        DEATH_RETURN_PRODUCTION_ADAPTER_ID,
+        DEATH_RETURN_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Persist,
+        DEATH_RETURN_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        DEATH_RETURN_PRODUCTION_ADAPTER_ID,
+        DEATH_RETURN_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Undying,
+        DEATH_RETURN_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        POISON_DAMAGE_PRODUCTION_ADAPTER_ID,
+        POISON_DAMAGE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Toxic,
+        TOXIC_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        DAY_NIGHT_PRODUCTION_ADAPTER_ID,
+        DAY_NIGHT_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Daybound,
+        DAY_NIGHT_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        DAY_NIGHT_PRODUCTION_ADAPTER_ID,
+        DAY_NIGHT_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Nightbound,
+        DAY_NIGHT_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        PLAYER_SPEED_PRODUCTION_ADAPTER_ID,
+        PLAYER_SPEED_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::StartYourEngines,
+        START_YOUR_ENGINES_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMMANDER_PARTNER_PRODUCTION_ADAPTER_ID,
+        COMMANDER_PARTNER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::ChooseABackground,
+        COMMANDER_PARTNER_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMMANDER_PARTNER_PRODUCTION_ADAPTER_ID,
+        COMMANDER_PARTNER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::DoctorsCompanion,
+        COMMANDER_PARTNER_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        EXPLOIT_PRODUCTION_ADAPTER_ID,
+        EXPLOIT_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Exploit,
+        EXPLOIT_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        SOULBOND_PRODUCTION_ADAPTER_ID,
+        SOULBOND_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Soulbond,
+        SOULBOND_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        CREATURE_COUNTER_TRIGGER_PRODUCTION_ADAPTER_ID,
+        CREATURE_COUNTER_TRIGGER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Evolve,
+        EVOLVE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        IMPROVISE_PRODUCTION_ADAPTER_ID,
+        IMPROVISE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Improvise,
+        IMPROVISE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_EVASION_PRODUCTION_ADAPTER_ID,
+        COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Intimidate,
+        INTIMIDATE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        COMBAT_EVASION_PRODUCTION_ADAPTER_ID,
+        COMBAT_EVASION_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Skulk,
+        COMBAT_EVASION_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        SPREE_PRODUCTION_ADAPTER_ID,
+        SPREE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Spree,
+        SPREE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        BARGAIN_PRODUCTION_ADAPTER_ID,
+        BARGAIN_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Bargain,
+        BARGAIN_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        CREATURE_COUNTER_TRIGGER_PRODUCTION_ADAPTER_ID,
+        CREATURE_COUNTER_TRIGGER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Mentor,
+        MENTOR_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        EXTORT_PRODUCTION_ADAPTER_ID,
+        EXTORT_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Extort,
+        EXTORT_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        LIVING_WEAPON_PRODUCTION_ADAPTER_ID,
+        LIVING_WEAPON_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::LivingWeapon,
+        LIVING_WEAPON_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        MYRIAD_PRODUCTION_ADAPTER_ID,
+        MYRIAD_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Myriad,
+        MYRIAD_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        RETRACE_PRODUCTION_ADAPTER_ID,
+        RETRACE_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Retrace,
+        RETRACE_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        BACKUP_PRODUCTION_ADAPTER_ID,
+        BACKUP_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Backup,
+        BACKUP_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        UMBRA_ARMOR_PRODUCTION_ADAPTER_ID,
+        UMBRA_ARMOR_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::UmbraArmor,
+        UMBRA_ARMOR_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        CIPHER_PRODUCTION_ADAPTER_ID,
+        CIPHER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Cipher,
+        CIPHER_LIVE_BRIDGE_REQUIREMENTS,
+    ),
+    KeywordLiveBridgeRegistration::new(
+        CREATURE_COUNTER_TRIGGER_PRODUCTION_ADAPTER_ID,
+        CREATURE_COUNTER_TRIGGER_PRODUCTION_BRIDGE_VERSION,
+        OfficialKeyword::Renown,
+        RENOWN_LIVE_BRIDGE_REQUIREMENTS,
     ),
 ];
 
@@ -4220,6 +5152,7 @@ fn production_keyword_live_bridge_registry() -> KeywordLiveBridgeRegistry {
         registrations: &PRODUCTION_KEYWORD_LIVE_BRIDGE_REGISTRATIONS,
     }
 }
+
 fn keyword_live_bridge_registry_has_registration(
     registry: KeywordLiveBridgeRegistry,
     keyword: OfficialKeyword,
@@ -4228,14 +5161,14 @@ fn keyword_live_bridge_registry_has_registration(
     if !registry.has_exact_contract() {
         return false;
     }
-    let mut registrations = registry
+    let registrations = registry
         .registrations
         .iter()
-        .filter(|registration| registration.keyword == keyword);
-    let Some(registration) = registrations.next() else {
-        return false;
-    };
-    registrations.next().is_none() && registration.capabilities == required_capabilities
+        .filter(|registration| registration.keyword == keyword)
+        .collect::<Vec<_>>();
+    registrations
+        .iter()
+        .any(|registration| registration.capabilities == required_capabilities)
 }
 
 fn keyword_live_bridge_registration_dependency(
@@ -4249,9 +5182,67 @@ fn keyword_live_bridge_registration_dependency(
 
 fn keyword_live_bridge_rule_dependency(keyword: OfficialKeyword) -> Option<&'static str> {
     match keyword {
+        OfficialKeyword::Mill => Some("701.17a"),
+        OfficialKeyword::Regenerate => Some("701.19a"),
         OfficialKeyword::Defender => Some("702.3a"),
+        OfficialKeyword::Changeling => Some("702.73a"),
         OfficialKeyword::Devoid => Some("702.114a"),
+        OfficialKeyword::Equip => Some("702.6a"),
+        OfficialKeyword::Reconfigure => Some("702.151a"),
+        OfficialKeyword::Fear => Some("702.36a"),
+        OfficialKeyword::Shadow => Some("702.28a"),
+        OfficialKeyword::Landwalk => Some("702.14a"),
+        OfficialKeyword::Intimidate => Some("702.13a"),
+        OfficialKeyword::Skulk => Some("702.108a"),
+        OfficialKeyword::Spree => Some("702.172a"),
+        OfficialKeyword::Enchant => Some("702.5a"),
+        OfficialKeyword::CumulativeUpkeep => Some("702.24a"),
         OfficialKeyword::Vigilance => Some("702.20a"),
+        OfficialKeyword::Shroud => Some("702.18a"),
+        OfficialKeyword::Exalted => Some("702.83a"),
+        OfficialKeyword::Bushido => Some("702.45a"),
+        OfficialKeyword::Horsemanship => Some("702.31a"),
+        OfficialKeyword::Flanking => Some("702.25a"),
+        OfficialKeyword::Wither => Some("702.80a"),
+        OfficialKeyword::Infect => Some("702.90a"),
+        OfficialKeyword::Toxic => Some("702.164a"),
+        OfficialKeyword::Daybound => Some("702.145b"),
+        OfficialKeyword::Nightbound => Some("702.145e"),
+        OfficialKeyword::Convoke => Some("702.51a"),
+        OfficialKeyword::Kicker => Some("702.33a"),
+        OfficialKeyword::Protection => Some("702.16a"),
+        OfficialKeyword::Affinity => Some("702.41a"),
+        OfficialKeyword::Cascade => Some("702.85a"),
+        OfficialKeyword::Delve => Some("702.66a"),
+        OfficialKeyword::Fuse => Some("702.102a"),
+        OfficialKeyword::Ascend => Some("702.131a"),
+        OfficialKeyword::Aftermath => Some("702.127a"),
+        OfficialKeyword::Rebound => Some("702.88a"),
+        OfficialKeyword::Persist => Some("702.79a"),
+        OfficialKeyword::Undying => Some("702.93a"),
+        OfficialKeyword::Evolve => Some("702.100a"),
+        OfficialKeyword::Mentor => Some("702.134a"),
+        OfficialKeyword::Renown => Some("702.112a"),
+        OfficialKeyword::StartYourEngines => Some("702.179a"),
+        OfficialKeyword::ChooseABackground => Some("702.124k"),
+        OfficialKeyword::DoctorsCompanion => Some("702.124m"),
+        OfficialKeyword::Improvise => Some("702.126a"),
+        OfficialKeyword::Extort => Some("702.101a"),
+        OfficialKeyword::LivingWeapon => Some("702.92a"),
+        OfficialKeyword::Bargain => Some("702.166a"),
+        OfficialKeyword::Retrace => Some("702.81a"),
+        OfficialKeyword::Exploit => Some("702.110a"),
+        OfficialKeyword::Soulbond => Some("702.95a"),
+        OfficialKeyword::Myriad => Some("702.116a"),
+        OfficialKeyword::Backup => Some("702.165a"),
+        OfficialKeyword::UmbraArmor => Some("702.89a"),
+        OfficialKeyword::Cipher => Some("702.99a"),
+        OfficialKeyword::Flashback => Some("702.34a"),
+        OfficialKeyword::Morph => Some("702.37a"),
+        OfficialKeyword::Flash => Some("702.8a"),
+        OfficialKeyword::Haste => Some("702.10a"),
+        OfficialKeyword::Hexproof => Some("702.11a"),
+        OfficialKeyword::Indestructible => Some("702.12b"),
         _ => None,
     }
 }
@@ -4261,6 +5252,254 @@ fn required_keyword_live_bridge_capabilities(
     metric: ExecutionMetric,
 ) -> Option<&'static [LiveBridgeCapability]> {
     match (keyword, metric) {
+        (
+            OfficialKeyword::Mill,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(LIBRARY_ACTION_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Regenerate,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(REGENERATE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Flash,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(STATIC_CAST_TIMING_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Haste,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(HASTE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Hexproof,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(STATIC_TARGETING_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Indestructible,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(INDESTRUCTIBLE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Protection,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(PROTECTION_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Affinity,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(AFFINITY_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Cascade,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(CASCADE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Delve,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(DELVE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Fuse,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(FUSE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Ascend,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(ASCEND_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Aftermath,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(AFTERMATH_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Rebound,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(REBOUND_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Persist | OfficialKeyword::Undying,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(DEATH_RETURN_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Evolve,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(EVOLVE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Mentor,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(MENTOR_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Renown,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(RENOWN_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::StartYourEngines,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(START_YOUR_ENGINES_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::ChooseABackground | OfficialKeyword::DoctorsCompanion,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(COMMANDER_PARTNER_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Improvise,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(IMPROVISE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Extort,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(EXTORT_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::LivingWeapon,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(LIVING_WEAPON_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Bargain,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(BARGAIN_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Retrace,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(RETRACE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Exploit,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(EXPLOIT_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Soulbond,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(SOULBOND_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::UmbraArmor,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(UMBRA_ARMOR_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Backup,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(BACKUP_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Myriad,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(MYRIAD_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Cipher,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(CIPHER_LIVE_BRIDGE_REQUIREMENTS),
         (
             OfficialKeyword::Devoid,
             ExecutionMetric::FunctionalMulligan
@@ -4278,6 +5517,65 @@ fn required_keyword_live_bridge_capabilities(
             | ExecutionMetric::BracketRating,
         ) => Some(STATIC_ATTACK_LEGALITY_LIVE_BRIDGE_REQUIREMENTS),
         (
+            OfficialKeyword::Changeling,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(CHANGELING_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Enchant,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(ENCHANT_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::CumulativeUpkeep,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(CUMULATIVE_UPKEEP_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Equip | OfficialKeyword::Reconfigure,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(EQUIP_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Fear
+            | OfficialKeyword::Shadow
+            | OfficialKeyword::Landwalk
+            | OfficialKeyword::Skulk,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(COMBAT_EVASION_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Spree,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(SPREE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Intimidate,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(INTIMIDATE_LIVE_BRIDGE_REQUIREMENTS),
+        (
             OfficialKeyword::Vigilance,
             ExecutionMetric::FunctionalMulligan
             | ExecutionMetric::ManaConsistency
@@ -4286,73 +5584,121 @@ fn required_keyword_live_bridge_capabilities(
             | ExecutionMetric::BracketRating,
         ) => Some(VIGILANCE_LIVE_BRIDGE_REQUIREMENTS),
         (
-            OfficialKeyword::Mill
-            | OfficialKeyword::Regenerate
-            | OfficialKeyword::Protection
-            | OfficialKeyword::Flying
+            OfficialKeyword::Shroud,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(STATIC_TARGETING_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Exalted,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(EXALTED_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Bushido,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(BUSHIDO_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Horsemanship,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(COMBAT_EVASION_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Flanking,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(FLANKING_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Wither,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(WITHER_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Infect,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(INFECT_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Toxic,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(TOXIC_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Daybound | OfficialKeyword::Nightbound,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(DAY_NIGHT_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Convoke,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(CONVOKE_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Kicker,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(KICKER_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Flashback,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(FLASHBACK_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Morph,
+            ExecutionMetric::FunctionalMulligan
+            | ExecutionMetric::ManaConsistency
+            | ExecutionMetric::GoldfishTiming
+            | ExecutionMetric::InterferenceTiming
+            | ExecutionMetric::BracketRating,
+        ) => Some(MORPH_LIVE_BRIDGE_REQUIREMENTS),
+        (
+            OfficialKeyword::Flying
             | OfficialKeyword::Fight
             | OfficialKeyword::Investigate
-            | OfficialKeyword::Kicker
-            | OfficialKeyword::Flashback
-            | OfficialKeyword::Morph
-            | OfficialKeyword::Flash
             | OfficialKeyword::Menace
             | OfficialKeyword::Reach
-            | OfficialKeyword::Changeling
-            | OfficialKeyword::Infect
-            | OfficialKeyword::Fear
-            | OfficialKeyword::Shadow
-            | OfficialKeyword::Landwalk
-            | OfficialKeyword::Affinity
-            | OfficialKeyword::Cascade
-            | OfficialKeyword::Delve
-            | OfficialKeyword::Fuse
-            | OfficialKeyword::Aftermath
-            | OfficialKeyword::Rebound
-            | OfficialKeyword::Exalted
-            | OfficialKeyword::Bushido
-            | OfficialKeyword::Wither
-            | OfficialKeyword::Horsemanship
-            | OfficialKeyword::Flanking
-            | OfficialKeyword::Persist
-            | OfficialKeyword::Undying
-            | OfficialKeyword::Toxic
-            | OfficialKeyword::Daybound
-            | OfficialKeyword::Nightbound
-            | OfficialKeyword::StartYourEngines
-            | OfficialKeyword::ChooseABackground
-            | OfficialKeyword::DoctorsCompanion
-            | OfficialKeyword::Exploit
-            | OfficialKeyword::Soulbond
-            | OfficialKeyword::Evolve
-            | OfficialKeyword::Improvise
-            | OfficialKeyword::Intimidate
-            | OfficialKeyword::Spree
-            | OfficialKeyword::Bargain
-            | OfficialKeyword::Mentor
-            | OfficialKeyword::Extort
-            | OfficialKeyword::LivingWeapon
-            | OfficialKeyword::Myriad
-            | OfficialKeyword::Retrace
-            | OfficialKeyword::Backup
-            | OfficialKeyword::UmbraArmor
-            | OfficialKeyword::Cipher
-            | OfficialKeyword::Renown
-            | OfficialKeyword::Ascend
-            | OfficialKeyword::Convoke
-            | OfficialKeyword::Equip
-            | OfficialKeyword::Enchant
             | OfficialKeyword::Saga
-            | OfficialKeyword::CumulativeUpkeep
-            | OfficialKeyword::Haste
             | OfficialKeyword::Trample
             | OfficialKeyword::Deathtouch
             | OfficialKeyword::Lifelink
             | OfficialKeyword::FirstStrike
             | OfficialKeyword::DoubleStrike
-            | OfficialKeyword::Hexproof
-            | OfficialKeyword::Shroud
-            | OfficialKeyword::Indestructible
             | OfficialKeyword::Prowess
             | OfficialKeyword::Ward
             | OfficialKeyword::Scry
@@ -4361,7 +5707,67 @@ fn required_keyword_live_bridge_capabilities(
             _,
         )
         | (
-            OfficialKeyword::Devoid | OfficialKeyword::Defender | OfficialKeyword::Vigilance,
+            OfficialKeyword::Devoid
+            | OfficialKeyword::Mill
+            | OfficialKeyword::Regenerate
+            | OfficialKeyword::Defender
+            | OfficialKeyword::Changeling
+            | OfficialKeyword::Enchant
+            | OfficialKeyword::Equip
+            | OfficialKeyword::Fear
+            | OfficialKeyword::Intimidate
+            | OfficialKeyword::Landwalk
+            | OfficialKeyword::Reconfigure
+            | OfficialKeyword::Shadow
+            | OfficialKeyword::Skulk
+            | OfficialKeyword::Spree
+            | OfficialKeyword::Vigilance
+            | OfficialKeyword::Shroud
+            | OfficialKeyword::Exalted
+            | OfficialKeyword::Bushido
+            | OfficialKeyword::Wither
+            | OfficialKeyword::Infect
+            | OfficialKeyword::Toxic
+            | OfficialKeyword::Daybound
+            | OfficialKeyword::Nightbound
+            | OfficialKeyword::Convoke
+            | OfficialKeyword::CumulativeUpkeep
+            | OfficialKeyword::Kicker
+            | OfficialKeyword::Protection
+            | OfficialKeyword::Affinity
+            | OfficialKeyword::Cascade
+            | OfficialKeyword::Delve
+            | OfficialKeyword::Fuse
+            | OfficialKeyword::Ascend
+            | OfficialKeyword::Aftermath
+            | OfficialKeyword::Rebound
+            | OfficialKeyword::Persist
+            | OfficialKeyword::Undying
+            | OfficialKeyword::Evolve
+            | OfficialKeyword::Mentor
+            | OfficialKeyword::Renown
+            | OfficialKeyword::StartYourEngines
+            | OfficialKeyword::ChooseABackground
+            | OfficialKeyword::DoctorsCompanion
+            | OfficialKeyword::Improvise
+            | OfficialKeyword::Extort
+            | OfficialKeyword::LivingWeapon
+            | OfficialKeyword::Bargain
+            | OfficialKeyword::Retrace
+            | OfficialKeyword::Exploit
+            | OfficialKeyword::Soulbond
+            | OfficialKeyword::Myriad
+            | OfficialKeyword::Backup
+            | OfficialKeyword::UmbraArmor
+            | OfficialKeyword::Cipher
+            | OfficialKeyword::Flashback
+            | OfficialKeyword::Morph
+            | OfficialKeyword::Flash
+            | OfficialKeyword::Haste
+            | OfficialKeyword::Hexproof
+            | OfficialKeyword::Indestructible
+            | OfficialKeyword::Horsemanship
+            | OfficialKeyword::Flanking,
             ExecutionMetric::RawOpeningComposition | ExecutionMetric::SynergyDescription,
         ) => None,
     }
@@ -4376,10 +5782,17 @@ pub(crate) fn keyword_rules_receipt_supports_metric_with_gate(
         return false;
     }
     let keyword = receipt.keyword_rules.keyword;
-    let Some(required) = required_keyword_live_bridge_capabilities(keyword, metric) else {
+    let Some(metric_required) = required_keyword_live_bridge_capabilities(keyword, metric) else {
         return false;
     };
-    if receipt.delegated_clause.required_live_bridge_capabilities() != required {
+    let required = if keyword == OfficialKeyword::Regenerate {
+        receipt.delegated_clause.required_live_bridge_capabilities()
+    } else {
+        metric_required
+    };
+    if keyword != OfficialKeyword::Regenerate
+        && receipt.delegated_clause.required_live_bridge_capabilities() != required
+    {
         return false;
     }
     keyword_live_bridge_registry_has_registration(registry, keyword, required)
@@ -4533,6 +5946,7 @@ fn executor_id_matches_version(executor_id: &str, executor_version: &str) -> boo
                 | "abstract-play.bounded-oracle.static"
                 | "abstract-play.bounded-oracle.replacement"
                 | "abstract-play.bounded-oracle.modal"
+                | "abstract-play.bounded-oracle.typed-standalone"
                 | "abstract-play.bounded-oracle.special-action"
         ),
         PRINTED_COST_RUNTIME_EXECUTOR_VERSION => executor_id == PRINTED_COST_RUNTIME_EXECUTOR_ID,
@@ -4621,10 +6035,15 @@ fn executor_binding_supports_metric(binding: &ExecutorBinding, metric: Execution
             .iter()
             .copied()
             .filter(|registration| {
-                let Some(required) =
+                let Some(metric_required) =
                     required_keyword_live_bridge_capabilities(registration.keyword, metric)
                 else {
                     return false;
+                };
+                let required = if registration.keyword == OfficialKeyword::Regenerate {
+                    registration.capabilities
+                } else {
+                    metric_required
                 };
                 let Some(rule_dependency) =
                     keyword_live_bridge_rule_dependency(registration.keyword)
@@ -4781,6 +6200,33 @@ fn executor_binding(
     }
     if capabilities.contains(&RuntimeCapability::ExactFlashbackKeyword) {
         rule_dependencies.push("CR 702.34a".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:flashback".into());
+        }
+    }
+    if capabilities.contains(&RuntimeCapability::ExactRetraceKeyword) {
+        rule_dependencies.push("CR 702.81a".into());
+        rule_dependencies.push("bounded-mechanic:retrace".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactJumpStartKeyword) {
+        rule_dependencies.push("CR 702.133a".into());
+        rule_dependencies.push("bounded-mechanic:jump-start".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactForetellKeyword) {
+        rule_dependencies.push("CR 702.143a".into());
+        rule_dependencies.push("bounded-mechanic:foretell".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactPlotKeyword) {
+        rule_dependencies.push("CR 702.170a".into());
+        rule_dependencies.push("bounded-mechanic:plot".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactWarpKeyword) {
+        rule_dependencies.push("CR 702.185a".into());
+        rule_dependencies.push("bounded-mechanic:warp".into());
+    }
+    if capabilities.contains(&RuntimeCapability::ExactSuspendKeyword) {
+        rule_dependencies.push("CR 702.62a".into());
+        rule_dependencies.push("bounded-mechanic:suspend".into());
     }
     if capabilities.contains(&RuntimeCapability::ExactBargainKeyword) {
         rule_dependencies.push("CR 702.166a".into());
@@ -4861,12 +6307,51 @@ fn executor_binding(
     }
     if capabilities.contains(&RuntimeCapability::ExactStormKeyword) {
         rule_dependencies.push("CR 702.40".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:storm".into());
+        }
     }
     if capabilities.contains(&RuntimeCapability::ExactOverloadKeyword) {
         rule_dependencies.push("CR 702.96a".into());
     }
     if capabilities.contains(&RuntimeCapability::ExactEscapeKeyword) {
         rule_dependencies.push("CR 702.138a".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:escape".into());
+        }
+    }
+    if capabilities.contains(&RuntimeCapability::ExactUnearthKeyword) {
+        rule_dependencies.push("CR 702.84a".into());
+        rule_dependencies.push("CR 702.84b".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:unearth".into());
+        }
+    }
+    if capabilities.contains(&RuntimeCapability::ExactMadnessKeyword) {
+        rule_dependencies.push("CR 702.35a".into());
+        rule_dependencies.push("CR 702.35b".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:madness".into());
+        }
+    }
+    if capabilities.contains(&RuntimeCapability::ExactBuybackKeyword) {
+        rule_dependencies.push("CR 702.27a".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:buyback".into());
+        }
+    }
+    if capabilities.contains(&RuntimeCapability::ExactEntwineKeyword) {
+        rule_dependencies.push("CR 702.42a".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:entwine".into());
+        }
+    }
+    if capabilities.contains(&RuntimeCapability::ExactReplicateKeyword) {
+        rule_dependencies.push("CR 702.56a".into());
+        rule_dependencies.push("CR 702.56b".into());
+        if matches!(receipt, RetainedRuntimeReceipt::BoundedOracle(_)) {
+            rule_dependencies.push("bounded-mechanic:replicate".into());
+        }
     }
     if capabilities.contains(&RuntimeCapability::ExactEnchantKeyword) {
         rule_dependencies.push("CR 702.5".into());
@@ -5020,6 +6505,140 @@ fn executor_binding(
         rule_dependencies.push("CR 707.10c".into());
     }
     if let RetainedRuntimeReceipt::BoundedOracle(receipt) = receipt {
+        for effect in receipt.clause.effects() {
+            let crate::bounded_oracle_runtime::Effect::StandaloneRuleProgram(program) = effect
+            else {
+                continue;
+            };
+            match program {
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::StaticSpecialKeyword(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    rule_dependencies.push(format!(
+                        "bounded-mechanic:{}",
+                        program
+                            .family()
+                            .printed_label()
+                            .trim_end_matches('!')
+                            .replace(' ', "-")
+                            .to_ascii_lowercase()
+                    ));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::CastModifierKeyword(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    rule_dependencies.push(format!(
+                        "bounded-mechanic:{}",
+                        program
+                            .kind()
+                            .label()
+                            .replace(' ', "-")
+                            .to_ascii_lowercase()
+                    ));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::LinkedCastCostKeyword(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    rule_dependencies.push(format!(
+                        "bounded-mechanic:{}",
+                        program
+                            .kind()
+                            .label()
+                            .replace(' ', "-")
+                            .to_ascii_lowercase()
+                    ));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::CastChoiceKeyword(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    rule_dependencies.push(format!(
+                        "bounded-mechanic:{}",
+                        program
+                            .kind()
+                            .family()
+                            .printed_label()
+                            .replace(' ', "-")
+                            .to_ascii_lowercase()
+                    ));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::FaceDownMergeKeyword(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    let label = match program.kind() {
+                        crate::face_down_merge_keyword_runtime::FaceDownMergeKeywordKind::Morph { .. } => "morph",
+                        crate::face_down_merge_keyword_runtime::FaceDownMergeKeywordKind::Megamorph { .. } => "megamorph",
+                        crate::face_down_merge_keyword_runtime::FaceDownMergeKeywordKind::Disguise { .. } => "disguise",
+                        crate::face_down_merge_keyword_runtime::FaceDownMergeKeywordKind::Mutate { .. } => "mutate",
+                    };
+                    rule_dependencies.push(format!("bounded-mechanic:{label}"));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::DelayedCounterKeyword(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    let label = match program.kind().family() {
+                        crate::delayed_counter_keyword_runtime::DelayedCounterKeywordFamily::Echo => "echo",
+                        crate::delayed_counter_keyword_runtime::DelayedCounterKeywordFamily::CumulativeUpkeep => "cumulative-upkeep",
+                        crate::delayed_counter_keyword_runtime::DelayedCounterKeywordFamily::Vanishing => "vanishing",
+                        crate::delayed_counter_keyword_runtime::DelayedCounterKeywordFamily::Fading => "fading",
+                    };
+                    rule_dependencies.push(format!("bounded-mechanic:{label}"));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::CombatSpecialKeyword(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    let label = match program.kind().family() {
+                        crate::combat_special_keyword_runtime::CombatSpecialKeywordFamily::Ninjutsu => "ninjutsu",
+                        crate::combat_special_keyword_runtime::CombatSpecialKeywordFamily::Encore => "encore",
+                        crate::combat_special_keyword_runtime::CombatSpecialKeywordFamily::Saddle => "saddle",
+                    };
+                    rule_dependencies.push(format!("bounded-mechanic:{label}"));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::TargetingProtection(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    let label = match program.kind() {
+                        crate::targeting_protection_runtime::TargetingProtectionKind::Shroud => "shroud",
+                        crate::targeting_protection_runtime::TargetingProtectionKind::Hexproof { .. } => "hexproof",
+                        crate::targeting_protection_runtime::TargetingProtectionKind::Protection { .. } => "protection",
+                    };
+                    rule_dependencies.push(format!("bounded-mechanic:{label}"));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::CreatureCounterKeyword(
+                    program,
+                ) if program.production_adapter_connected() => {
+                    rule_dependencies.push(format!(
+                        "bounded-mechanic:{}",
+                        program.kind().label().to_ascii_lowercase()
+                    ));
+                }
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::LevelProgression(program)
+                    if program.production_adapter_connected() =>
+                {
+                    rule_dependencies.push("bounded-mechanic:level-up".into());
+                    rule_dependencies.push("CR 702.87".into());
+                }
+                _ => {}
+            }
+        }
+        match receipt
+            .clause
+            .source_clause()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "flash" => rule_dependencies.push("bounded-mechanic:flash".into()),
+            "increment" => rule_dependencies.push("bounded-mechanic:increment".into()),
+            "station" => rule_dependencies.push("bounded-mechanic:station".into()),
+            "split second" => rule_dependencies.push("bounded-mechanic:split-second".into()),
+            "partner" | "friends forever" | "ready to run" => {
+                rule_dependencies.push("bounded-mechanic:partner".into())
+            }
+            source if source.starts_with("partner\u{2014}") => {
+                rule_dependencies.push("bounded-mechanic:partner".into())
+            }
+            _ => {}
+        }
         for program in &receipt.mechanic_programs {
             if let MechanicProcedure::AbilityWord(procedure) = program.procedure() {
                 rule_dependencies.push(format!(
@@ -5068,7 +6687,11 @@ fn executor_binding(
             .registrations
             .iter()
             .copied()
-            .filter(|registration| registration.keyword == receipt.keyword_rules.keyword);
+            .filter(|registration| {
+                registration.keyword == receipt.keyword_rules.keyword
+                    && registration.capabilities
+                        == receipt.delegated_clause.required_live_bridge_capabilities()
+            });
         if let Some(registration) = registrations.next()
             && registrations.next().is_none()
             && registration.capabilities
@@ -5289,6 +6912,229 @@ fn executor_binding(
             "bounded_oracle_simulation::tests::equipment_static_effects_are_live_through_the_same_attachment_contract",
             "runtime_receipts::bounded_mechanic_receipt_tests::attachment_static_receipts_require_the_exact_live_attachment_family",
         ]);
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:job-select")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::job_select_uses_the_atomic_entry_token_attachment_contract",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:retrace")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::retrace_discards_a_land_and_casts_the_same_graveyard_card",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:jump-start")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::jump_start_discards_then_exiles_the_same_stack_incarnation",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:foretell")
+    {
+        evidence_tests
+            .push("bounded_oracle_consumer::tests::foretell_hides_then_casts_only_on_a_later_turn");
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:plot")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::plot_prepares_and_casts_without_mana_only_at_sorcery_speed",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:warp")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::warp_binds_cast_resolution_end_step_exile_and_later_cast",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:suspend")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::suspend_pays_counts_casts_and_grants_haste_until_control_is_lost",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:level-up")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::level_up_uses_a_pending_mana_payment_and_continuous_band_contract",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:fabricate")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::fabricate_executes_exactly_one_entry_choice_atomically",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:adapt")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::adapt_pays_its_activation_cost_and_checks_counters_on_resolution",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:sunburst")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::sunburst_uses_complete_distinct_cast_color_evidence",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:converge")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::converge_uses_complete_distinct_cast_color_evidence",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:monstrosity")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::monstrosity_pays_then_designates_the_resolving_incarnation",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:devour")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::devour_atomically_sacrifices_the_complete_selection",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:bolster")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::bolster_requires_a_least_effective_toughness_choice",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:renown")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::renown_marks_only_the_combat_damage_incarnation",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:modular")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::modular_uses_entry_and_last_known_death_contracts",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:graft")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::graft_uses_entry_and_optional_atomic_transfer_contracts",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:tribute")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::tribute_records_the_chosen_opponents_entry_decision",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:amplify")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::amplify_requires_complete_legal_hand_reveal_evidence",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:escape")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::escape_cast_atomically_pays_and_exiles_from_the_owners_graveyard",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:unearth")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::unearth_activation_haste_and_exile_lifecycle_is_exact",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:madness")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::madness_replaces_discard_then_casts_or_moves_the_same_exiled_incarnation",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:flashback")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::residual_flashback_cast_and_every_stack_exit_are_incarnation_bound",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:buyback")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::buyback_payment_replaces_the_resolving_cards_graveyard_move",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:entwine")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::entwine_requires_and_selects_the_complete_modal_domain",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:replicate")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::no_target_replicate_pays_then_creates_one_stack_copy_per_payment",
+        );
+    }
+    if rule_dependencies
+        .iter()
+        .any(|dependency| dependency == "bounded-mechanic:storm")
+    {
+        evidence_tests.push(
+            "bounded_oracle_consumer::tests::no_target_storm_uses_the_exact_cast_occurrence_for_its_copy_count",
+        );
     }
     let mut evidence_tests = evidence_tests
         .drain(..)
@@ -5780,9 +7626,23 @@ fn validate_leaf_disposition_shape(leaf: &ExecutionCoverageLeaf) -> Result<(), S
             }
         };
         if !valid {
+            let binding_diagnostics = match &entry.disposition {
+                CoverageDisposition::FullyExecutable { binding } => format!(
+                    "; executor={:?}; version={:?}; binding_shape_valid={}; binding_supports_metric={}",
+                    binding.executor_id,
+                    binding.executor_version,
+                    executor_binding_shape_valid(binding, &leaf.evidence_sha256),
+                    executor_binding_supports_metric(binding, entry.metric)
+                ),
+                _ => format!("; disposition={:?}", entry.disposition),
+            };
             return Err(format!(
-                "disposition for {:?} is incompatible with compiler {}",
-                entry.metric, EXECUTION_COVERAGE_COMPILER_VERSION
+                "disposition for {:?} is incompatible with compiler {}; leaf_kind={:?}; leaf_subject={:?}{}",
+                entry.metric,
+                EXECUTION_COVERAGE_COMPILER_VERSION,
+                leaf.kind,
+                leaf.subject,
+                binding_diagnostics
             ));
         }
     }
@@ -5797,9 +7657,94 @@ fn exact_runtime_keyword_binding_matches_leaf(
         return false;
     };
     let normalized_keyword = keyword.trim().to_ascii_lowercase();
+    if complete_static_keyword_contract_by_name(&normalized_keyword)
+        && binding.executor_id == "abstract-play.characteristic-oracle.combat-keyword"
+        && binding.executor_version == CHARACTERISTIC_ORACLE_EXECUTOR_VERSION
+    {
+        return true;
+    }
+    if complete_static_keyword_contract_by_name(&normalized_keyword)
+        && binding.executor_id == "abstract-play.continuous.creature-modifier"
+        && binding.executor_version == CONTINUOUS_TRIGGER_EXECUTOR_VERSION
+    {
+        return true;
+    }
+    if complete_static_keyword_contract_by_name(&normalized_keyword)
+        && binding
+            .executor_id
+            .starts_with("abstract-play.bounded-oracle.")
+        && binding.executor_version == BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION
+    {
+        return true;
+    }
+    if complete_static_keyword_contract_by_name(&normalized_keyword)
+        && binding.executor_id == "abstract-play.ability.static-creature-modifier"
+        && binding.executor_version == LIVE_ABILITY_EXECUTOR_VERSION
+    {
+        return true;
+    }
     let delegated_keyword = match normalized_keyword.as_str() {
+        "mill" => Some(OfficialKeyword::Mill),
+        keyword if keyword.starts_with("regenerate") => Some(OfficialKeyword::Regenerate),
+        keyword if keyword.starts_with("equip ") => Some(OfficialKeyword::Equip),
+        "kicker" => Some(OfficialKeyword::Kicker),
+        "protection" => Some(OfficialKeyword::Protection),
+        "affinity" | "affinity for artifacts" => Some(OfficialKeyword::Affinity),
+        "cascade" => Some(OfficialKeyword::Cascade),
+        "fuse" => Some(OfficialKeyword::Fuse),
+        "delve" => Some(OfficialKeyword::Delve),
+        "ascend" => Some(OfficialKeyword::Ascend),
+        "aftermath" => Some(OfficialKeyword::Aftermath),
+        "rebound" => Some(OfficialKeyword::Rebound),
+        "persist" => Some(OfficialKeyword::Persist),
+        "undying" => Some(OfficialKeyword::Undying),
+        "evolve" => Some(OfficialKeyword::Evolve),
+        "mentor" => Some(OfficialKeyword::Mentor),
+        "renown" => Some(OfficialKeyword::Renown),
+        "start your engines!" => Some(OfficialKeyword::StartYourEngines),
+        "choose a background" => Some(OfficialKeyword::ChooseABackground),
+        "doctor's companion" => Some(OfficialKeyword::DoctorsCompanion),
+        "improvise" => Some(OfficialKeyword::Improvise),
+        "extort" => Some(OfficialKeyword::Extort),
+        "living weapon" => Some(OfficialKeyword::LivingWeapon),
+        "bargain" => Some(OfficialKeyword::Bargain),
+        "retrace" => Some(OfficialKeyword::Retrace),
+        "exploit" => Some(OfficialKeyword::Exploit),
+        "soulbond" => Some(OfficialKeyword::Soulbond),
+        "myriad" => Some(OfficialKeyword::Myriad),
+        "backup" => Some(OfficialKeyword::Backup),
+        "umbra armor" => Some(OfficialKeyword::UmbraArmor),
+        "cipher" => Some(OfficialKeyword::Cipher),
+        "flashback" => Some(OfficialKeyword::Flashback),
+        "morph" => Some(OfficialKeyword::Morph),
+        "flash" => Some(OfficialKeyword::Flash),
+        "haste" => Some(OfficialKeyword::Haste),
+        "hexproof" => Some(OfficialKeyword::Hexproof),
+        "indestructible" => Some(OfficialKeyword::Indestructible),
         "defender" => Some(OfficialKeyword::Defender),
+        "changeling" => Some(OfficialKeyword::Changeling),
+        "infect" => Some(OfficialKeyword::Infect),
         "devoid" => Some(OfficialKeyword::Devoid),
+        "convoke" => Some(OfficialKeyword::Convoke),
+        "enchant" => Some(OfficialKeyword::Enchant),
+        "equip" => Some(OfficialKeyword::Equip),
+        "exalted" => Some(OfficialKeyword::Exalted),
+        "fear" => Some(OfficialKeyword::Fear),
+        "intimidate" => Some(OfficialKeyword::Intimidate),
+        "landwalk" => Some(OfficialKeyword::Landwalk),
+        "bushido" => Some(OfficialKeyword::Bushido),
+        "wither" => Some(OfficialKeyword::Wither),
+        "horsemanship" => Some(OfficialKeyword::Horsemanship),
+        "flanking" => Some(OfficialKeyword::Flanking),
+        "toxic" => Some(OfficialKeyword::Toxic),
+        "daybound" => Some(OfficialKeyword::Daybound),
+        "nightbound" => Some(OfficialKeyword::Nightbound),
+        "cumulative upkeep" => Some(OfficialKeyword::CumulativeUpkeep),
+        "reconfigure" => Some(OfficialKeyword::Reconfigure),
+        "shadow" => Some(OfficialKeyword::Shadow),
+        "shroud" => Some(OfficialKeyword::Shroud),
+        "skulk" => Some(OfficialKeyword::Skulk),
+        "spree" => Some(OfficialKeyword::Spree),
         "vigilance" => Some(OfficialKeyword::Vigilance),
         _ => None,
     };
@@ -5809,7 +7754,12 @@ fn exact_runtime_keyword_binding_matches_leaf(
             .registrations
             .iter()
             .copied()
-            .filter(|registration| registration.keyword == keyword);
+            .filter(|registration| {
+                registration.keyword == keyword
+                    && binding
+                        .rule_dependencies
+                        .contains(&keyword_live_bridge_registration_dependency(*registration))
+            });
         if registry.has_exact_contract()
             && binding.executor_id == KEYWORD_RULES_RUNTIME_EXECUTOR_ID
             && binding.executor_version == KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION
@@ -5834,6 +7784,16 @@ fn exact_runtime_keyword_binding_matches_leaf(
         }
     }
     let bounded_tag = match normalized_keyword.as_str() {
+        "flashback" => Some("bounded-mechanic:flashback"),
+        "retrace" => Some("bounded-mechanic:retrace"),
+        "jump-start" => Some("bounded-mechanic:jump-start"),
+        "foretell" => Some("bounded-mechanic:foretell"),
+        "plot" => Some("bounded-mechanic:plot"),
+        "warp" => Some("bounded-mechanic:warp"),
+        "suspend" => Some("bounded-mechanic:suspend"),
+        "flash" => Some("bounded-mechanic:flash"),
+        "increment" => Some("bounded-mechanic:increment"),
+        "station" => Some("bounded-mechanic:station"),
         "channel" => Some("bounded-mechanic:channel"),
         "cycling" => Some("bounded-mechanic:cycling"),
         "typecycling" => Some("bounded-mechanic:typecycling"),
@@ -5857,6 +7817,72 @@ fn exact_runtime_keyword_binding_matches_leaf(
         "dash" => Some("bounded-mechanic:dash"),
         "gift" => Some("bounded-mechanic:gift"),
         "mobilize" => Some("bounded-mechanic:mobilize"),
+        "job select" => Some("bounded-mechanic:job-select"),
+        "for mirrodin!" => Some("bounded-mechanic:for-mirrodin"),
+        "adapt" => Some("bounded-mechanic:adapt"),
+        "fabricate" => Some("bounded-mechanic:fabricate"),
+        "sunburst" => Some("bounded-mechanic:sunburst"),
+        "converge" => Some("bounded-mechanic:converge"),
+        "monstrosity" => Some("bounded-mechanic:monstrosity"),
+        "devour" => Some("bounded-mechanic:devour"),
+        "bolster" => Some("bounded-mechanic:bolster"),
+        "renown" => Some("bounded-mechanic:renown"),
+        "modular" => Some("bounded-mechanic:modular"),
+        "graft" => Some("bounded-mechanic:graft"),
+        "tribute" => Some("bounded-mechanic:tribute"),
+        "amplify" => Some("bounded-mechanic:amplify"),
+        "evolve" => Some("bounded-mechanic:evolve"),
+        "escape" => Some("bounded-mechanic:escape"),
+        "unearth" => Some("bounded-mechanic:unearth"),
+        "madness" => Some("bounded-mechanic:madness"),
+        "storm" => Some("bounded-mechanic:storm"),
+        "buyback" => Some("bounded-mechanic:buyback"),
+        "entwine" => Some("bounded-mechanic:entwine"),
+        "splice onto arcane" => Some("bounded-mechanic:splice-onto-arcane"),
+        "overload" => Some("bounded-mechanic:overload"),
+        "replicate" => Some("bounded-mechanic:replicate"),
+        "conspire" => Some("bounded-mechanic:conspire"),
+        "echo" => Some("bounded-mechanic:echo"),
+        "cumulative upkeep" => Some("bounded-mechanic:cumulative-upkeep"),
+        "vanishing" => Some("bounded-mechanic:vanishing"),
+        "fading" => Some("bounded-mechanic:fading"),
+        "ninjutsu" => Some("bounded-mechanic:ninjutsu"),
+        "encore" => Some("bounded-mechanic:encore"),
+        "saddle" => Some("bounded-mechanic:saddle"),
+        "living metal" => Some("bounded-mechanic:living-metal"),
+        "training" => Some("bounded-mechanic:training"),
+        "hidden agenda" => Some("bounded-mechanic:hidden-agenda"),
+        "double agenda" => Some("bounded-mechanic:double-agenda"),
+        "enlist" => Some("bounded-mechanic:enlist"),
+        "double team" => Some("bounded-mechanic:double-team"),
+        "draft this card face up" => Some("bounded-mechanic:draft-this-card-face-up"),
+        "phasing" => Some("bounded-mechanic:phasing"),
+        "banding" => Some("bounded-mechanic:banding"),
+        "protection" => Some("bounded-mechanic:protection"),
+        "hexproof" => Some("bounded-mechanic:hexproof"),
+        "shroud" => Some("bounded-mechanic:shroud"),
+        "blitz" => Some("bounded-mechanic:blitz"),
+        "spectacle" => Some("bounded-mechanic:spectacle"),
+        "surge" => Some("bounded-mechanic:surge"),
+        "prowl" => Some("bounded-mechanic:prowl"),
+        "casualty" => Some("bounded-mechanic:casualty"),
+        "cleave" => Some("bounded-mechanic:cleave"),
+        "emerge" => Some("bounded-mechanic:emerge"),
+        "escalate" => Some("bounded-mechanic:escalate"),
+        "offering" => Some("bounded-mechanic:offering"),
+        "prototype" => Some("bounded-mechanic:prototype"),
+        "squad" => Some("bounded-mechanic:squad"),
+        "assist" => Some("bounded-mechanic:assist"),
+        "awaken" => Some("bounded-mechanic:awaken"),
+        "strive" => Some("bounded-mechanic:strive"),
+        "freerunning" => Some("bounded-mechanic:freerunning"),
+        "impending" => Some("bounded-mechanic:impending"),
+        "more than meets the eye" => Some("bounded-mechanic:more-than-meets-the-eye"),
+        "offspring" => Some("bounded-mechanic:offspring"),
+        "web-slinging" => Some("bounded-mechanic:web-slinging"),
+        "mayhem" => Some("bounded-mechanic:mayhem"),
+        "miracle" => Some("bounded-mechanic:miracle"),
+        "level up" => Some("bounded-mechanic:level-up"),
         _ => None,
     };
     if bounded_tag.is_some_and(|tag| {
@@ -6038,6 +8064,10 @@ fn exact_runtime_keyword_binding_matches_leaf(
                     .rule_dependencies
                     .iter()
                     .any(|dependency| dependency == "CR 702.6")
+        }
+        "cumulative upkeep" => {
+            binding.executor_id == "abstract-play.ability.trigger.cumulative-upkeep"
+                && binding.executor_version == LIVE_ABILITY_EXECUTOR_VERSION
         }
         "treasure" => {
             binding.executor_version == LIVE_ABILITY_EXECUTOR_VERSION

@@ -12,8 +12,8 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const COMBAT_SPECIAL_KEYWORD_COMPILER_VERSION: &str = "combat-special-keyword-compiler-0.2";
-pub const COMBAT_SPECIAL_KEYWORD_RUNTIME_VERSION: &str = "combat-special-keyword-runtime-0.1";
+pub const COMBAT_SPECIAL_KEYWORD_COMPILER_VERSION: &str = "combat-special-keyword-compiler-0.5";
+pub const COMBAT_SPECIAL_KEYWORD_RUNTIME_VERSION: &str = "combat-special-keyword-runtime-0.4";
 pub const COMBAT_SPECIAL_KEYWORD_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:117,118,400.7,506.3,508.1,508.4,509.1h,\
      602,603.7,707,702.49,702.141,702.171";
 
@@ -147,7 +147,12 @@ impl CombatSpecialKeywordProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        combat_special_keyword_production_adapter_connected()
+        matches!(
+            self.kind,
+            CombatSpecialKeywordKind::Ninjutsu { .. }
+                | CombatSpecialKeywordKind::Encore { .. }
+                | CombatSpecialKeywordKind::Saddle { .. }
+        )
     }
 }
 
@@ -216,8 +221,7 @@ pub fn classify_combat_special_keyword_clause(
         })
     {
         parse_mana_cost(cost_text).map(|cost| CombatSpecialKeywordKind::Encore { cost })
-    } else {
-        exact_source
+    } else if let Some(threshold) = exact_source
         .strip_prefix("Saddle ")
         .and_then(|remainder| {
             parse_positive_u32(remainder).or_else(|| {
@@ -233,7 +237,11 @@ pub fn classify_combat_special_keyword_clause(
                             )
                     })
             })
-        }).map(|threshold| CombatSpecialKeywordKind::Saddle { threshold })
+        })
+    {
+        Some(CombatSpecialKeywordKind::Saddle { threshold })
+    } else {
+        None
     };
 
     let Some(kind) = kind else {

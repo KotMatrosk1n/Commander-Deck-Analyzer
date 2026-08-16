@@ -15,7 +15,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const ALTERNATE_ZONE_CAST_COMPILER_VERSION: &str = "alternate-zone-cast-keyword-compiler-0.1";
-pub const ALTERNATE_ZONE_CAST_RUNTIME_VERSION: &str = "alternate-zone-cast-keyword-runtime-0.1";
+pub const ALTERNATE_ZONE_CAST_RUNTIME_VERSION: &str = "alternate-zone-cast-keyword-runtime-0.9";
 pub const ALTERNATE_ZONE_CAST_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:118.9,400.7,601.2,603.7,614.1,702.34,702.35,702.62,702.84,702.138";
 
 pub const fn alternate_zone_cast_production_adapter_connected() -> bool {
@@ -541,8 +541,83 @@ impl AlternateZoneKeywordProgram {
         &self.kind
     }
 
-    pub const fn production_adapter_connected(&self) -> bool {
-        alternate_zone_cast_production_adapter_connected()
+    pub fn production_adapter_connected(&self) -> bool {
+        match &self.kind {
+            AlternateZoneKeywordKind::Suspend(suspend) => {
+                !self.source_context.is_land
+                    && suspend.only_from_hand
+                    && suspend.upkeep_removes_one_time_counter
+                    && suspend.last_counter_requires_play_if_able
+                    && suspend.waives_mana_cost
+                    && suspend.creature_spell_and_resulting_permanent_have_haste_until_control_lost
+                    && suspend.special_action_cost.mana.is_some()
+                    && suspend.special_action_cost.additional.is_empty()
+                    && !suspend.special_action_cost.retains_other_cast_costs
+                    && matches!(
+                        (suspend.counters, suspend.special_action_cost.x_constraint),
+                        (SuspendCounterAmount::Fixed(_), VariableConstraint::None)
+                            | (
+                                SuspendCounterAmount::ChosenXAtLeastOne,
+                                VariableConstraint::AtLeastOne
+                            )
+                    )
+            }
+            AlternateZoneKeywordKind::Escape(escape) => {
+                escape.only_from_owners_graveyard
+                    && escape.ordinary_stack_exit
+                    && escape.alternative_cost.mana.is_some()
+                    && escape.alternative_cost.x_constraint == VariableConstraint::None
+                    && escape.alternative_cost.retains_other_cast_costs
+                    && !escape.alternative_cost.additional.is_empty()
+            }
+            AlternateZoneKeywordKind::Unearth(unearth) => {
+                unearth.only_from_owners_graveyard
+                    && unearth.sorcery_timing_only
+                    && unearth.return_to_battlefield
+                    && unearth.grants_haste
+                    && unearth.exile_at_next_end_step
+                    && unearth.battlefield_exit_replaced_with_exile
+                    && unearth.activation_cost.x_constraint == VariableConstraint::None
+                    && !unearth.activation_cost.retains_other_cast_costs
+                    && ((unearth.activation_cost.mana.is_some()
+                        && unearth.activation_cost.additional.is_empty())
+                        || (unearth.activation_cost.mana.is_none()
+                            && unearth.activation_cost.additional
+                                == [AdditionalCost::PayEnergy(8)]))
+            }
+            AlternateZoneKeywordKind::Madness(madness) => {
+                madness.discard_destination_replaced_with_exile
+                    && madness.discarded_card_triggered_once
+                    && madness.graveyard_if_not_played
+                    && madness.alternative_cost.x_constraint == VariableConstraint::None
+                    && madness.alternative_cost.retains_other_cast_costs
+                    && ((madness.play_kind == MadnessPlayKind::CastSpell
+                        && madness.alternative_cost.mana.is_some()
+                        && madness
+                            .alternative_cost
+                            .additional
+                            .iter()
+                            .all(|cost| matches!(cost, AdditionalCost::PayLife(_))))
+                        || (madness.play_kind == MadnessPlayKind::CastSpell
+                            && madness.alternative_cost.mana.is_none()
+                            && madness.alternative_cost.additional
+                                == [AdditionalCost::PayRepeatedColorless(6)])
+                        || (madness.play_kind == MadnessPlayKind::PlayLand
+                            && madness
+                                .alternative_cost
+                                .mana
+                                .as_ref()
+                                .is_some_and(|mana| mana.exact == "{0}")
+                            && madness.alternative_cost.additional.is_empty()))
+            }
+            AlternateZoneKeywordKind::ResidualFlashback(flashback) => {
+                flashback.only_from_owners_graveyard
+                    && flashback.every_stack_exit_replaced_with_exile
+                    && flashback.alternative_cost.retains_other_cast_costs
+                    && (flashback.alternative_cost.mana.is_some()
+                        || !flashback.alternative_cost.additional.is_empty())
+            }
+        }
     }
 }
 
@@ -1220,7 +1295,7 @@ fn parse_mana_color(source: &str) -> Option<ManaColor> {
     }
 }
 
-fn split_keyword_dash(source: &str) -> Option<(&str, &str)> {
+fn split_keyword_dash<'a>(source: &'a str) -> Option<(&'a str, &'a str)> {
     for separator in ['\u{fffd}', '\u{2014}'] {
         if let Some((before, after)) = source.split_once(separator) {
             let before = before.trim();
@@ -2639,7 +2714,10 @@ impl AlternateZoneCastRuntime {
                                 .get(&object.object_id)
                                 .into_iter()
                                 .flat_map(|card| {
-                                    card.card_types.iter().filter(countable_card_type).cloned()
+                                    card.card_types
+                                        .iter()
+                                        .filter(|card_type| countable_card_type(card_type))
+                                        .cloned()
                                 })
                         })
                         .collect::<BTreeSet<_>>();

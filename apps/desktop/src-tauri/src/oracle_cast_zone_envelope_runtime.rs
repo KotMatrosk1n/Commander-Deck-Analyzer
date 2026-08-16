@@ -155,6 +155,20 @@ impl CastZoneSemanticContext {
     fn is_land(&self) -> bool {
         self.card_types.contains(&CardType::Land)
     }
+
+    fn is_permanent(&self) -> bool {
+        self.card_types.iter().any(|card_type| {
+            matches!(
+                card_type,
+                CardType::Artifact
+                    | CardType::Battle
+                    | CardType::Creature
+                    | CardType::Enchantment
+                    | CardType::Land
+                    | CardType::Planeswalker
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -540,6 +554,7 @@ pub enum DelayedMoment {
     EndOfTurn,
     EndOfCombat,
     ThatTurnsEndStep,
+    BeginningOfNextCleanupStep,
 }
 
 impl DelayedMoment {
@@ -552,6 +567,7 @@ impl DelayedMoment {
             Self::EndOfTurn => "end-of-turn",
             Self::EndOfCombat => "end-of-combat",
             Self::ThatTurnsEndStep => "that-turns-end-step",
+            Self::BeginningOfNextCleanupStep => "beginning-next-cleanup-step",
         }
     }
 }
@@ -562,6 +578,7 @@ pub enum DelayedAction {
     ReturnToHand(ObjectOperand),
     ReturnToBattlefield(ObjectOperand),
     Sacrifice(ObjectOperand),
+    SacrificeByCurrentController(ObjectOperand),
     LoseGame(PlayerOperand),
 }
 
@@ -574,6 +591,9 @@ impl DelayedAction {
                 format!("return-battlefield/{}", object.stable_id())
             }
             Self::Sacrifice(object) => format!("sacrifice/{}", object.stable_id()),
+            Self::SacrificeByCurrentController(object) => {
+                format!("sacrifice-by-current-controller/{}", object.stable_id())
+            }
             Self::LoseGame(player) => format!("lose-game/{}", player.stable_id()),
         }
     }
@@ -585,6 +605,7 @@ pub struct DelayedInstruction {
     pub action: DelayedAction,
     pub only_if_cast: bool,
     pub expected_incarnation: bool,
+    pub only_if_cast_outside_sorcery_timing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -789,11 +810,12 @@ impl CastZoneEnvelopeKind {
 
 fn delayed_instruction_stable_id(instruction: &DelayedInstruction) -> String {
     format!(
-        "moment={};action={};only-if-cast={};incarnation={}",
+        "moment={};action={};only-if-cast={};incarnation={};outside-sorcery={}",
         instruction.moment.stable_id(),
         instruction.action.stable_id(),
         instruction.only_if_cast,
-        instruction.expected_incarnation
+        instruction.expected_incarnation,
+        instruction.only_if_cast_outside_sorcery_timing
     )
 }
 
@@ -963,6 +985,7 @@ fn is_candidate(source: &str) -> bool {
         "at the beginning of the next upkeep",
         "at the beginning of your next upkeep",
         "at end of combat",
+        "at the beginning of the next cleanup step",
         "take an extra turn",
         "takes an extra turn",
         "was paid",
@@ -994,6 +1017,31 @@ fn parse_permission(
     context: &CastZoneSemanticContext,
 ) -> Result<Option<CastZoneEnvelopeKind>, CastZoneEnvelopeRejection> {
     let mut core = strip_terminal_period(source)?;
+    if core
+        == "You may cast this spell as though it had flash. If you cast it any time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it at the beginning of the next cleanup step"
+    {
+        if !context.is_permanent() || context.is_land() {
+            return Err(CastZoneEnvelopeRejection::UnsupportedObject);
+        }
+        return Ok(Some(CastZoneEnvelopeKind::Permission(CastPermission {
+            actor: PlayerOperand::You,
+            kind: PlayKind::Cast,
+            object: ObjectOperand::ThisCard,
+            from_zones: BTreeSet::from([Zone::Hand]),
+            timing: TimingWindow::AsThoughFlash,
+            without_paying_mana_cost: false,
+            alternative_cost: None,
+            additional_cost: None,
+            other_costs_retained: true,
+            delayed: vec![DelayedInstruction {
+                moment: DelayedMoment::BeginningOfNextCleanupStep,
+                action: DelayedAction::SacrificeByCurrentController(ObjectOperand::It),
+                only_if_cast: true,
+                expected_incarnation: true,
+                only_if_cast_outside_sorcery_timing: true,
+            }],
+        })));
+    }
     let mut delayed = Vec::new();
     if let Some((permission, consequence)) = core.split_once(". If you do, ") {
         let instruction = parse_delayed_instruction_body(consequence, true)?
@@ -1374,6 +1422,7 @@ fn parse_extra_turn(
         }),
         only_if_cast: false,
         expected_incarnation: false,
+        only_if_cast_outside_sorcery_timing: false,
     };
     Ok(Some(CastZoneEnvelopeKind::ExtraTurnWithDelayedLoss {
         player,
@@ -1434,6 +1483,7 @@ fn parse_delayed_instruction_body(
                 action,
                 only_if_cast,
                 expected_incarnation: true,
+                only_if_cast_outside_sorcery_timing: false,
             }));
         }
         let prefix = sentence_case(phrase);
@@ -1444,6 +1494,7 @@ fn parse_delayed_instruction_body(
                 action,
                 only_if_cast,
                 expected_incarnation: true,
+                only_if_cast_outside_sorcery_timing: false,
             }));
         }
     }
@@ -2752,7 +2803,14 @@ fn create_cast_lifecycle(
             resolved_reference: None,
             status: CastLifecycleStatus::OnStack,
             paid_costs: paid_costs.clone(),
-            delayed_templates: permission.delayed.clone(),
+            delayed_templates: permission
+                .delayed
+                .iter()
+                .filter(|template| {
+                    !template.only_if_cast_outside_sorcery_timing || !input.timing.sorcery_timing
+                })
+                .cloned()
+                .collect(),
             pending_entry_counters: Vec::new(),
             cast_turn: state.current_turn,
             origin_zone,
@@ -2928,7 +2986,11 @@ fn adjusted_mana_cost(
     if applicable.is_empty() {
         return Ok(printed.clone());
     }
-    if printed.symbols.contains(&ManaSymbol::VariableX) {
+    if printed
+        .symbols
+        .iter()
+        .any(|symbol| *symbol == ManaSymbol::VariableX)
+    {
         // Applying generic modifiers to an X cost requires the declared X
         // choice to be part of the cost-construction transaction. This
         // standalone boundary does not guess that choice.
@@ -4149,7 +4211,8 @@ fn bind_delayed_operands(
         DelayedAction::Exile(object)
         | DelayedAction::ReturnToHand(object)
         | DelayedAction::ReturnToBattlefield(object)
-        | DelayedAction::Sacrifice(object) => {
+        | DelayedAction::Sacrifice(object)
+        | DelayedAction::SacrificeByCurrentController(object) => {
             let reference = resolve_runtime_object_operand(object, input.expected_object, state)?;
             if input.affected_player.is_some() {
                 return Err(CastZoneRuntimeError::TargetConstraintViolation);
@@ -4326,6 +4389,21 @@ fn resolve_delayed_in_world(
                 object_after = None;
             }
         }
+        DelayedAction::SacrificeByCurrentController(_) => {
+            if let Some(reference) = pending.expected_object
+                && let Some(object) = state.objects.get(&reference)
+            {
+                if object.zone != Zone::Battlefield || !object.is_permanent() {
+                    return Err(CastZoneRuntimeError::TargetConstraintViolation);
+                }
+                affected_player = Some(object.controller);
+                let moved = move_object(state, reference, Zone::Graveyard, None)?;
+                object_after = Some(moved);
+                applied = true;
+            } else {
+                object_after = None;
+            }
+        }
     }
     state.pending_delayed.remove(&pending_id);
     if let (Some(before), Some(after)) = (object_before, object_after)
@@ -4356,7 +4434,8 @@ fn validate_delayed_event_window(
         DelayedMoment::BeginningOfNextEndStep
         | DelayedMoment::BeginningOfNextUpkeep
         | DelayedMoment::EndOfTurn
-        | DelayedMoment::EndOfCombat => true,
+        | DelayedMoment::EndOfCombat
+        | DelayedMoment::BeginningOfNextCleanupStep => true,
     };
     valid.then_some(()).ok_or(CastZoneRuntimeError::WrongTurn)
 }

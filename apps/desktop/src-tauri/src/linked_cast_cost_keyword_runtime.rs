@@ -3,8 +3,8 @@
 //!
 //! Canonical reminder-bearing Evoke and Dash clauses remain owned by
 //! `mechanic_runtime`. This module accepts only genuine residual Evoke clauses
-//! and complete clauses for the otherwise unowned families. Its transaction
-//! runtime is deliberately not connected to production.
+//! and complete clauses for the otherwise unowned families. Its reviewed
+//! transaction contracts are connected through the bounded production adapter.
 
 #![allow(dead_code)]
 
@@ -14,7 +14,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const LINKED_CAST_COST_COMPILER_VERSION: &str = "linked-cast-cost-compiler-0.1";
-pub const LINKED_CAST_COST_RUNTIME_VERSION: &str = "linked-cast-cost-runtime-0.1";
+pub const LINKED_CAST_COST_RUNTIME_VERSION: &str = "linked-cast-cost-runtime-0.2";
 pub const LINKED_CAST_COST_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:108.3,117,400.7,601.2,603.7,607,609.3,614.1,616.1,702.74,702.76,702.109,702.117,702.137,702.152";
 
 const EVOKE_REMINDER: &str =
@@ -25,7 +25,7 @@ const SPECTACLE_REMINDER: &str = "You may cast this spell for its spectacle cost
 const SURGE_REMINDER: &str = "You may cast this spell for its surge cost if you or a teammate has cast another spell this turn.";
 
 pub const fn linked_cast_cost_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -981,10 +981,19 @@ impl CastWindow {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManaPayment {
     pub x_value: u32,
     pub mana_units: Vec<ManaUnitId>,
+}
+
+impl Default for ManaPayment {
+    fn default() -> Self {
+        Self {
+            x_value: 0,
+            mana_units: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2021,21 +2030,20 @@ impl LinkedCastCostRuntime {
         } else {
             None
         };
-        if current.zone == Zone::Battlefield
-            && actual_destination == Zone::Graveyard
-            && let Some(marker) = dying_blitz_marker
-        {
-            let controller = current.controller.unwrap_or(marker.controller);
-            let trigger_id = self.next_trigger_id()?;
-            self.pending_triggers.insert(
-                trigger_id,
-                PendingLinkedTrigger::BlitzDeathDraw(BlitzDeathDrawTrigger {
+        if current.zone == Zone::Battlefield && actual_destination == Zone::Graveyard {
+            if let Some(marker) = dying_blitz_marker {
+                let controller = current.controller.unwrap_or(marker.controller);
+                let trigger_id = self.next_trigger_id()?;
+                self.pending_triggers.insert(
                     trigger_id,
-                    controller,
-                    source_before_death: source,
-                    semantic_digest: marker.semantic_digest,
-                }),
-            );
+                    PendingLinkedTrigger::BlitzDeathDraw(BlitzDeathDrawTrigger {
+                        trigger_id,
+                        controller,
+                        source_before_death: source,
+                        semantic_digest: marker.semantic_digest,
+                    }),
+                );
+            }
         }
         Ok(ZoneChangeEvidence {
             before: source,

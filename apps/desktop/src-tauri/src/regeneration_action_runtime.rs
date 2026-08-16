@@ -14,8 +14,9 @@
 //! Program identity is derived from exact Oracle content, typed semantic
 //! context, and versioned rules context. Card names, identifiers, database
 //! rows, snapshot hashes, addresses, ordering, and timestamps are never inputs.
-//! Recognition is not production execution coverage. No production adapter is
-//! connected yet.
+//! Recognition is not production execution coverage. The bounded simulation
+//! owns the exact activation (except snow-source payments), trigger,
+//! pending-stack, resolution, and destruction bridge.
 
 #![allow(dead_code)]
 
@@ -32,12 +33,12 @@ use crate::keyword_rules_runtime::{
     execute_keyword_action, remove_static_regeneration, resolve_destruction, targeting_is_legal,
 };
 
-pub const REGENERATION_ACTION_COMPILER_VERSION: &str = "regeneration-action-compiler-0.1";
+pub const REGENERATION_ACTION_COMPILER_VERSION: &str = "regeneration-action-compiler-0.2";
 pub const REGENERATION_ACTION_RUNTIME_VERSION: &str = "regeneration-action-runtime-0.1";
 pub const REGENERATION_ACTION_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:107.2,117.12,119.4,122.1,400.7,601.2b,601.2f-h,602.2b,603.3d,608.2b,608.2h,609.3,614.1,614.6,616.1,701.19,701.21";
 
 pub const fn regeneration_action_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -458,7 +459,11 @@ impl RegenerationActionProgram {
     }
 
     pub const fn production_adapter_connected(&self) -> bool {
-        regeneration_action_production_adapter_connected()
+        matches!(
+            self.kind,
+            RegenerationActionKind::StaticDestructionReplacement(_)
+                | RegenerationActionKind::StandaloneResolution(_)
+        )
     }
 }
 
@@ -471,6 +476,37 @@ pub fn compile_regeneration_action_program(
         RegenerationClauseClassification::EarlierOwner { .. }
         | RegenerationClauseClassification::Rejected => None,
     }
+}
+
+/// Compile an exact regeneration instruction that is already owned by a
+/// separately parsed spell, trigger, or activation envelope.
+pub fn compile_regeneration_resolution_leaf_program(
+    exact_source: &str,
+    normalized_source: &str,
+) -> Option<RegenerationActionProgram> {
+    if !is_complete_single_line(exact_source)
+        || !is_complete_single_line(normalized_source)
+        || collapse_whitespace(exact_source) != normalized_source
+    {
+        return None;
+    }
+    let mut canonical = exact_source.to_owned();
+    if canonical.starts_with("regenerate ") {
+        canonical.replace_range(..1, "R");
+    }
+    let (recipient, reminder) =
+        parse_regeneration_effect(&canonical, RecipientSelectionTime::OnResolution)?;
+    let kind = RegenerationActionKind::StandaloneResolution(ResolutionRegenerationProgram {
+        recipient,
+        reminder,
+    });
+    let semantic_digest = regeneration_semantic_digest(exact_source, normalized_source, &kind);
+    Some(RegenerationActionProgram {
+        exact_source: exact_source.to_owned(),
+        normalized_source: normalized_source.to_owned(),
+        semantic_digest,
+        kind,
+    })
 }
 
 pub fn classify_regeneration_action_clause(
@@ -492,6 +528,7 @@ pub fn classify_regeneration_action_clause(
     }
 
     let kind = parse_static_replacement(exact_source)
+        .or_else(|| parse_static_replacement(normalized_source))
         .or_else(|| parse_triggered_action(exact_source))
         .or_else(|| parse_activated_action(exact_source));
     let Some(kind) = kind else {
@@ -521,9 +558,12 @@ fn is_earlier_owned_standalone(source: &str) -> bool {
 }
 
 fn parse_static_replacement(source: &str) -> Option<RegenerationActionKind> {
-    let reminder = match source {
-        "If this creature would be destroyed, regenerate it." => ReminderEvidence::Absent,
-        "If this creature would be destroyed, regenerate it. (Tap it, remove it from combat, and heal all damage on it.)" => {
+    let normalized = source.to_ascii_lowercase();
+    let reminder = match normalized.as_str() {
+        "if this creature would be destroyed, regenerate it."
+        | "if this object would be destroyed, regenerate it." => ReminderEvidence::Absent,
+        "if this creature would be destroyed, regenerate it. (tap it, remove it from combat, and heal all damage on it.)"
+        | "if this object would be destroyed, regenerate it. (tap it, remove it from combat, and heal all damage on it.)" => {
             ReminderEvidence::CanonicalStatic
         }
         _ => return None,
@@ -677,7 +717,7 @@ fn parse_regeneration_effect(
 ) -> Option<(RegenerationRecipient, ReminderEvidence)> {
     let (core, reminder) = strip_regeneration_reminder(source)?;
     let recipient = match core {
-        "Regenerate this creature." | "Regenerate it." => {
+        "Regenerate this creature." | "Regenerate this object." | "Regenerate it." => {
             RegenerationRecipient::SourcePermanent { selection_time }
         }
         "Regenerate enchanted creature." => RegenerationRecipient::EnchantedCreature {
@@ -875,8 +915,10 @@ fn parse_activation_costs(source: &str) -> Option<Vec<RegenerationActivationCost
             cost
         } else if let Some(cost) = parse_exile_graveyard_cost(component) {
             cost
+        } else if let Some(cost) = parse_sacrifice_cost(component) {
+            cost
         } else {
-            parse_sacrifice_cost(component)?
+            return None;
         };
         costs.push(cost);
     }
@@ -1644,13 +1686,13 @@ pub fn resolve_pending_regeneration(
                 },
             });
         }
-        if resolutions.is_empty()
-            && let PendingRecipient::Target { target, .. } = pending.recipient
-        {
-            resolutions.push(RegenerationRecipientResolution {
-                recipient: target,
-                outcome: RegenerationResolutionOutcome::RecipientNoLongerLegal,
-            });
+        if resolutions.is_empty() {
+            if let PendingRecipient::Target { target, .. } = pending.recipient {
+                resolutions.push(RegenerationRecipientResolution {
+                    recipient: target,
+                    outcome: RegenerationResolutionOutcome::RecipientNoLongerLegal,
+                });
+            }
         }
         Ok(RegenerationResolutionReceipt {
             action_id: id,
@@ -1662,6 +1704,42 @@ pub fn resolve_pending_regeneration(
         *state = before;
     }
     result
+}
+
+pub fn resolve_regeneration_instruction(
+    state: &mut RegenerationRuntimeState,
+    program: &RegenerationActionProgram,
+    controller: PlayerId,
+    source: ObjectReference,
+    target: Option<ObjectReference>,
+) -> Result<RegenerationResolutionReceipt, RegenerationRuntimeError> {
+    let RegenerationActionKind::StandaloneResolution(resolution) = program.kind() else {
+        return Err(RegenerationRuntimeError::WrongProgramKind);
+    };
+    verify_program_version(program)?;
+    state.validate_current(source)?;
+    let targeting_source = SourceProfile::from_object(&state.game.objects[&source.object]);
+    let recipient = bind_recipient_for_stack(
+        state,
+        &resolution.recipient,
+        controller,
+        source,
+        &targeting_source,
+        target,
+    )?;
+    let id = state.next_action_id()?;
+    state.pending.insert(
+        id,
+        PendingRegenerationAction {
+            id,
+            semantic_digest: program.semantic_digest().to_owned(),
+            controller,
+            source,
+            targeting_source,
+            recipient,
+        },
+    );
+    resolve_pending_regeneration(state, id)
 }
 
 pub fn install_static_regeneration_replacement(

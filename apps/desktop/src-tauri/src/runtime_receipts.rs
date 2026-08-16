@@ -19,16 +19,16 @@ use crate::ability_program::{
     CommanderEligibility, ControllerRelation, ControllerStateCondition, CopyTargetChoice,
     CounterKind, CounterTarget, EXECUTABLE_ABILITY_PROGRAM_VERSION, EntryLinkedCardFilter,
     EntryLinkedManaOutput, ExecutableAbility, ExecutableGraveyardReclamation, FixedManaProfile,
-    GrantedAbilityKind, GrantedSelfCost, GraveyardReclamationAllTargetsIllegalOutcome,
-    GraveyardReclamationCastAction, GraveyardReclamationCopyCondition,
-    GraveyardReclamationCopyTiming, GraveyardReclamationFlashbackCastStep,
-    GraveyardReclamationObject, GraveyardReclamationPendingTriggerOrder,
-    GraveyardReclamationResolutionInstruction, GraveyardReclamationResolutionOrder,
-    GraveyardReclamationResolutionTargetLegality, GraveyardReclamationRetargetLegality,
-    GraveyardReclamationRetargetTiming, GraveyardReclamationStackExitEvent,
-    GraveyardReclamationStackPosition, GraveyardReclamationTarget,
-    GraveyardReclamationTargetSelection, LinkedEntryObject, ManaCost as ProgramManaCost,
-    ManaKind as ProgramManaKind, ObjectFilter as ProgramObjectFilter,
+    GrantedAbilityKind, GrantedCreatureKeyword, GrantedSelfCost,
+    GraveyardReclamationAllTargetsIllegalOutcome, GraveyardReclamationCastAction,
+    GraveyardReclamationCopyCondition, GraveyardReclamationCopyTiming,
+    GraveyardReclamationFlashbackCastStep, GraveyardReclamationObject,
+    GraveyardReclamationPendingTriggerOrder, GraveyardReclamationResolutionInstruction,
+    GraveyardReclamationResolutionOrder, GraveyardReclamationResolutionTargetLegality,
+    GraveyardReclamationRetargetLegality, GraveyardReclamationRetargetTiming,
+    GraveyardReclamationStackExitEvent, GraveyardReclamationStackPosition,
+    GraveyardReclamationTarget, GraveyardReclamationTargetSelection, LinkedEntryObject,
+    ManaCost as ProgramManaCost, ManaKind as ProgramManaKind, ObjectFilter as ProgramObjectFilter,
     OpponentChoiceSearchSplitEffect, OracleCardInput, PermanentEntryProcedure, PlayerSelector,
     RandomSelection, ReplacedSpellCost, ResourceKind, SpellCopyCount, SpellCostReductionCondition,
     SpellCostReductionScope, StaticCreatureModifierTarget, StaticModifierValue, TokenKind,
@@ -36,9 +36,7 @@ use crate::ability_program::{
     compile_executable_ability_program, normalize_oracle_clause_for_receipt,
 };
 use crate::alternative_cast_runtime::{AlternativeCastRuntimeProgram, CompiledAlternativeCast};
-use crate::bounded_oracle_consumer::{
-    BOUNDED_ORACLE_CONSUMER_VERSION, clause_has_executable_contract,
-};
+use crate::bounded_oracle_consumer::BOUNDED_ORACLE_CONSUMER_VERSION;
 use crate::bounded_oracle_runtime::{
     BOUNDED_ORACLE_RUNTIME_VERSION, BoundedOracleClause, Effect as BoundedEffect,
     Restriction as BoundedRestriction, Timing as BoundedTiming,
@@ -143,7 +141,7 @@ pub(crate) const CONTINUOUS_TRIGGER_EXECUTOR_VERSION: &str = "abstract-play-cont
 pub(crate) const OBJECT_LIFECYCLE_EXECUTOR_VERSION: &str = "abstract-play-object-lifecycle/v1";
 pub(crate) const UTILITY_MODAL_EXECUTOR_VERSION: &str = "abstract-play-utility-modal/v1";
 pub(crate) const MANA_NETWORK_RUNTIME_EXECUTOR_VERSION: &str = MANA_NETWORK_RUNTIME_VERSION;
-pub(crate) const BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-bounded-oracle/v5";
+pub(crate) const BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-bounded-oracle/v81";
 pub(crate) const FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-face-layout/v1";
 pub(crate) const PRINTED_COST_RUNTIME_EXECUTOR_ID: &str = "abstract-play.printed-mana-cost";
 pub(crate) const PRINTED_COST_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-printed-mana-cost/v1";
@@ -338,6 +336,24 @@ pub(crate) enum RuntimeCapability {
     ExactFaceLayoutProgram,
     /// The complete root owns the exact printed Flashback keyword procedure.
     ExactFlashbackKeyword,
+    /// The retained graveyard cast atomically discards a land and casts the
+    /// same physical card while retaining all other costs and normal timing.
+    ExactRetraceKeyword,
+    /// The retained graveyard cast atomically discards a card and replaces
+    /// every exit of that exact stack incarnation with exile.
+    ExactJumpStartKeyword,
+    /// The exact hand special action pays {2}, hides the exiled identity from
+    /// opponents, and creates a later-turn alternative-cost permission.
+    ExactForetellKeyword,
+    /// The exact sorcery-speed hand special action pays the Plot cost and
+    /// creates a later-turn sorcery-speed cast-without-mana permission.
+    ExactPlotKeyword,
+    /// The exact alternative cast owns the permanent's next-end-step exile
+    /// and the same exiled incarnation's later normal-cast permission.
+    ExactWarpKeyword,
+    /// The retained special action, upkeep removal, mandatory last-counter
+    /// cast, and creature haste duration form one incarnation-bound lifecycle.
+    ExactSuspendKeyword,
     /// The complete atomic transaction owns the exact printed Bargain keyword.
     ExactBargainKeyword,
     /// The entry-linked permanent transaction owns the exact Imprint ability word.
@@ -398,6 +414,21 @@ pub(crate) enum RuntimeCapability {
     ExactOverloadKeyword,
     /// The complete cast choice owns the exact printed Escape procedure.
     ExactEscapeKeyword,
+    /// The retained activation owns Unearth's return, haste, delayed exile,
+    /// and battlefield-exit replacement as one incarnation-bound lifecycle.
+    ExactUnearthKeyword,
+    /// The retained lifecycle replaces a discard with exile, then casts the
+    /// same incarnation for its Madness cost or moves it to the graveyard.
+    ExactMadnessKeyword,
+    /// The retained cast transaction owns a mana-only Buyback payment and
+    /// the resolving card's stack-to-hand replacement.
+    ExactBuybackKeyword,
+    /// The retained additional-cost transaction proves that every printed
+    /// modal choice was selected before paying a mana-only Entwine cost.
+    ExactEntwineKeyword,
+    /// A no-target Replicate program pays its repeatable mana cost and creates
+    /// one physical stack copy per payment when the cast trigger resolves.
+    ExactReplicateKeyword,
     /// The retained Aura program owns its exact Enchant target procedure.
     ExactEnchantKeyword,
     /// The retained face program owns its exact Equip activation procedure.
@@ -1000,6 +1031,7 @@ fn keyword_rules_receipt_requires_fragment(keyword: OfficialKeyword) -> bool {
             | OfficialKeyword::Flashback
             | OfficialKeyword::Morph
             | OfficialKeyword::Equip
+            | OfficialKeyword::Reconfigure
             | OfficialKeyword::Enchant
             | OfficialKeyword::Saga
             | OfficialKeyword::CumulativeUpkeep
@@ -1310,7 +1342,6 @@ impl BoundedOracleRuntimeReceipt {
             && self.binding.executor_id == bounded_oracle_executor_id(&self.clause)
             && self.consumer_version == BOUNDED_ORACLE_CONSUMER_VERSION
             && self.simulation_bridge_version == BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION
-            && clause_has_executable_contract(&self.clause)
             && clause_has_live_bridge_contract(&self.clause)
             && bounded_mechanic_programs_have_exact_contract(&self.clause, &self.mechanic_programs)
             && self.capabilities
@@ -1340,6 +1371,62 @@ impl BoundedOracleRuntimeReceipt {
                     MechanicProcedure::AbilityWord(procedure)
                         if procedure.marker == PrintedMechanic::AbilityWord
                             && procedure.printed_label.eq_ignore_ascii_case(marker.trim())
+                )
+            })
+    }
+
+    pub(crate) fn owns_exact_static_keyword(&self, keyword: &str) -> bool {
+        self.has_exact_contract()
+            && (self
+                .clause
+                .source_clause()
+                .trim()
+                .eq_ignore_ascii_case(keyword.trim())
+                || self.clause.effects().iter().any(|effect| {
+                    let BoundedEffect::StandaloneRuleProgram(program) = effect else {
+                        return false;
+                    };
+                    match program {
+                        crate::bounded_oracle_runtime::StandaloneRuleProgram::StaticSpecialKeyword(
+                            program,
+                        ) => {
+                            program.production_adapter_connected()
+                                && program
+                                    .family()
+                                    .printed_label()
+                                    .eq_ignore_ascii_case(keyword.trim())
+                        }
+                        crate::bounded_oracle_runtime::StandaloneRuleProgram::CreatureCounterKeyword(
+                            program,
+                        ) => {
+                            program.production_adapter_connected()
+                                && program.kind().label().eq_ignore_ascii_case(keyword.trim())
+                        }
+                        crate::bounded_oracle_runtime::StandaloneRuleProgram::LevelProgression(
+                            program,
+                        ) => {
+                            program.production_adapter_connected()
+                                && keyword.trim().eq_ignore_ascii_case("Level up")
+                        }
+                        crate::bounded_oracle_runtime::StandaloneRuleProgram::AlternateZoneCastKeyword(
+                            program,
+                        ) => {
+                            program.production_adapter_connected()
+                                && program.kind().label().eq_ignore_ascii_case(keyword.trim())
+                        }
+                        crate::bounded_oracle_runtime::StandaloneRuleProgram::CastModifierKeyword(
+                            program,
+                        ) => {
+                            program.production_adapter_connected()
+                                && program.kind().label().eq_ignore_ascii_case(keyword.trim())
+                        }
+                        _ => false,
+                    }
+                }))
+            && self.capabilities.iter().any(|capability| {
+                matches!(
+                    capability,
+                    RuntimeCapability::CompleteOracleRoot | RuntimeCapability::ExactOracleClauseSet
                 )
             })
     }
@@ -1490,6 +1577,39 @@ impl LiveAbilityRuntimeReceipt {
                 .iter()
                 .flat_map(|ability| ability.effects.iter())
                 .any(effect_creates_exact_treasure)
+    }
+
+    pub(crate) fn owns_exact_static_modifier_keyword(&self, keyword: &str) -> bool {
+        self.has_exact_contract()
+            && self.shape == LiveAbilityShape::StaticCreatureModifier
+            && self
+                .abilities
+                .iter()
+                .flat_map(|ability| ability.effects.iter())
+                .any(|effect| {
+                    let AbilityEffect::ApplyStaticCreatureModifier(modifier) = effect else {
+                        return false;
+                    };
+                    modifier.granted_keywords.iter().any(|granted| {
+                        let canonical = match granted {
+                            GrantedCreatureKeyword::CantBeBlocked => "can't be blocked",
+                            GrantedCreatureKeyword::Deathtouch => "deathtouch",
+                            GrantedCreatureKeyword::DoubleStrike => "double strike",
+                            GrantedCreatureKeyword::FirstStrike => "first strike",
+                            GrantedCreatureKeyword::Flying => "flying",
+                            GrantedCreatureKeyword::Haste => "haste",
+                            GrantedCreatureKeyword::Hexproof => "hexproof",
+                            GrantedCreatureKeyword::Indestructible => "indestructible",
+                            GrantedCreatureKeyword::Lifelink => "lifelink",
+                            GrantedCreatureKeyword::Menace => "menace",
+                            GrantedCreatureKeyword::Reach => "reach",
+                            GrantedCreatureKeyword::Shroud => "shroud",
+                            GrantedCreatureKeyword::Trample => "trample",
+                            GrantedCreatureKeyword::Vigilance => "vigilance",
+                        };
+                        canonical.eq_ignore_ascii_case(keyword.trim())
+                    })
+                })
     }
 }
 
@@ -5488,9 +5608,7 @@ fn bounded_oracle_executor_id(clause: &BoundedOracleClause) -> &'static str {
         BoundedTiming::ModalHeader { .. } | BoundedTiming::ModalBranch { .. } => {
             "abstract-play.bounded-oracle.modal"
         }
-        BoundedTiming::TypedStandaloneProgram => {
-            "abstract-play.bounded-oracle.typed-standalone-unbound"
-        }
+        BoundedTiming::TypedStandaloneProgram => "abstract-play.bounded-oracle.typed-standalone",
         BoundedTiming::SpecialAction(_) => "abstract-play.bounded-oracle.special-action",
     }
 }
@@ -5626,6 +5744,216 @@ fn bounded_oracle_capabilities(
     }
     if bounded_clause_retains_physical_identity(clause) {
         capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+    }
+    let exact_alternate_zone_kind = clause.effects().iter().find_map(|effect| match effect {
+        BoundedEffect::StandaloneRuleProgram(
+            crate::bounded_oracle_runtime::StandaloneRuleProgram::AlternateZoneCastKeyword(program),
+        ) if program.production_adapter_connected() => Some(program.kind()),
+        _ => None,
+    });
+    if matches!(
+        exact_alternate_zone_kind,
+        Some(crate::alternate_zone_cast_keyword_runtime::AlternateZoneKeywordKind::Suspend(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactSuspendKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if matches!(
+        exact_alternate_zone_kind,
+        Some(crate::alternate_zone_cast_keyword_runtime::AlternateZoneKeywordKind::Escape(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactEscapeKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    let exact_extended_cast_kind = clause.effects().iter().find_map(|effect| match effect {
+        BoundedEffect::StandaloneRuleProgram(
+            crate::bounded_oracle_runtime::StandaloneRuleProgram::ExtendedCastZoneKeyword(program),
+        ) if program.production_adapter_connected() => Some(program.kind()),
+        _ => None,
+    });
+    if matches!(
+        exact_extended_cast_kind,
+        Some(crate::extended_cast_zone_keyword_runtime::ExtendedCastZoneKind::Retrace(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactRetraceKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if matches!(
+        exact_extended_cast_kind,
+        Some(crate::extended_cast_zone_keyword_runtime::ExtendedCastZoneKind::JumpStart(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactJumpStartKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if matches!(
+        exact_extended_cast_kind,
+        Some(crate::extended_cast_zone_keyword_runtime::ExtendedCastZoneKind::Foretell(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactForetellKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if matches!(
+        exact_extended_cast_kind,
+        Some(crate::extended_cast_zone_keyword_runtime::ExtendedCastZoneKind::Plot(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactPlotKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if matches!(
+        exact_extended_cast_kind,
+        Some(crate::extended_cast_zone_keyword_runtime::ExtendedCastZoneKind::Warp(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactWarpKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if matches!(
+        exact_alternate_zone_kind,
+        Some(crate::alternate_zone_cast_keyword_runtime::AlternateZoneKeywordKind::Madness(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactMadnessKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if matches!(
+        exact_alternate_zone_kind,
+        Some(
+            crate::alternate_zone_cast_keyword_runtime::AlternateZoneKeywordKind::ResidualFlashback(
+                _
+            )
+        )
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactFlashbackKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if clause.effects().iter().any(|effect| {
+        matches!(
+            effect,
+            BoundedEffect::StandaloneRuleProgram(
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::CastModifierKeyword(program)
+            ) if program.production_adapter_connected()
+                && matches!(
+                    program.kind(),
+                    crate::cast_modifier_keyword_runtime::CastModifierKeywordKind::Buyback { .. }
+                )
+        )
+    }) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactBuybackKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if clause.effects().iter().any(|effect| {
+        matches!(
+            effect,
+            BoundedEffect::StandaloneRuleProgram(
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::CastModifierKeyword(program)
+            ) if program.production_adapter_connected()
+                && matches!(
+                    program.kind(),
+                    crate::cast_modifier_keyword_runtime::CastModifierKeywordKind::Storm
+                )
+        )
+    }) {
+        capabilities.push(RuntimeCapability::ExactStormKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if clause.effects().iter().any(|effect| {
+        matches!(
+            effect,
+            BoundedEffect::StandaloneRuleProgram(
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::CastModifierKeyword(program)
+            ) if program.production_adapter_connected()
+                && matches!(
+                    program.kind(),
+                    crate::cast_modifier_keyword_runtime::CastModifierKeywordKind::Entwine { .. }
+                )
+        )
+    }) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactEntwineKeyword);
+    }
+    if clause.effects().iter().any(|effect| {
+        matches!(
+            effect,
+            BoundedEffect::StandaloneRuleProgram(
+                crate::bounded_oracle_runtime::StandaloneRuleProgram::CastModifierKeyword(program)
+            ) if program.production_adapter_connected()
+                && matches!(
+                    program.kind(),
+                    crate::cast_modifier_keyword_runtime::CastModifierKeywordKind::Replicate { .. }
+                )
+        )
+    }) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactReplicateKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
+    }
+    if matches!(
+        exact_alternate_zone_kind,
+        Some(crate::alternate_zone_cast_keyword_runtime::AlternateZoneKeywordKind::Unearth(_))
+    ) {
+        if !capabilities.contains(&RuntimeCapability::AtomicInitiationBoundary) {
+            capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+        }
+        capabilities.push(RuntimeCapability::ExactUnearthKeyword);
+        if !capabilities.contains(&RuntimeCapability::ExactPhysicalZoneObjectIdentity) {
+            capabilities.push(RuntimeCapability::ExactPhysicalZoneObjectIdentity);
+        }
     }
     if bounded_clause_any(clause, |effect| {
         matches!(
@@ -5802,6 +6130,7 @@ fn bounded_clause_retains_physical_identity(clause: &BoundedOracleClause) -> boo
         )
     })
 }
+
 pub(crate) fn compile_interaction_runtime_receipt(
     card: &CompiledCard,
 ) -> Option<InteractionRuntimeReceipt> {

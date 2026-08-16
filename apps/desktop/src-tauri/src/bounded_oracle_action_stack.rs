@@ -758,7 +758,10 @@ fn pending_player_target_contract_is_supported(
 fn pending_target_maximum(target: &Target) -> u16 {
     match target.amount {
         TargetAmount::Exactly(amount) | TargetAmount::UpTo(amount) => amount,
-        TargetAmount::AnyNumber | TargetAmount::All => u16::MAX,
+        TargetAmount::ExactlyX
+        | TargetAmount::UpToX
+        | TargetAmount::AnyNumber
+        | TargetAmount::All => u16::MAX,
     }
 }
 

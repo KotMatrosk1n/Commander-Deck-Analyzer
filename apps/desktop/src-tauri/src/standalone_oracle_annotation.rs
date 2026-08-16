@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 pub const STANDALONE_ORACLE_ANNOTATION_COMPILER_VERSION: &str =
     "standalone-oracle-annotation-compiler-0.1";
 pub const STANDALONE_ORACLE_ANNOTATION_RUNTIME_VERSION: &str =
-    "standalone-oracle-annotation-runtime-0.1";
+    "standalone-oracle-annotation-runtime-0.5";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StandaloneOracleAnnotation {

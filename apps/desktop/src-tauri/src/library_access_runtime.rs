@@ -154,6 +154,10 @@ impl LibraryAccessProgram {
     pub fn active_zone(&self) -> LibraryAccessSourceZone {
         self.active_zone
     }
+
+    pub const fn production_adapter_connected(&self) -> bool {
+        true
+    }
 }
 
 pub fn compile_library_access_program(source: &str) -> Option<LibraryAccessProgram> {

@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::ability_clause_bridge::{
     ABILITY_CLAUSE_BRIDGE_COMPILER_VERSION, ABILITY_CLAUSE_BRIDGE_RUNTIME_VERSION,
-    AbilityClauseBridgeProgram,
+    AbilityClauseBridgeProgram, compile_ability_clause_bridge,
 };
 use crate::alternate_zone_cast_keyword_runtime::{
     ALTERNATE_ZONE_CAST_COMPILER_VERSION, ALTERNATE_ZONE_CAST_RULES_CONTEXT_VERSION,
@@ -32,11 +32,12 @@ use crate::attachment_filter_runtime::{
     AttachmentFilterProgramKind, compile_attachment_filter_program,
 };
 use crate::bounded_oracle_mana::{
-    BOUNDED_ORACLE_MANA_EXPRESSION_VERSION, DerivedManaTypes as TypedDerivedManaTypes,
-    ManaColor as TypedManaColor, ManaColorDomain as TypedManaColorDomain,
-    ManaComposition as TypedManaComposition, ManaExpressionError,
-    ManaProductionExpression as TypedManaProductionExpression, ManaQuantity as TypedManaQuantity,
-    ManaRetention as TypedManaRetention, ManaSymbol as TypedManaSymbol,
+    BOUNDED_ORACLE_MANA_EXPRESSION_VERSION, CalculatedValue as TypedCalculatedValue,
+    DerivedManaTypes as TypedDerivedManaTypes, ManaColor as TypedManaColor,
+    ManaColorDomain as TypedManaColorDomain, ManaComposition as TypedManaComposition,
+    ManaExpressionError, ManaProductionExpression as TypedManaProductionExpression,
+    ManaQuantity as TypedManaQuantity, ManaRetention as TypedManaRetention,
+    ManaSymbol as TypedManaSymbol, QuantityCalculation as TypedQuantityCalculation,
     ResourceCostComponent as TypedResourceCostComponent, ResourceCostExpression,
     parse_mana_production_expression, parse_mana_retention_clause,
     parse_mana_spend_restriction_clause, parse_resource_cost_expression,
@@ -68,8 +69,9 @@ use crate::combat_trigger_keyword_runtime::{
 };
 use crate::common_action_procedure_runtime::{
     COMMON_ACTION_PROCEDURE_COMPILER_VERSION, COMMON_ACTION_PROCEDURE_RULES_CONTEXT_VERSION,
-    COMMON_ACTION_PROCEDURE_RUNTIME_VERSION, CommonActionProgram, compile_common_action_program,
-    reviewed_common_action_normalized_source,
+    COMMON_ACTION_PROCEDURE_RUNTIME_VERSION, CommonActionKind, CommonActionProgram,
+    CommonActionTiming, TriggerEnvelope as CommonActionTriggerEnvelope,
+    compile_common_action_program, reviewed_common_action_normalized_source,
 };
 use crate::creature_counter_keyword_runtime::{
     CREATURE_COUNTER_COMPILER_VERSION, CREATURE_COUNTER_RULES_CONTEXT_VERSION,
@@ -77,7 +79,8 @@ use crate::creature_counter_keyword_runtime::{
     compile_creature_counter_keyword_program,
 };
 use crate::damage_clause_compiler::{
-    CompiledDamageClause, DAMAGE_CLAUSE_COMPILER_VERSION, DamageClauseInput, compile_damage_clause,
+    CompiledDamageClause, DAMAGE_CLAUSE_COMPILER_VERSION, DamageClauseInput,
+    DamageRecipientTemplate, compile_damage_clause, compile_damage_resolution_leaf_program,
 };
 use crate::damage_transaction_runtime::DAMAGE_TRANSACTION_RUNTIME_VERSION;
 use crate::delayed_counter_keyword_runtime::{
@@ -129,6 +132,9 @@ use crate::linked_cast_cost_keyword_runtime::{
     LINKED_CAST_COST_RUNTIME_VERSION, LinkedCastCostProgram,
     compile_linked_cast_cost_keyword_program,
 };
+use crate::object_lifecycle_runtime::{
+    CompiledObjectLifecycle, ObjectLifecycleCardInput, compile_object_lifecycle_runtime,
+};
 use crate::object_state_clause_runtime::{
     OBJECT_STATE_CLAUSE_COMPILER_VERSION, OBJECT_STATE_CLAUSE_RUNTIME_VERSION,
     OBJECT_STATE_RULES_CONTEXT_VERSION, ObjectStateClauseKind, ObjectStateClauseProgram,
@@ -141,12 +147,15 @@ use crate::old_transform_runtime::{
 use crate::oracle_ability_envelope_runtime::{
     AbilityEnvelopeCompileInput, ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION,
     ORACLE_ABILITY_ENVELOPE_RULES_CONTEXT_VERSION, ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION,
-    OracleAbilityEnvelopeProgram, compile_oracle_ability_envelope,
+    OracleAbilityEnvelopeProgram, RetainedOracleAbilityEnvelopeProgram,
+    StructuralOracleAbilityEnvelopeProgram, compile_oracle_ability_envelope,
+    compile_retained_oracle_ability_envelope, compile_structural_oracle_ability_envelope,
 };
 use crate::oracle_action_algebra_runtime::{
-    ORACLE_ACTION_ALGEBRA_COMPILER_VERSION, ORACLE_ACTION_ALGEBRA_RULES_CONTEXT_VERSION,
-    ORACLE_ACTION_ALGEBRA_RUNTIME_VERSION, OracleActionCompileInput, OracleActionProgram,
-    compile_oracle_action_program,
+    ActionKind, ActionNode, ORACLE_ACTION_ALGEBRA_COMPILER_VERSION,
+    ORACLE_ACTION_ALGEBRA_RULES_CONTEXT_VERSION, ORACLE_ACTION_ALGEBRA_RUNTIME_VERSION,
+    OracleActionCompileInput, OracleActionFamily, OracleActionProgram, OracleActionSemanticContext,
+    compile_oracle_action_program, reviewed_oracle_action_normalized_source,
 };
 use crate::oracle_cast_zone_envelope_runtime::{
     CastZoneEnvelopeProgram, ORACLE_CAST_ZONE_ENVELOPE_COMPILER_VERSION,
@@ -155,8 +164,9 @@ use crate::oracle_cast_zone_envelope_runtime::{
 };
 use crate::oracle_clause_composition::{
     ORACLE_CLAUSE_COMPOSITION_COMPILER_VERSION, ORACLE_CLAUSE_COMPOSITION_RULES_CONTEXT_VERSION,
-    ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION, SemanticCapability, SourceSpan,
-    TypedOracleComposition,
+    ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION, OracleClauseCompositionInput, OracleCompositionNode,
+    RetainedOracleClauseComposition, SemanticCapability, SourceSpan, TypedOracleComposition,
+    compile_retained_oracle_clause_composition,
 };
 use crate::oracle_clause_syntax::{
     OracleClauseSyntaxError, ValidatedOracleClauseLine, validate_oracle_clause_line,
@@ -169,7 +179,8 @@ use crate::oracle_static_replacement_runtime::{
     ORACLE_STATIC_REPLACEMENT_COMPILER_VERSION, ORACLE_STATIC_REPLACEMENT_RULES_CONTEXT_VERSION,
     ORACLE_STATIC_REPLACEMENT_RUNTIME_VERSION, OracleStaticReplacementCompileInput,
     OracleStaticReplacementProgram, OracleStaticReplacementProgramKind,
-    compile_oracle_static_replacement_program,
+    RetainedOracleStaticReplacementProgram, compile_oracle_static_replacement_program,
+    compile_retained_oracle_static_replacement_program,
 };
 use crate::pregame_clause_runtime::{
     PREGAME_CLAUSE_COMPILER_VERSION, PREGAME_CLAUSE_RUNTIME_VERSION, PREGAME_RULES_CONTEXT_VERSION,
@@ -178,7 +189,7 @@ use crate::pregame_clause_runtime::{
 use crate::regeneration_action_runtime::{
     REGENERATION_ACTION_COMPILER_VERSION, REGENERATION_ACTION_RULES_CONTEXT_VERSION,
     REGENERATION_ACTION_RUNTIME_VERSION, RegenerationActionProgram,
-    compile_regeneration_action_program,
+    compile_regeneration_action_program, compile_regeneration_resolution_leaf_program,
 };
 use crate::residual_cost_keyword_runtime::{
     RESIDUAL_COST_KEYWORD_COMPILER_VERSION, RESIDUAL_COST_KEYWORD_RULES_CONTEXT_VERSION,
@@ -194,9 +205,9 @@ use crate::special_resource_runtime::{
     SPECIAL_RESOURCE_RUNTIME_VERSION, SpecialCostSymbol, SpecialResourceCost,
 };
 use crate::standalone_oracle_annotation::{
-    STANDALONE_ORACLE_ANNOTATION_COMPILER_VERSION, STANDALONE_ORACLE_ANNOTATION_RUNTIME_VERSION,
-    StandaloneOracleAnnotation, StandaloneOracleAnnotationKind,
-    compile_standalone_oracle_annotation,
+    LegendarySpellKind, STANDALONE_ORACLE_ANNOTATION_COMPILER_VERSION,
+    STANDALONE_ORACLE_ANNOTATION_RUNTIME_VERSION, StandaloneOracleAnnotation,
+    StandaloneOracleAnnotationKind, compile_standalone_oracle_annotation,
 };
 use crate::static_special_keyword_runtime::{
     STATIC_SPECIAL_KEYWORD_COMPILER_VERSION, STATIC_SPECIAL_KEYWORD_RUNTIME_VERSION,
@@ -209,8 +220,8 @@ use crate::targeting_protection_runtime::{
     TargetingProtectionKind, TargetingProtectionProgram, compile_targeting_protection_program,
 };
 
-pub const BOUNDED_ORACLE_COMPILER_VERSION: &str = "bounded-oracle-compiler-0.53";
-pub const BOUNDED_ORACLE_RUNTIME_VERSION: &str = "bounded-oracle-runtime-0.29";
+pub const BOUNDED_ORACLE_COMPILER_VERSION: &str = "bounded-oracle-compiler-0.54";
+pub const BOUNDED_ORACLE_RUNTIME_VERSION: &str = "bounded-oracle-runtime-1.9";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClauseAddress {
@@ -337,10 +348,20 @@ impl BoundedOracleClause {
 pub struct SagaLoreProcedure {
     pub object: ObjectRef,
     pub lore_counter: CounterKind,
-    pub enters_with: Amount,
+    pub entry_lore: SagaEntryLoreProcedure,
     pub after_controller_draw_step: Amount,
     pub final_chapter: SagaFinalChapter,
     pub state_based_sacrifice: SagaStateBasedSacrifice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SagaEntryLoreProcedure {
+    Fixed(Amount),
+    ReadAhead {
+        first_chapter: u16,
+        final_chapter: SagaFinalChapter,
+        skipped_chapters_do_not_trigger: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,6 +504,12 @@ pub enum Trigger {
         subject: TriggerSubject,
         event: ObjectEventKind,
     },
+    CountersPlaced {
+        subject: TriggerSubject,
+        counter: CounterKind,
+        one_or_more: bool,
+        resulting_total: Option<u32>,
+    },
     LifeGained {
         player: PlayerRef,
     },
@@ -551,6 +578,7 @@ pub enum ObjectEventKind {
     PutIntoGraveyardFromBattlefield,
     PutIntoGraveyardFromAnywhere,
     BecomesTapped,
+    BecomesUntapped,
     BecomesBlocked,
     Blocks,
     TurnedFaceUp,
@@ -598,8 +626,18 @@ pub enum TurnPlayer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpecialActionTiming {
     Pregame,
+    RevealAgenda,
+    DraftPick,
+    PhasingUntap,
+    BandingAttackDeclaration,
+    BandingBlockDeclaration,
+    BandingDamageAssignment,
     EntersPrepared,
     TransformBackFaceAnnotation,
+    Foretell,
+    Plot,
+    Suspend,
+    TurnFaceUp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -620,6 +658,10 @@ pub enum ActivationRestriction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cost {
     Optional(Box<Cost>),
+    Alternative {
+        choice_id: u8,
+        options: Vec<Cost>,
+    },
     Mana(ManaCost),
     /// One exact resource expression containing energy or snow. The complete
     /// expression stays atomic so an eventual production adapter cannot pay
@@ -628,6 +670,10 @@ pub enum Cost {
     Loyalty(LoyaltyCost),
     Tap(ObjectRef),
     TapSelection(ObjectSelection),
+    TapSelectionForSpellReduction {
+        selection: ObjectSelection,
+        reduction_per_object: ManaCost,
+    },
     Untap(ObjectRef),
     TapCreaturesWithTotalPower {
         player: PlayerRef,
@@ -646,12 +692,20 @@ pub enum Cost {
     SacrificeObject(ObjectRef),
     Discard(ObjectRef),
     DiscardSelection(ObjectSelection),
+    DiscardSelectionAmount {
+        selection: ObjectSelection,
+        amount: Amount,
+    },
     DiscardRandom {
         player: PlayerRef,
     },
     ReturnSelectionToHand(ObjectSelection),
     DiscardHand {
         player: PlayerRef,
+    },
+    Mill {
+        player: PlayerRef,
+        amount: Amount,
     },
     RevealSelection {
         selection: ObjectSelection,
@@ -680,6 +734,10 @@ pub enum Cost {
     ExileSourceFromBattlefield,
     ExileSourceFromOwnGraveyard,
     ExileSelection(ObjectSelection),
+    ExileSelectionAmount {
+        selection: ObjectSelection,
+        amount: Amount,
+    },
     ExileSelectionWithTotalManaValue {
         selection: ObjectSelection,
         minimum: Amount,
@@ -720,6 +778,7 @@ pub struct ManaCost(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Condition {
+    All(Vec<Condition>),
     ControlCount {
         player: PlayerRef,
         filter: ObjectFilter,
@@ -750,11 +809,24 @@ pub enum Condition {
     CardWasCastWithAlternativeCost,
     CardWasCastUsingEscape,
     CardWasKicked,
+    CardWasBargained,
+    RevealedOrControlledSubtype {
+        subtype: String,
+    },
+    BoundRevealedOrControlledSubtype {
+        cost_clause_index: u16,
+        selection_id: u8,
+        subtype: String,
+    },
     CardWasCastUsingTeamwork,
     YouAttackedThisTurn,
     OpponentLostLifeThisTurn,
+    YourTurn,
     NotYourTurn,
     NotThatPlayersTurn,
+    PlayerIsNotMonarch {
+        player: PlayerRef,
+    },
     GraveyardCardCount {
         player: PlayerRef,
         comparison: Comparison,
@@ -773,6 +845,7 @@ pub enum Condition {
     SourceHasCounter {
         counter: CounterKind,
     },
+    SourceIsAttached,
     SourceCounterCount {
         counter: CounterKind,
         comparison: Comparison,
@@ -789,6 +862,7 @@ pub enum Condition {
     },
     GiftPromised,
     SourceInOpeningHand,
+    PlayingFirst,
     NotPlayingFirst,
     ModeSelected(u16),
     AnotherSpellCastThisTurn,
@@ -797,18 +871,22 @@ pub enum Condition {
         amount: u32,
     },
     SourceAttackingAlone,
+    SpellCastFromHand,
     SpellCastFromNonHand,
     ManaSpentGreaterThanSourcePowerOrToughness,
     CastOnlyDuringCombat,
     CastOnlyDuringCombatBeforeBlockers,
     CastOnlyDuringDeclareBlockers,
     CastOnlyDuringCombatAfterBlockers,
+    CastOnlyDuringYourEndStep,
+    CastOnlyDuringDeclareAttackersIfActorWasAttackedThisStep,
     SourceWasCounteredByThisEffect,
     ObjectIsCardType {
         object: ObjectRef,
         card_type: CardType,
     },
     FirstResolutionOfNamedSpell,
+    YouWonPreviousClash,
     UnlessPaid {
         player: PlayerRef,
         cost: Cost,
@@ -905,7 +983,9 @@ pub enum TargetFilter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetAmount {
     Exactly(u16),
+    ExactlyX,
     UpTo(u16),
+    UpToX,
     AnyNumber,
     All,
 }
@@ -953,6 +1033,8 @@ pub struct ObjectFilter {
     /// This is a cross-category union and therefore cannot be represented by
     /// the ordinary conjunctive card-type/supertype/subtype fields.
     pub historic: bool,
+    /// Requires an exact Affinity program on the object's current face.
+    pub has_affinity: bool,
 }
 
 impl ObjectFilter {
@@ -980,6 +1062,8 @@ pub enum Zone {
     Exile,
     Stack,
     Command,
+    /// A physical card that is a component of a merged permanent is not in a zone.
+    Merged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1004,7 +1088,7 @@ pub enum Supertype {
     Nonbasic,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Color {
     White,
     Blue,
@@ -1050,6 +1134,9 @@ pub enum CountExpression {
     HalfLifeTotal {
         player: PlayerRef,
         round_up: bool,
+    },
+    HalfLibrary {
+        player: PlayerRef,
     },
     SelectedObjectsTotalPower {
         selection_id: u8,
@@ -1101,9 +1188,17 @@ pub enum ChoiceCount {
     Exactly(u16),
     ExactlyWithRepeats(u16),
     UpTo(u16),
-    Between { minimum: u16, maximum: u16 },
+    Between {
+        minimum: u16,
+        maximum: u16,
+    },
     OneOrMore,
     OneOrBothIfTeamwork,
+    Conditional {
+        condition: Box<Condition>,
+        when_true: Box<ChoiceCount>,
+        when_false: Box<ChoiceCount>,
+    },
 }
 
 /// A complete rules program whose standalone runtime is accurate but whose
@@ -1113,7 +1208,11 @@ pub enum ChoiceCount {
 pub enum StandaloneRuleProgram {
     AbilityClause(Box<AbilityClauseBridgeProgram>),
     OracleAbilityEnvelope(Box<OracleAbilityEnvelopeProgram>),
+    LinkedOracleAbilityEnvelope(Box<LinkedOracleAbilityEnvelopeProgram>),
+    RetainedOracleAbilityEnvelope(Box<RetainedOracleAbilityEnvelopeProgram>),
+    StructuralOracleAbilityEnvelope(Box<StructuralOracleAbilityEnvelopeProgram>),
     OracleStaticReplacement(Box<OracleStaticReplacementProgram>),
+    RetainedOracleStaticReplacement(Box<RetainedOracleStaticReplacementProgram>),
     OracleCastZoneEnvelope(Box<CastZoneEnvelopeProgram>),
     AlternateZoneCastKeyword(Box<AlternateZoneKeywordProgram>),
     CastModifierKeyword(Box<CastModifierKeywordProgram>),
@@ -1146,6 +1245,44 @@ pub enum StandaloneRuleProgram {
     OracleAction(Box<OracleActionProgram>),
     OracleFaceModalLine(Box<OracleFaceModalLineProgram>),
     OracleComposition(Box<OracleCompositionProgram>),
+    RetainedOracleComposition(Box<RetainedOracleClauseComposition>),
+    ObjectLifecycle(Box<CompiledObjectLifecycle>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedOracleAbilityEnvelopeProgram {
+    envelope: RetainedOracleAbilityEnvelopeProgram,
+    body: Box<BoundedOracleClause>,
+}
+
+impl LinkedOracleAbilityEnvelopeProgram {
+    pub fn exact_source(&self) -> &str {
+        self.envelope.exact_source()
+    }
+
+    pub fn semantic_digest(&self) -> &str {
+        self.envelope.semantic_digest()
+    }
+
+    pub fn envelope(&self) -> &RetainedOracleAbilityEnvelopeProgram {
+        &self.envelope
+    }
+
+    pub fn body(&self) -> &BoundedOracleClause {
+        &self.body
+    }
+
+    pub fn production_adapter_connected(&self) -> bool {
+        crate::oracle_ability_envelope_runtime::ability_envelope_header_production_adapter_connected(
+            self.envelope.envelope(),
+        ) && self.body.source_clause() == self.envelope.exact_body()
+            && matches!(
+                self.body.timing(),
+                Timing::SpellResolution | Timing::TypedStandaloneProgram
+            )
+            && self.body.activation_restriction().is_none()
+            && crate::bounded_oracle_consumer::clause_has_executable_contract(&self.body)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1233,8 +1370,16 @@ impl OracleFaceModalLineProgram {
         &self.group
     }
 
-    pub const fn production_adapter_connected(&self) -> bool {
-        false
+    pub fn production_adapter_connected(&self) -> bool {
+        self.group.header().envelope_program.is_none()
+            && self.group.branches().iter().all(|branch| {
+                matches!(
+                    &branch.child_program,
+                    OracleCompositionChildProgram::Bounded(clause)
+                        if matches!(clause.timing(), Timing::SpellResolution)
+                            && crate::bounded_oracle_consumer::clause_has_executable_contract(clause)
+                )
+            })
     }
 }
 
@@ -1272,8 +1417,49 @@ impl OracleCompositionProgram {
         &self.children
     }
 
-    pub const fn production_adapter_connected(&self) -> bool {
-        false
+    pub fn production_adapter_connected(&self) -> bool {
+        fn is_plain_sequence(node: &OracleCompositionNode) -> bool {
+            match node {
+                OracleCompositionNode::Atom(_) => true,
+                OracleCompositionNode::Sequence { parts, .. }
+                | OracleCompositionNode::Conjunction { parts, .. } => {
+                    !parts.is_empty() && parts.iter().all(is_plain_sequence)
+                }
+                _ => false,
+            }
+        }
+
+        let first_timing = self
+            .children
+            .first()
+            .and_then(|child| match child.program() {
+                OracleCompositionChildProgram::Bounded(clause) => Some(clause.timing()),
+                _ => None,
+            });
+        is_plain_sequence(self.typed.root())
+            && matches!(first_timing, Some(Timing::SpellResolution | Timing::Static))
+            && self
+                .children
+                .iter()
+                .filter(|child| {
+                    matches!(
+                        child.program(),
+                        OracleCompositionChildProgram::Bounded(clause) if !clause.targets().is_empty()
+                    )
+                })
+                .count()
+                <= 1
+            && self.children.iter().all(|child| {
+                matches!(
+                    child.program(),
+                    OracleCompositionChildProgram::Bounded(clause)
+                        if Some(clause.timing()) == first_timing
+                            && clause.costs().is_empty()
+                            && clause.conditions().is_empty()
+                            && clause.activation_restriction().is_none()
+                            && crate::bounded_oracle_consumer::clause_has_executable_contract(clause)
+                )
+            })
     }
 }
 
@@ -1336,6 +1522,7 @@ impl OracleCompositionChildBinding {
 pub enum OracleCompositionChildProgram {
     Bounded(Box<BoundedOracleClause>),
     DelegatedKeyword(Box<OracleCompositionDelegatedKeywordChild>),
+    RetainedSyntax(Box<OracleCompositionRetainedSyntaxChild>),
 }
 
 impl OracleCompositionChildProgram {
@@ -1357,10 +1544,18 @@ impl OracleCompositionChildProgram {
         }))
     }
 
+    pub(crate) fn retained_syntax(exact_source: String, semantic_digest: String) -> Self {
+        Self::RetainedSyntax(Box::new(OracleCompositionRetainedSyntaxChild {
+            exact_source,
+            semantic_digest,
+        }))
+    }
+
     pub fn exact_source(&self) -> &str {
         match self {
             Self::Bounded(program) => program.source_clause(),
             Self::DelegatedKeyword(program) => program.exact_source(),
+            Self::RetainedSyntax(program) => program.exact_source(),
         }
     }
 
@@ -1368,7 +1563,24 @@ impl OracleCompositionChildProgram {
         match self {
             Self::Bounded(program) => program.semantic_digest(),
             Self::DelegatedKeyword(program) => program.semantic_digest(),
+            Self::RetainedSyntax(program) => program.semantic_digest(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OracleCompositionRetainedSyntaxChild {
+    exact_source: String,
+    semantic_digest: String,
+}
+
+impl OracleCompositionRetainedSyntaxChild {
+    pub fn exact_source(&self) -> &str {
+        &self.exact_source
+    }
+
+    pub fn semantic_digest(&self) -> &str {
+        &self.semantic_digest
     }
 }
 
@@ -1439,6 +1651,11 @@ pub enum Effect {
     DestroyWithoutRegeneration {
         object: ObjectRef,
     },
+    /// For the rest of the turn, a battlefield-to-graveyard move caused by
+    /// dying is replaced with exile for the resolved physical objects.
+    ExileIfWouldDieThisTurn {
+        objects: ObjectRef,
+    },
     MoveZone(ZoneMove),
     MoveZoneUnderControl {
         object: ObjectRef,
@@ -1478,6 +1695,17 @@ pub enum Effect {
     GrantCastPermission(CastPermission),
     LibraryProcedure(LibraryProcedure),
     CreateToken(TokenCreation),
+    CreateTokensSacrificedCreaturePower {
+        creation: TokenCreation,
+        binding: SacrificedCreatureProcedureBinding,
+    },
+    Populate {
+        selection: ObjectSelection,
+    },
+    Blight {
+        selection: ObjectSelection,
+        amount: Amount,
+    },
     CreateTokenAttached {
         creation: TokenCreation,
         target: ObjectRef,
@@ -1553,6 +1781,18 @@ pub enum Effect {
         players: PlayerRef,
         filter: ObjectFilter,
         amount: u16,
+    },
+    PlayersDiscard {
+        players: PlayerRef,
+        amount: u16,
+    },
+    PlayersDiscardAmount {
+        players: PlayerRef,
+        amount: Amount,
+    },
+    PlayersDiscardSacrificedCreaturePower {
+        players: PlayerRef,
+        binding: SacrificedCreatureProcedureBinding,
     },
     RevealHand {
         player: PlayerRef,
@@ -1640,6 +1880,11 @@ pub enum Effect {
     },
     ModifyPowerToughness(PowerToughnessChange),
     GrantKeyword {
+        objects: ObjectRef,
+        keywords: Vec<Keyword>,
+        duration: Duration,
+    },
+    RemoveKeyword {
         objects: ObjectRef,
         keywords: Vec<Keyword>,
         duration: Duration,
@@ -1891,6 +2136,15 @@ pub enum CastTiming {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SacrificedCreatureProcedureBinding {
+    Unbound,
+    FaceCost {
+        cost_clause_index: u16,
+        selection_id: u8,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LibraryProcedure {
     ShuffleGraveyardIntoLibrary {
         player: PlayerRef,
@@ -1913,6 +2167,28 @@ pub enum LibraryProcedure {
     RevealTopToHandLoseManaValue {
         player: PlayerRef,
         repeat: Amount,
+    },
+    DrawSacrificedCreaturePower {
+        player: PlayerRef,
+        binding: SacrificedCreatureProcedureBinding,
+        gain_life_equal_toughness: bool,
+    },
+    SacrificedPermanentManaValue {
+        player: PlayerRef,
+        binding: SacrificedCreatureProcedureBinding,
+        draw_equal_mana_value: bool,
+        gain_life_equal_mana_value: bool,
+        fixed_draw: u16,
+    },
+    DrawIfSacrificedPermanentWasVehicle {
+        player: PlayerRef,
+        binding: SacrificedCreatureProcedureBinding,
+    },
+    ScryIfSearchedCardCheaperThanSacrificedPermanent {
+        player: PlayerRef,
+        binding: SacrificedCreatureProcedureBinding,
+        search_id: u8,
+        amount: u16,
     },
     ExileUntilNamedCard {
         player: PlayerRef,
@@ -2040,6 +2316,7 @@ pub enum Duration {
     Permanent,
     ThisTurn,
     UntilEndOfTurn,
+    UntilEndOfCombat(u64),
     UntilEndOfNextTurn,
     WhileSourceOnBattlefield,
     WhileCondition(Box<Condition>),
@@ -2060,6 +2337,7 @@ pub enum Keyword {
     Lifelink,
     Menace,
     Reach,
+    Shadow,
     Shroud,
     Trample,
     Vigilance,
@@ -2303,6 +2581,9 @@ pub struct EntersTappedReplacement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplacementEffect {
+    PreventCounters {
+        object: ObjectRef,
+    },
     MultiplyEvent {
         event: ReplacementEvent,
         multiplier: u16,
@@ -2394,6 +2675,16 @@ pub enum ReminderSemantics {
     StandaloneAnnotation(Box<StandaloneOracleAnnotation>),
     KeywordExplanation(Keyword),
     KeywordExplanations(Vec<Keyword>),
+    ProtectionExplanation,
+    DungeonVentureProcedure,
+    AttractionOpenProcedure,
+    ManaAbilityTargetingExclusion,
+    PowerstoneDefinition,
+    ClashProcedure,
+    FightProcedure,
+    LandwalkExplanation {
+        subtype: String,
+    },
     TreasureDefinition(Box<TokenDefinition>),
     FoodDefinition(Box<TokenDefinition>),
     ClueDefinition(Box<TokenDefinition>),
@@ -2452,6 +2743,7 @@ pub enum ReminderSemantics {
         amount: Amount,
     },
     ProliferateProcedure,
+    PopulateProcedure,
     AdventureProcedure,
     OmenProcedure,
     DevotionProcedure {
@@ -2494,6 +2786,7 @@ pub enum ReminderSemantics {
     BlightProcedure {
         amount: Amount,
     },
+    ForageProcedure,
     BeholdProcedure {
         subtype: String,
     },
@@ -2690,6 +2983,12 @@ pub fn compile_bounded_oracle_face(
     }
 
     bind_saga_lore_face_context(&input, &mut clauses)?;
+    bind_sacrificed_mana_face_context(&input, &mut clauses)?;
+    bind_sacrificed_damage_face_context(&input, &mut clauses)?;
+    bind_discarded_mana_value_damage_face_context(&input, &mut clauses)?;
+    bind_sacrificed_creature_library_face_context(&input, &mut clauses)?;
+    bind_casting_sacrifice_selection_context(&mut clauses)?;
+    bind_revealed_subtype_face_context(&input, &mut clauses)?;
 
     Ok(BoundedOracleFace {
         runtime_version: BOUNDED_ORACLE_RUNTIME_VERSION,
@@ -2698,7 +2997,701 @@ pub fn compile_bounded_oracle_face(
     })
 }
 
-fn bind_saga_lore_face_context(
+pub(crate) fn bind_sacrificed_mana_face_context(
+    input: &OracleFaceInput<'_>,
+    clauses: &mut [BoundedOracleClause],
+) -> Result<(), CompileError> {
+    fn bind_calculation(
+        calculation: &mut TypedQuantityCalculation,
+        cost_clause_index: u16,
+        selection_id: u8,
+    ) -> bool {
+        match calculation {
+            TypedQuantityCalculation::Value(
+                value @ TypedCalculatedValue::SacrificedCreatureManaValue,
+            ) => {
+                *value = TypedCalculatedValue::BoundSacrificedCreatureManaValue {
+                    cost_clause_index,
+                    selection_id,
+                };
+                true
+            }
+            TypedQuantityCalculation::Sum(terms) => terms
+                .iter_mut()
+                .any(|term| bind_calculation(term, cost_clause_index, selection_id)),
+            _ => false,
+        }
+    }
+
+    fn bind_production(
+        production: &mut ManaProduction,
+        cost_clause_index: u16,
+        selection_id: u8,
+    ) -> bool {
+        let Some(typed) = production.typed.as_mut() else {
+            return false;
+        };
+        match &mut typed.quantity {
+            TypedManaQuantity::Calculated(calculation)
+            | TypedManaQuantity::X {
+                defined_as: Some(calculation),
+            } => bind_calculation(calculation, cost_clause_index, selection_id),
+            _ => false,
+        }
+    }
+
+    let dependent_indices = clauses
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            clause
+                .effects
+                .iter_mut()
+                .any(|effect| match effect {
+                    Effect::AddMana(production) => bind_production(production, 0, 0),
+                    _ => false,
+                })
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if dependent_indices.is_empty() {
+        return Ok(());
+    }
+
+    let cost_indices = clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            matches!(
+                clause.costs.as_slice(),
+                [Cost::Sacrifice {
+                    amount: Amount::Constant(1),
+                    filter,
+                }] if clause.timing == Timing::CastingAdditionalCost
+                    && filter.card_types == [CardType::Creature]
+                    && !filter.card_type_match_any
+                    && filter.excluded_card_types.is_empty()
+            )
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [cost_index] = cost_indices.as_slice() else {
+        return Err(unsupported(
+            clauses[dependent_indices[0]].address,
+            &clauses[dependent_indices[0]].source_clause,
+        ));
+    };
+    let cost_clause_index = clauses[*cost_index].address.clause_index;
+    let selection_id = 0;
+
+    // Rebind the provisional zero used while detecting dependent expressions
+    // to the exact cost occurrence owned by this face.
+    for dependent_index in &dependent_indices {
+        for effect in &mut clauses[*dependent_index].effects {
+            let Effect::AddMana(production) = effect else {
+                continue;
+            };
+            if let Some(typed) = production.typed.as_mut() {
+                let rebind = |calculation: &mut TypedQuantityCalculation| {
+                    fn visit(
+                        calculation: &mut TypedQuantityCalculation,
+                        cost_clause_index: u16,
+                        selection_id: u8,
+                    ) {
+                        match calculation {
+                            TypedQuantityCalculation::Value(
+                                TypedCalculatedValue::BoundSacrificedCreatureManaValue {
+                                    cost_clause_index: bound_clause,
+                                    selection_id: bound_selection,
+                                },
+                            ) => {
+                                *bound_clause = cost_clause_index;
+                                *bound_selection = selection_id;
+                            }
+                            TypedQuantityCalculation::Sum(terms) => {
+                                for term in terms {
+                                    visit(term, cost_clause_index, selection_id);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    visit(calculation, cost_clause_index, selection_id);
+                };
+                match &mut typed.quantity {
+                    TypedManaQuantity::Calculated(calculation)
+                    | TypedManaQuantity::X {
+                        defined_as: Some(calculation),
+                    } => rebind(calculation),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let Cost::Sacrifice { filter, .. } = clauses[*cost_index].costs[0].clone() else {
+        unreachable!("the unique linked cost was validated above");
+    };
+    clauses[*cost_index].costs[0] = Cost::SacrificeSelection(ObjectSelection {
+        id: selection_id,
+        chooser: PlayerRef::You,
+        filter,
+        amount: TargetAmount::Exactly(1),
+    });
+
+    let mut context = vec!["sacrificed-mana-face-context/v1".to_owned()];
+    context.push(input.oracle_clauses[usize::from(cost_clause_index)].to_owned());
+    context.extend(
+        dependent_indices
+            .iter()
+            .map(|index| clauses[*index].normalized_clause.clone()),
+    );
+    let context = context.iter().map(String::as_str).collect::<Vec<_>>();
+    for index in std::iter::once(*cost_index).chain(dependent_indices) {
+        let clause = &mut clauses[index];
+        clause.semantic_digest = bounded_clause_semantic_digest_with_program_context(
+            &clause.source_clause,
+            &clause.normalized_clause,
+            &clause.costs,
+            &clause.conditions,
+            &clause.effects,
+            clause.reminder.as_ref(),
+            &context,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn bind_casting_sacrifice_selection_context(
+    clauses: &mut [BoundedOracleClause],
+) -> Result<(), CompileError> {
+    for clause in clauses {
+        if clause.timing != Timing::CastingAdditionalCost {
+            continue;
+        }
+        let [
+            Cost::Sacrifice {
+                amount: Amount::Constant(amount),
+                filter,
+            },
+        ] = clause.costs.as_slice()
+        else {
+            continue;
+        };
+        let amount = u16::try_from(*amount)
+            .ok()
+            .filter(|amount| *amount > 0)
+            .ok_or_else(|| unsupported(clause.address, &clause.source_clause))?;
+        let filter = filter.clone();
+        clause.costs[0] = Cost::SacrificeSelection(ObjectSelection {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter,
+            amount: TargetAmount::Exactly(amount),
+        });
+        let context = [
+            "casting-sacrifice-selection/v1",
+            clause.normalized_clause.as_str(),
+        ];
+        clause.semantic_digest = bounded_clause_semantic_digest_with_program_context(
+            &clause.source_clause,
+            &clause.normalized_clause,
+            &clause.costs,
+            &clause.conditions,
+            &clause.effects,
+            clause.reminder.as_ref(),
+            &context,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn bind_sacrificed_damage_face_context(
+    input: &OracleFaceInput<'_>,
+    clauses: &mut [BoundedOracleClause],
+) -> Result<(), CompileError> {
+    let dependent_indices = clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            clause
+                .effects
+                .iter()
+                .any(|effect| {
+                    matches!(
+                        effect,
+                        Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program))
+                            if program.amount()
+                                == crate::damage_clause_compiler::DamageAmountTemplate::SacrificedCreaturePower
+                    )
+                })
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if dependent_indices.is_empty() {
+        return Ok(());
+    }
+
+    let cost_indices = clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            matches!(
+                clause.costs.as_slice(),
+                [Cost::Sacrifice {
+                    amount: Amount::Constant(1),
+                    filter,
+                }] if clause.timing == Timing::CastingAdditionalCost
+                    && filter.card_types == [CardType::Creature]
+                    && !filter.card_type_match_any
+                    && filter.excluded_card_types.is_empty()
+            )
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [cost_index] = cost_indices.as_slice() else {
+        return Err(unsupported(
+            clauses[dependent_indices[0]].address,
+            &clauses[dependent_indices[0]].source_clause,
+        ));
+    };
+    let cost_clause_index = clauses[*cost_index].address.clause_index;
+    let selection_id = 0;
+
+    for index in &dependent_indices {
+        let address = clauses[*index].address;
+        let source_clause = clauses[*index].source_clause.clone();
+        for effect in &mut clauses[*index].effects {
+            let Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program)) =
+                effect
+            else {
+                continue;
+            };
+            if !program.bind_sacrificed_creature_power(cost_clause_index, selection_id) {
+                return Err(unsupported(address, &source_clause));
+            }
+        }
+    }
+
+    let Cost::Sacrifice { filter, .. } = clauses[*cost_index].costs[0].clone() else {
+        unreachable!("the unique linked cost was validated above");
+    };
+    clauses[*cost_index].costs[0] = Cost::SacrificeSelection(ObjectSelection {
+        id: selection_id,
+        chooser: PlayerRef::You,
+        filter,
+        amount: TargetAmount::Exactly(1),
+    });
+
+    let mut context = vec!["sacrificed-damage-face-context/v1".to_owned()];
+    context.push(input.oracle_clauses[usize::from(cost_clause_index)].to_owned());
+    context.extend(
+        dependent_indices
+            .iter()
+            .map(|index| clauses[*index].normalized_clause.clone()),
+    );
+    let context = context.iter().map(String::as_str).collect::<Vec<_>>();
+    for index in std::iter::once(*cost_index).chain(dependent_indices) {
+        let clause = &mut clauses[index];
+        clause.semantic_digest = bounded_clause_semantic_digest_with_program_context(
+            &clause.source_clause,
+            &clause.normalized_clause,
+            &clause.costs,
+            &clause.conditions,
+            &clause.effects,
+            clause.reminder.as_ref(),
+            &context,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn bind_discarded_mana_value_damage_face_context(
+    input: &OracleFaceInput<'_>,
+    clauses: &mut [BoundedOracleClause],
+) -> Result<(), CompileError> {
+    let dependent_indices = clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            clause
+                .effects
+                .iter()
+                .any(|effect| {
+                    matches!(
+                        effect,
+                        Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program))
+                            if program.amount()
+                                == crate::damage_clause_compiler::DamageAmountTemplate::DiscardedCardsTotalManaValue
+                    )
+                })
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if dependent_indices.is_empty() {
+        return Ok(());
+    }
+    let cost_indices = clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            matches!(
+                clause.costs.as_slice(),
+                [Cost::DiscardSelectionAmount {
+                    selection: ObjectSelection { id: 0, .. },
+                    amount: Amount::X,
+                }] if clause.timing == Timing::CastingAdditionalCost
+            )
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [cost_index] = cost_indices.as_slice() else {
+        return Err(unsupported(
+            clauses[dependent_indices[0]].address,
+            &clauses[dependent_indices[0]].source_clause,
+        ));
+    };
+    let cost_clause_index = clauses[*cost_index].address.clause_index;
+    for index in &dependent_indices {
+        let address = clauses[*index].address;
+        let source_clause = clauses[*index].source_clause.clone();
+        for effect in &mut clauses[*index].effects {
+            let Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program)) =
+                effect
+            else {
+                continue;
+            };
+            if !program.bind_discarded_cards_total_mana_value(cost_clause_index, 0) {
+                return Err(unsupported(address, &source_clause));
+            }
+        }
+    }
+    let mut context = vec!["discarded-mana-value-damage-face-context/v1".to_owned()];
+    context.push(input.oracle_clauses[usize::from(cost_clause_index)].to_owned());
+    context.extend(
+        dependent_indices
+            .iter()
+            .map(|index| clauses[*index].normalized_clause.clone()),
+    );
+    let context = context.iter().map(String::as_str).collect::<Vec<_>>();
+    for index in std::iter::once(*cost_index).chain(dependent_indices) {
+        let clause = &mut clauses[index];
+        clause.semantic_digest = bounded_clause_semantic_digest_with_program_context(
+            &clause.source_clause,
+            &clause.normalized_clause,
+            &clause.costs,
+            &clause.conditions,
+            &clause.effects,
+            clause.reminder.as_ref(),
+            &context,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn bind_sacrificed_creature_library_face_context(
+    input: &OracleFaceInput<'_>,
+    clauses: &mut [BoundedOracleClause],
+) -> Result<(), CompileError> {
+    let dependent_indices = clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            clause
+                .effects
+                .iter()
+                .any(|effect| {
+                    matches!(
+                        effect,
+                        Effect::LibraryProcedure(
+                            LibraryProcedure::DrawSacrificedCreaturePower {
+                                binding: SacrificedCreatureProcedureBinding::Unbound,
+                                ..
+                            }
+                            | LibraryProcedure::SacrificedPermanentManaValue {
+                                binding: SacrificedCreatureProcedureBinding::Unbound,
+                                ..
+                            }
+                            | LibraryProcedure::DrawIfSacrificedPermanentWasVehicle {
+                                binding: SacrificedCreatureProcedureBinding::Unbound,
+                                ..
+                            }
+                            | LibraryProcedure::ScryIfSearchedCardCheaperThanSacrificedPermanent {
+                                binding: SacrificedCreatureProcedureBinding::Unbound,
+                                ..
+                            }
+                        ) | Effect::PlayersDiscardSacrificedCreaturePower {
+                            binding: SacrificedCreatureProcedureBinding::Unbound,
+                            ..
+                        } | Effect::CreateTokensSacrificedCreaturePower {
+                            binding: SacrificedCreatureProcedureBinding::Unbound,
+                            ..
+                        }
+                    )
+                })
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if dependent_indices.is_empty() {
+        return Ok(());
+    }
+    let cost_indices = clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            matches!(
+                clause.costs.as_slice(),
+                [Cost::Sacrifice {
+                    amount: Amount::Constant(1),
+                    filter,
+                }] if clause.timing == Timing::CastingAdditionalCost
+                    && (filter.card_types == [CardType::Creature]
+                        && !filter.card_type_match_any
+                        || filter.card_types == [CardType::Artifact, CardType::Creature]
+                            && filter.card_type_match_any)
+                    && filter.excluded_card_types.is_empty()
+            )
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [cost_index] = cost_indices.as_slice() else {
+        return Err(unsupported(
+            clauses[dependent_indices[0]].address,
+            &clauses[dependent_indices[0]].source_clause,
+        ));
+    };
+    let cost_clause_index = clauses[*cost_index].address.clause_index;
+    let selection_id = 0;
+    for index in &dependent_indices {
+        let address = clauses[*index].address;
+        let source_clause = clauses[*index].source_clause.clone();
+        for effect in &mut clauses[*index].effects {
+            let binding = match effect {
+                Effect::LibraryProcedure(LibraryProcedure::DrawSacrificedCreaturePower {
+                    binding,
+                    ..
+                })
+                | Effect::LibraryProcedure(LibraryProcedure::SacrificedPermanentManaValue {
+                    binding,
+                    ..
+                })
+                | Effect::LibraryProcedure(
+                    LibraryProcedure::DrawIfSacrificedPermanentWasVehicle { binding, .. },
+                )
+                | Effect::LibraryProcedure(
+                    LibraryProcedure::ScryIfSearchedCardCheaperThanSacrificedPermanent {
+                        binding,
+                        ..
+                    },
+                )
+                | Effect::PlayersDiscardSacrificedCreaturePower { binding, .. }
+                | Effect::CreateTokensSacrificedCreaturePower { binding, .. } => binding,
+                _ => continue,
+            };
+            if *binding != SacrificedCreatureProcedureBinding::Unbound {
+                return Err(unsupported(address, &source_clause));
+            }
+            *binding = SacrificedCreatureProcedureBinding::FaceCost {
+                cost_clause_index,
+                selection_id,
+            };
+        }
+    }
+    let Cost::Sacrifice { filter, .. } = clauses[*cost_index].costs[0].clone() else {
+        unreachable!("the unique linked cost was validated above");
+    };
+    clauses[*cost_index].costs[0] = Cost::SacrificeSelection(ObjectSelection {
+        id: selection_id,
+        chooser: PlayerRef::You,
+        filter,
+        amount: TargetAmount::Exactly(1),
+    });
+
+    let mut context = vec!["sacrificed-creature-library-face-context/v1".to_owned()];
+    context.push(input.oracle_clauses[usize::from(cost_clause_index)].to_owned());
+    context.extend(
+        dependent_indices
+            .iter()
+            .map(|index| clauses[*index].normalized_clause.clone()),
+    );
+    let context = context.iter().map(String::as_str).collect::<Vec<_>>();
+    for index in std::iter::once(*cost_index).chain(dependent_indices) {
+        let clause = &mut clauses[index];
+        clause.semantic_digest = bounded_clause_semantic_digest_with_program_context(
+            &clause.source_clause,
+            &clause.normalized_clause,
+            &clause.costs,
+            &clause.conditions,
+            &clause.effects,
+            clause.reminder.as_ref(),
+            &context,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn bind_revealed_subtype_face_context(
+    input: &OracleFaceInput<'_>,
+    clauses: &mut [BoundedOracleClause],
+) -> Result<(), CompileError> {
+    fn bind_condition(condition: &mut Condition, cost_clause_index: u16, selection_id: u8) -> bool {
+        match condition {
+            Condition::RevealedOrControlledSubtype { subtype } => {
+                let subtype = std::mem::take(subtype);
+                *condition = Condition::BoundRevealedOrControlledSubtype {
+                    cost_clause_index,
+                    selection_id,
+                    subtype,
+                };
+                true
+            }
+            Condition::All(conditions) => conditions.iter_mut().fold(false, |bound, condition| {
+                bind_condition(condition, cost_clause_index, selection_id) || bound
+            }),
+            _ => false,
+        }
+    }
+
+    fn bind_effect(effect: &mut Effect, cost_clause_index: u16, selection_id: u8) -> bool {
+        match effect {
+            Effect::Conditional {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let mut bound = bind_condition(condition, cost_clause_index, selection_id);
+                for nested in if_true.iter_mut().chain(if_false.iter_mut()) {
+                    bound |= bind_effect(nested, cost_clause_index, selection_id);
+                }
+                bound
+            }
+            Effect::Optional(effects) => effects.iter_mut().fold(false, |bound, effect| {
+                bind_effect(effect, cost_clause_index, selection_id) || bound
+            }),
+            _ => false,
+        }
+    }
+
+    let dependent_indices = clauses
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            let conditions_bound = clause
+                .conditions
+                .iter_mut()
+                .fold(false, |bound, condition| {
+                    bind_condition(condition, 0, 0) || bound
+                });
+            let effects_bound = clause
+                .effects
+                .iter_mut()
+                .fold(false, |bound, effect| bind_effect(effect, 0, 0) || bound);
+            (conditions_bound || effects_bound).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if dependent_indices.is_empty() {
+        return Ok(());
+    }
+
+    let cost_indices = clauses
+        .iter()
+        .enumerate()
+        .filter_map(|(index, clause)| {
+            matches!(
+                clause.costs.as_slice(),
+                [Cost::RevealSelection {
+                    selection: ObjectSelection { filter, amount: TargetAmount::Exactly(1), .. },
+                    optional: true,
+                }] if clause.timing == Timing::CastingAdditionalCost
+                    && filter.zones == [Zone::Hand]
+                    && filter.subtypes == ["Dragon"]
+            )
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let [cost_index] = cost_indices.as_slice() else {
+        return Err(unsupported(
+            clauses[dependent_indices[0]].address,
+            &clauses[dependent_indices[0]].source_clause,
+        ));
+    };
+    let Cost::RevealSelection { selection, .. } = &clauses[*cost_index].costs[0] else {
+        unreachable!("the unique reveal cost was validated above");
+    };
+    let cost_clause_index = clauses[*cost_index].address.clause_index;
+    let selection_id = selection.id;
+
+    fn rebind_condition(condition: &mut Condition, cost_clause_index: u16, selection_id: u8) {
+        match condition {
+            Condition::BoundRevealedOrControlledSubtype {
+                cost_clause_index: bound_clause,
+                selection_id: bound_selection,
+                ..
+            } => {
+                *bound_clause = cost_clause_index;
+                *bound_selection = selection_id;
+            }
+            Condition::All(conditions) => {
+                for condition in conditions {
+                    rebind_condition(condition, cost_clause_index, selection_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn rebind_effect(effect: &mut Effect, cost_clause_index: u16, selection_id: u8) {
+        match effect {
+            Effect::Conditional {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                rebind_condition(condition, cost_clause_index, selection_id);
+                for nested in if_true.iter_mut().chain(if_false.iter_mut()) {
+                    rebind_effect(nested, cost_clause_index, selection_id);
+                }
+            }
+            Effect::Optional(effects) => {
+                for effect in effects {
+                    rebind_effect(effect, cost_clause_index, selection_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    for index in &dependent_indices {
+        for condition in &mut clauses[*index].conditions {
+            rebind_condition(condition, cost_clause_index, selection_id);
+        }
+        for effect in &mut clauses[*index].effects {
+            rebind_effect(effect, cost_clause_index, selection_id);
+        }
+    }
+
+    let mut context = vec!["revealed-subtype-face-context/v1".to_owned()];
+    context.push(input.oracle_clauses[usize::from(cost_clause_index)].to_owned());
+    context.extend(
+        dependent_indices
+            .iter()
+            .map(|index| clauses[*index].normalized_clause.clone()),
+    );
+    let context = context.iter().map(String::as_str).collect::<Vec<_>>();
+    for index in std::iter::once(*cost_index).chain(dependent_indices) {
+        let clause = &mut clauses[index];
+        clause.semantic_digest = bounded_clause_semantic_digest_with_program_context(
+            &clause.source_clause,
+            &clause.normalized_clause,
+            &clause.costs,
+            &clause.conditions,
+            &clause.effects,
+            clause.reminder.as_ref(),
+            &context,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn bind_saga_lore_face_context(
     input: &OracleFaceInput<'_>,
     clauses: &mut [BoundedOracleClause],
 ) -> Result<(), CompileError> {
@@ -2757,8 +3750,22 @@ fn bind_saga_lore_face_context(
                 normalized_clause: clause.normalized_clause.clone(),
             });
         }
+        if let SagaEntryLoreProcedure::ReadAhead {
+            final_chapter: SagaFinalChapter::PrintedUnvalidated(printed),
+            ..
+        } = &procedure.entry_lore
+            && *printed != highest_printed_chapter
+        {
+            return Err(CompileError::UnsupportedSyntax {
+                address: clause.address,
+                normalized_clause: clause.normalized_clause.clone(),
+            });
+        }
         procedure.final_chapter =
             SagaFinalChapter::BoundHighestPrintedChapter(highest_printed_chapter);
+        if let SagaEntryLoreProcedure::ReadAhead { final_chapter, .. } = &mut procedure.entry_lore {
+            *final_chapter = SagaFinalChapter::BoundHighestPrintedChapter(highest_printed_chapter);
+        }
         clause.semantic_digest = bounded_clause_semantic_digest_with_program_context(
             &clause.source_clause,
             &clause.normalized_clause,
@@ -2908,16 +3915,15 @@ pub(crate) fn retain_alternate_zone_cast_keyword_program(
     program: AlternateZoneKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
     let timing = match program.kind() {
-        AlternateZoneKeywordKind::Unearth(_) => Timing::Activated,
         AlternateZoneKeywordKind::Suspend(_)
+        | AlternateZoneKeywordKind::Unearth(_)
         | AlternateZoneKeywordKind::Madness(_)
         | AlternateZoneKeywordKind::Escape(_)
         | AlternateZoneKeywordKind::ResidualFlashback(_) => Timing::TypedStandaloneProgram,
     };
-    if program.production_adapter_connected()
-        || compile_alternate_zone_cast_keyword_program(input.oracle_clause, input.source_type_line)
-            .as_ref()
-            != Some(&program)
+    if compile_alternate_zone_cast_keyword_program(input.oracle_clause, input.source_type_line)
+        .as_ref()
+        != Some(&program)
     {
         return Err(residual_program_rejected(&input));
     }
@@ -2937,16 +3943,15 @@ pub(crate) fn retain_cast_modifier_keyword_program(
     program: CastModifierKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
     let timing = match program.kind() {
-        CastModifierKeywordKind::Buyback { .. }
-        | CastModifierKeywordKind::Entwine { .. }
+        CastModifierKeywordKind::Entwine { .. }
         | CastModifierKeywordKind::SpliceOntoArcane { .. } => Timing::CastingAdditionalCost,
-        CastModifierKeywordKind::Overload { .. }
+        CastModifierKeywordKind::Buyback { .. }
+        | CastModifierKeywordKind::Overload { .. }
         | CastModifierKeywordKind::Replicate { .. }
-        | CastModifierKeywordKind::Storm => Timing::TypedStandaloneProgram,
+        | CastModifierKeywordKind::Storm
+        | CastModifierKeywordKind::Conspire => Timing::TypedStandaloneProgram,
     };
-    if program.production_adapter_connected()
-        || compile_cast_modifier_keyword_program(input.oracle_clause).as_ref() != Some(&program)
-    {
+    if compile_cast_modifier_keyword_program(input.oracle_clause).as_ref() != Some(&program) {
         return Err(residual_program_rejected(&input));
     }
     let exact_source = program.exact_source().to_owned();
@@ -2996,10 +4001,9 @@ pub(crate) fn retain_delayed_counter_keyword_program(
     input: OracleClauseInput<'_>,
     program: DelayedCounterKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || compile_delayed_counter_keyword_program(input.oracle_clause, program.normalized_source())
-            .as_ref()
-            != Some(&program)
+    if compile_delayed_counter_keyword_program(input.oracle_clause, program.normalized_source())
+        .as_ref()
+        != Some(&program)
     {
         return Err(residual_program_rejected(&input));
     }
@@ -3019,12 +4023,11 @@ pub(crate) fn retain_face_down_merge_keyword_program(
     source_layout: &str,
     program: FaceDownMergeKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || classify_face_down_merge_snapshot_candidate(
-            input.oracle_clause,
-            input.source_type_line,
-            source_layout,
-        ) != Some(FaceDownMergeSnapshotCandidateClass::SupportedResidual)
+    if classify_face_down_merge_snapshot_candidate(
+        input.oracle_clause,
+        input.source_type_line,
+        source_layout,
+    ) != Some(FaceDownMergeSnapshotCandidateClass::SupportedResidual)
         || compile_face_down_merge_keyword_program(
             input.oracle_clause,
             input.source_type_line,
@@ -3050,10 +4053,9 @@ pub(crate) fn retain_combat_special_keyword_program(
     input: OracleClauseInput<'_>,
     program: CombatSpecialKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || compile_combat_special_keyword_program(input.oracle_clause, program.normalized_source())
-            .as_ref()
-            != Some(&program)
+    if compile_combat_special_keyword_program(input.oracle_clause, program.normalized_source())
+        .as_ref()
+        != Some(&program)
     {
         return Err(residual_program_rejected(&input));
     }
@@ -3078,8 +4080,7 @@ pub(crate) fn retain_graveyard_transform_keyword_program(
     source_context: &GraveyardTransformSourceSemanticContext,
     program: GraveyardTransformKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || program.source_context() != source_context
+    if program.source_context() != source_context
         || compile_graveyard_transform_keyword_program(input.oracle_clause, source_context).as_ref()
             != Some(&program)
     {
@@ -3119,7 +4120,6 @@ pub(crate) fn retain_level_progression_program(
         .filter(|line| !line.is_empty() && *line != "//")
         .any(|line| line == exact_source);
     if program.has_exact_contract()
-        && !crate::level_progression_runtime::level_progression_production_adapter_connected()
         && source_layout == program.exact_layout()
         && face_count == 1
         && input.source_type_line == program.exact_type_line()
@@ -3140,9 +4140,8 @@ pub(crate) fn retain_extended_cast_zone_keyword_program(
     input: OracleClauseInput<'_>,
     program: ExtendedCastZoneProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || classify_extended_cast_zone_snapshot_candidate(input.oracle_clause)
-            != Some(ExtendedCastZoneSnapshotCandidateClass::SupportedFamily)
+    if classify_extended_cast_zone_snapshot_candidate(input.oracle_clause)
+        != Some(ExtendedCastZoneSnapshotCandidateClass::SupportedFamily)
         || compile_extended_cast_zone_keyword_program(input.oracle_clause).as_ref()
             != Some(&program)
     {
@@ -3167,8 +4166,7 @@ pub(crate) fn retain_residual_cost_keyword_program(
         input.source_name,
         input.source_type_line,
     );
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || program.normalized_source() != normalized_clause
         || compile_residual_cost_keyword_program(input.oracle_clause, &normalized_clause).as_ref()
             != Some(&program)
@@ -3197,8 +4195,7 @@ pub(crate) fn retain_linked_cast_cost_keyword_program(
     input: OracleClauseInput<'_>,
     program: LinkedCastCostProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || compile_linked_cast_cost_keyword_program(input.oracle_clause, input.source_type_line)
             .as_ref()
             != Some(&program)
@@ -3220,8 +4217,7 @@ pub(crate) fn retain_combat_trigger_keyword_program(
     program: CombatTriggerKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
     let normalized_clause = reviewed_combat_trigger_normalized_source(input.oracle_clause);
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || program.normalized_source() != normalized_clause
         || compile_combat_trigger_keyword_program(input.oracle_clause, &normalized_clause).as_ref()
             != Some(&program)
@@ -3239,6 +4235,7 @@ pub(crate) fn retain_combat_trigger_keyword_program(
         CombatTriggerKeywordKind::Annihilator { .. }
         | CombatTriggerKeywordKind::BattleCry
         | CombatTriggerKeywordKind::Dethrone
+        | CombatTriggerKeywordKind::Firebending { .. }
         | CombatTriggerKeywordKind::Melee
         | CombatTriggerKeywordKind::Provoke => Timing::Triggered(Box::new(Trigger::SourceAttacks)),
         CombatTriggerKeywordKind::Ingest => {
@@ -3259,8 +4256,7 @@ pub(crate) fn retain_creature_counter_keyword_program(
     input: OracleClauseInput<'_>,
     program: CreatureCounterKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || compile_creature_counter_keyword_program(input.oracle_clause, input.source_type_line)
             .as_ref()
             != Some(&program)
@@ -3286,8 +4282,7 @@ pub(crate) fn retain_graveyard_hand_library_keyword_program(
         type_line: input.source_type_line,
         mana_value: source_mana_value,
     };
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || compile_zone_keyword_program(input.oracle_clause, source_context).as_ref()
             != Some(&program)
     {
@@ -3308,8 +4303,7 @@ pub(crate) fn retain_cast_choice_keyword_program(
     source_context: &CastChoiceSourceContext,
     program: CastChoiceKeywordProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || source_context.source_type_line != input.source_type_line
         || compile_cast_choice_keyword_program(input.oracle_clause, source_context).as_ref()
             != Some(&program)
@@ -3332,8 +4326,7 @@ pub(crate) fn retain_static_special_keyword_program(
 ) -> Result<BoundedOracleClause, CompileError> {
     let source_context = StaticSpecialSourceContext::from_type_line(input.source_type_line);
     let normalized_source = reviewed_static_special_normalized_source(input.oracle_clause);
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || compile_static_special_keyword_program(
             input.oracle_clause,
             &normalized_source,
@@ -3359,19 +4352,40 @@ pub(crate) fn retain_common_action_procedure_program(
     program: CommonActionProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
     let normalized_source = reviewed_common_action_normalized_source(input.oracle_clause);
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || compile_common_action_program(input.oracle_clause, &normalized_source).as_ref()
             != Some(&program)
     {
         return Err(residual_program_rejected(&input));
     }
     let exact_source = program.exact_source().to_owned();
+    let timing = match program.timing() {
+        CommonActionTiming::ResolvingInstruction => Timing::SpellResolution,
+        CommonActionTiming::Triggered(envelope) => Timing::Triggered(Box::new(match envelope {
+            CommonActionTriggerEnvelope::SourceEnters => Trigger::SourceEnters,
+            CommonActionTriggerEnvelope::SourceDies => Trigger::ObjectEvent {
+                subject: TriggerSubject::Source,
+                event: ObjectEventKind::Dies,
+            },
+            CommonActionTriggerEnvelope::SourceAttacks => Trigger::SourceAttacks,
+            CommonActionTriggerEnvelope::SourceDealsCombatDamageToPlayer => {
+                Trigger::SourceCombatDamageToPlayer
+            }
+            CommonActionTriggerEnvelope::ControllerUpkeepBegins => Trigger::BeginningOf {
+                step: Step::Upkeep,
+                player: TurnPlayer::You,
+            },
+            CommonActionTriggerEnvelope::ControllerEndStepBegins => Trigger::BeginningOf {
+                step: Step::EndStep,
+                player: TurnPlayer::You,
+            },
+        })),
+    };
     retain_residual_standalone_program(
         input,
         &exact_source,
         &exact_source,
-        Timing::TypedStandaloneProgram,
+        timing,
         StandaloneRuleProgram::CommonActionProcedure(Box::new(program)),
     )
 }
@@ -3381,19 +4395,30 @@ pub(crate) fn retain_regeneration_action_program(
     program: RegenerationActionProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
     let normalized_source = collapse_whitespace(input.oracle_clause);
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || compile_regeneration_action_program(input.oracle_clause, &normalized_source).as_ref()
             != Some(&program)
     {
         return Err(residual_program_rejected(&input));
     }
     let exact_source = program.exact_source().to_owned();
+    let timing = match program.kind() {
+        crate::regeneration_action_runtime::RegenerationActionKind::StaticDestructionReplacement(
+            _,
+        ) => Timing::Replacement,
+        crate::regeneration_action_runtime::RegenerationActionKind::StandaloneResolution(_) => {
+            Timing::SpellResolution
+        }
+        crate::regeneration_action_runtime::RegenerationActionKind::Activated(_)
+        | crate::regeneration_action_runtime::RegenerationActionKind::Triggered(_) => {
+            Timing::TypedStandaloneProgram
+        }
+    };
     retain_residual_standalone_program(
         input,
         &exact_source,
         &exact_source,
-        Timing::TypedStandaloneProgram,
+        timing,
         StandaloneRuleProgram::RegenerationAction(Box::new(program)),
     )
 }
@@ -3402,8 +4427,14 @@ pub(crate) fn retain_oracle_action_program(
     input: OracleClauseInput<'_>,
     program: OracleActionProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
+        || program.semantic_context() != OracleActionSemanticContext::ResolvingSpellInstruction
+        || !["instant", "sorcery"].iter().any(|card_type| {
+            input
+                .source_type_line
+                .split(|character: char| !character.is_ascii_alphabetic())
+                .any(|word| word.eq_ignore_ascii_case(card_type))
+        })
         || compile_oracle_action_program(OracleActionCompileInput {
             exact_source: input.oracle_clause,
             normalized_source: program.normalized_source(),
@@ -3413,6 +4444,40 @@ pub(crate) fn retain_oracle_action_program(
             != Ok(&program)
     {
         return Err(residual_program_rejected(&input));
+    }
+    let address = ClauseAddress {
+        face_index: input.face_index,
+        clause_index: input.clause_index,
+    };
+    let mut parsed = ParsedClause::new(Timing::SpellResolution);
+    if lower_oracle_action_program(&program, &mut parsed).is_some() {
+        let source_clause = input.oracle_clause.to_owned();
+        let normalized_clause = program.normalized_source().to_owned();
+        let semantic_digest = bounded_clause_semantic_digest_with_program_context(
+            &source_clause,
+            &normalized_clause,
+            &parsed.costs,
+            &parsed.conditions,
+            &parsed.effects,
+            parsed.reminder.as_ref(),
+            &[],
+        );
+        return Ok(BoundedOracleClause {
+            runtime_version: BOUNDED_ORACLE_RUNTIME_VERSION,
+            semantic_digest,
+            address,
+            source_clause,
+            normalized_clause,
+            ability_word: parsed.ability_word,
+            timing: parsed.timing,
+            conditions: parsed.conditions,
+            costs: parsed.costs,
+            targets: parsed.targets,
+            effects: parsed.effects,
+            activation_restriction: parsed.activation_restriction,
+            reminder: parsed.reminder,
+            saga_lore_procedure: parsed.saga_lore_procedure,
+        });
     }
     let exact_source = program.exact_source().to_owned();
     let normalized_source = program.normalized_source().to_owned();
@@ -3425,12 +4490,41 @@ pub(crate) fn retain_oracle_action_program(
     )
 }
 
+pub(crate) fn retain_object_lifecycle_program(
+    input: OracleClauseInput<'_>,
+    complete_face_oracle_text: &str,
+    program: CompiledObjectLifecycle,
+) -> Result<BoundedOracleClause, CompileError> {
+    if !program.owns_clause(input.clause_index)
+        || compile_object_lifecycle_runtime(ObjectLifecycleCardInput {
+            type_line: input.source_type_line,
+            oracle_text: complete_face_oracle_text,
+        })
+        .as_ref()
+            != Some(&program)
+    {
+        return Err(residual_program_rejected(&input));
+    }
+    let exact_source = input.oracle_clause.to_owned();
+    let normalized_source = normalize_oracle_clause(
+        input.oracle_clause,
+        input.source_name,
+        input.source_type_line,
+    );
+    retain_residual_standalone_program(
+        input,
+        &exact_source,
+        &normalized_source,
+        Timing::TypedStandaloneProgram,
+        StandaloneRuleProgram::ObjectLifecycle(Box::new(program)),
+    )
+}
+
 pub(crate) fn retain_oracle_ability_envelope_program(
     input: OracleClauseInput<'_>,
     program: OracleAbilityEnvelopeProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || compile_oracle_ability_envelope(AbilityEnvelopeCompileInput {
             exact_source: input.oracle_clause,
             normalized_source: program.normalized_source(),
@@ -3451,12 +4545,103 @@ pub(crate) fn retain_oracle_ability_envelope_program(
     )
 }
 
+pub(crate) fn retain_retained_oracle_ability_envelope_program(
+    input: OracleClauseInput<'_>,
+    program: RetainedOracleAbilityEnvelopeProgram,
+) -> Result<BoundedOracleClause, CompileError> {
+    if program.production_adapter_connected()
+        || program.exact_source() != input.oracle_clause
+        || compile_retained_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+            exact_source: input.oracle_clause,
+            normalized_source: program.normalized_source(),
+        })
+        .as_ref()
+            != Ok(&program)
+    {
+        return Err(residual_program_rejected(&input));
+    }
+    let exact_source = program.exact_source().to_owned();
+    let normalized_source = program.normalized_source().to_owned();
+    retain_residual_standalone_program(
+        input,
+        &exact_source,
+        &normalized_source,
+        Timing::TypedStandaloneProgram,
+        StandaloneRuleProgram::RetainedOracleAbilityEnvelope(Box::new(program)),
+    )
+}
+
+pub(crate) fn retain_linked_oracle_ability_envelope_program(
+    input: OracleClauseInput<'_>,
+    envelope: RetainedOracleAbilityEnvelopeProgram,
+    body: BoundedOracleClause,
+) -> Result<BoundedOracleClause, CompileError> {
+    if envelope.exact_source() != input.oracle_clause
+        || body.source_clause() != envelope.exact_body()
+        || body.address()
+            != (ClauseAddress {
+                face_index: input.face_index,
+                clause_index: input.clause_index,
+            })
+        || !crate::oracle_ability_envelope_runtime::ability_envelope_header_production_adapter_connected(
+            envelope.envelope(),
+        )
+        || !matches!(
+            body.timing(),
+            Timing::SpellResolution | Timing::TypedStandaloneProgram
+        )
+        || body.activation_restriction().is_some()
+        || !crate::bounded_oracle_consumer::clause_has_executable_contract(&body)
+    {
+        return Err(residual_program_rejected(&input));
+    }
+    let exact_source = envelope.exact_source().to_owned();
+    let normalized_source = envelope.normalized_source().to_owned();
+    retain_residual_standalone_program(
+        input,
+        &exact_source,
+        &normalized_source,
+        Timing::TypedStandaloneProgram,
+        StandaloneRuleProgram::LinkedOracleAbilityEnvelope(Box::new(
+            LinkedOracleAbilityEnvelopeProgram {
+                envelope,
+                body: Box::new(body),
+            },
+        )),
+    )
+}
+
+pub(crate) fn retain_structural_oracle_ability_envelope_program(
+    input: OracleClauseInput<'_>,
+    program: StructuralOracleAbilityEnvelopeProgram,
+) -> Result<BoundedOracleClause, CompileError> {
+    if program.production_adapter_connected()
+        || program.exact_source() != input.oracle_clause
+        || compile_structural_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+            exact_source: input.oracle_clause,
+            normalized_source: program.normalized_source(),
+        })
+        .as_ref()
+            != Ok(&program)
+    {
+        return Err(residual_program_rejected(&input));
+    }
+    let exact_source = program.exact_source().to_owned();
+    let normalized_source = program.normalized_source().to_owned();
+    retain_residual_standalone_program(
+        input,
+        &exact_source,
+        &normalized_source,
+        Timing::TypedStandaloneProgram,
+        StandaloneRuleProgram::StructuralOracleAbilityEnvelope(Box::new(program)),
+    )
+}
+
 pub(crate) fn retain_oracle_static_replacement_program(
     input: OracleClauseInput<'_>,
     program: OracleStaticReplacementProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || compile_oracle_static_replacement_program(OracleStaticReplacementCompileInput {
             exact_source: input.oracle_clause,
             normalized_source: program.normalized_source(),
@@ -3479,6 +4664,41 @@ pub(crate) fn retain_oracle_static_replacement_program(
         &normalized_source,
         timing,
         StandaloneRuleProgram::OracleStaticReplacement(Box::new(program)),
+    )
+}
+
+pub(crate) fn retain_retained_oracle_static_replacement_program(
+    input: OracleClauseInput<'_>,
+    program: RetainedOracleStaticReplacementProgram,
+) -> Result<BoundedOracleClause, CompileError> {
+    if program.production_adapter_connected()
+        || program.exact_source() != input.oracle_clause
+        || compile_retained_oracle_static_replacement_program(OracleStaticReplacementCompileInput {
+            exact_source: input.oracle_clause,
+            normalized_source: program.normalized_source(),
+            semantic_context: program.semantic_context(),
+        })
+        .as_ref()
+            != Ok(&program)
+    {
+        return Err(residual_program_rejected(&input));
+    }
+    let exact_source = program.exact_source().to_owned();
+    let normalized_source = program.normalized_source().to_owned();
+    let timing = match program.shape() {
+        crate::oracle_static_replacement_runtime::RetainedStaticReplacementShape::Static => {
+            Timing::Static
+        }
+        crate::oracle_static_replacement_runtime::RetainedStaticReplacementShape::Replacement => {
+            Timing::Replacement
+        }
+    };
+    retain_residual_standalone_program(
+        input,
+        &exact_source,
+        &normalized_source,
+        timing,
+        StandaloneRuleProgram::RetainedOracleStaticReplacement(Box::new(program)),
     )
 }
 
@@ -3513,8 +4733,7 @@ pub(crate) fn retain_oracle_face_modal_line_program(
     input: OracleClauseInput<'_>,
     program: OracleFaceModalLineProgram,
 ) -> Result<BoundedOracleClause, CompileError> {
-    if program.production_adapter_connected()
-        || program.exact_source() != input.oracle_clause
+    if program.exact_source() != input.oracle_clause
         || OracleFaceModalLineProgram::compile(
             program.exact_source(),
             program.role(),
@@ -3697,12 +4916,38 @@ pub(crate) fn retain_oracle_clause_composition_program(
     })
 }
 
+pub(crate) fn retain_retained_oracle_clause_composition_program(
+    input: OracleClauseInput<'_>,
+    program: RetainedOracleClauseComposition,
+) -> Result<BoundedOracleClause, CompileError> {
+    if program.production_adapter_connected()
+        || program.exact_oracle() != input.oracle_clause
+        || compile_retained_oracle_clause_composition(OracleClauseCompositionInput {
+            exact_oracle: input.oracle_clause,
+            semantic_context: program.semantic_context(),
+        })
+        .as_ref()
+            != Ok(&program)
+    {
+        return Err(residual_program_rejected(&input));
+    }
+    let exact_source = program.exact_oracle().to_owned();
+    retain_residual_standalone_program(
+        input,
+        &exact_source,
+        &exact_source,
+        Timing::TypedStandaloneProgram,
+        StandaloneRuleProgram::RetainedOracleComposition(Box::new(program)),
+    )
+}
+
 fn oracle_composition_child_contains_composition(program: &OracleCompositionChildProgram) -> bool {
     match program {
         OracleCompositionChildProgram::Bounded(program) => {
             effects_contain_oracle_composition(program.effects())
         }
         OracleCompositionChildProgram::DelegatedKeyword(_) => false,
+        OracleCompositionChildProgram::RetainedSyntax(_) => false,
     }
 }
 
@@ -3737,7 +4982,13 @@ fn compile_bounded_oracle_clause_with_standalone_fallbacks(
     let standalone_annotation = compile_standalone_oracle_annotation(validated.line());
     let normalized_clause =
         normalize_oracle_clause(validated.line(), input.source_name, input.source_type_line);
-    let (without_reminder, reminder_text) = split_trailing_reminder(&normalized_clause);
+    let is_read_ahead = normalized_clause
+        .starts_with("Read ahead (Choose a chapter and start with that many lore counters. ");
+    let (without_reminder, reminder_text) = if is_read_ahead {
+        (normalized_clause.as_str(), None)
+    } else {
+        split_trailing_reminder(&normalized_clause)
+    };
     let (ability_word, body) = split_ability_word(without_reminder);
     let (mut parsed, mut standalone_owned) =
         match parse_complete_clause(address, body, input.source_type_line) {
@@ -3750,9 +5001,44 @@ fn compile_bounded_oracle_clause_with_standalone_fallbacks(
                     ) || type_line_has_word(input.source_type_line, "saga")
                 }) =>
             {
-                let mut parsed = ParsedClause::new(Timing::Static);
+                let annotation = standalone_annotation.expect("guard proves annotation exists");
+                let mut parsed =
+                    if let StandaloneOracleAnnotationKind::LegendarySpellRestriction(restriction) =
+                        annotation.kind()
+                    {
+                        let matching_type = match restriction.spell_kind {
+                            LegendarySpellKind::Instant => {
+                                type_line_has_word(input.source_type_line, "instant")
+                            }
+                            LegendarySpellKind::Sorcery => {
+                                type_line_has_word(input.source_type_line, "sorcery")
+                            }
+                        };
+                        if !matching_type
+                            || !restriction.requires_controlled_legendary_creature_or_planeswalker
+                        {
+                            return Err(unsupported(address, validated.line()));
+                        }
+                        let filters = [CardType::Creature, CardType::Planeswalker]
+                            .into_iter()
+                            .map(|card_type| ObjectFilter {
+                                zones: vec![Zone::Battlefield],
+                                card_types: vec![card_type],
+                                supertypes: vec![Supertype::Legendary],
+                                ..ObjectFilter::default()
+                            })
+                            .collect();
+                        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+                        parsed.conditions.push(Condition::ControlAny {
+                            player: PlayerRef::You,
+                            filters,
+                        });
+                        parsed
+                    } else {
+                        ParsedClause::new(Timing::Static)
+                    };
                 parsed.reminder = Some(ReminderSemantics::StandaloneAnnotation(Box::new(
-                    standalone_annotation.expect("guard proves annotation exists"),
+                    annotation,
                 )));
                 (parsed, false)
             }
@@ -3928,9 +5214,86 @@ fn compile_standalone_parsed_clause(
         parsed.costs = damage.costs().to_vec();
         parsed.conditions = damage.conditions().to_vec();
         parsed.activation_restriction = damage.activation_restriction().cloned();
+        if let Some(target) = damage_clause_target(damage.recipient()) {
+            parsed.targets.push(target);
+        }
     }
     parsed.effects.push(Effect::StandaloneRuleProgram(program));
     Some(parsed)
+}
+
+fn damage_clause_target(recipient: DamageRecipientTemplate) -> Option<Target> {
+    let battlefield_type = |card_type| {
+        let mut filter = ObjectFilter::with_type(card_type);
+        filter.zones = vec![Zone::Battlefield];
+        TargetFilter::Object(filter)
+    };
+    let creature = || battlefield_type(CardType::Creature);
+    let planeswalker = || battlefield_type(CardType::Planeswalker);
+    let battle = || battlefield_type(CardType::Battle);
+    let filter = match recipient {
+        DamageRecipientTemplate::AnyTarget | DamageRecipientTemplate::SelectedTargets => {
+            TargetFilter::Any(vec![
+                TargetFilter::Player,
+                creature(),
+                planeswalker(),
+                battle(),
+            ])
+        }
+        DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets => {
+            TargetFilter::Any(vec![creature(), planeswalker()])
+        }
+        DamageRecipientTemplate::TargetCreature => creature(),
+        DamageRecipientTemplate::TargetCreatureController => return None,
+        DamageRecipientTemplate::TargetAttackingOrBlockingCreature => {
+            let mut attacking = ObjectFilter::with_type(CardType::Creature);
+            attacking.zones = vec![Zone::Battlefield];
+            attacking.attacking = Some(true);
+            let mut blocking = ObjectFilter::with_type(CardType::Creature);
+            blocking.zones = vec![Zone::Battlefield];
+            blocking.blocking = Some(true);
+            TargetFilter::Any(vec![
+                TargetFilter::Object(attacking),
+                TargetFilter::Object(blocking),
+            ])
+        }
+        DamageRecipientTemplate::TargetCreatureDealtDamageThisTurn => return None,
+        DamageRecipientTemplate::TargetCreatureOrPlaneswalker => {
+            TargetFilter::Any(vec![creature(), planeswalker()])
+        }
+        DamageRecipientTemplate::TargetPlayer => TargetFilter::Player,
+        DamageRecipientTemplate::TargetOpponent => TargetFilter::Opponent,
+        DamageRecipientTemplate::TargetPlayerOrPlaneswalker => {
+            TargetFilter::Any(vec![TargetFilter::Player, planeswalker()])
+        }
+        DamageRecipientTemplate::TargetOpponentOrPlaneswalker => {
+            TargetFilter::Any(vec![TargetFilter::Opponent, planeswalker()])
+        }
+        DamageRecipientTemplate::TargetPlaneswalker => planeswalker(),
+        DamageRecipientTemplate::EachOpponent
+        | DamageRecipientTemplate::EachPlayer
+        | DamageRecipientTemplate::EachCreature
+        | DamageRecipientTemplate::EachAttackingCreature
+        | DamageRecipientTemplate::EachCreatureWithFlying
+        | DamageRecipientTemplate::EachCreatureWithoutFlying
+        | DamageRecipientTemplate::EachCreatureOpponentsControl
+        | DamageRecipientTemplate::EachCreatureAndEachPlayer
+        | DamageRecipientTemplate::EachCreatureAndEachPlaneswalker
+        | DamageRecipientTemplate::You
+        | DamageRecipientTemplate::ThatPlayer
+        | DamageRecipientTemplate::SourceItself => return None,
+    };
+    Some(Target {
+        id: 0,
+        chooser: PlayerRef::You,
+        filter,
+        amount: match recipient {
+            DamageRecipientTemplate::SelectedTargets => TargetAmount::ExactlyX,
+            DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets => TargetAmount::UpToX,
+            _ => TargetAmount::Exactly(1),
+        },
+        relationship: TargetRelationship::Independent,
+    })
 }
 
 fn compile_entry_choice_keyword_parsed_clause(
@@ -3973,7 +5336,7 @@ fn compile_standalone_rule_program(
             compile_object_state_clause_program(exact_clause, normalized_clause).map(|program| {
                 let timing = match program.kind() {
                     ObjectStateClauseKind::OptionalUntapDuringYourUntapStep => {
-                        Timing::TypedStandaloneProgram
+                        Timing::Static
                     }
                     ObjectStateClauseKind::SelfGraveyardMoveBecomesExile
                     | ObjectStateClauseKind::EntersBattlefieldTapped => Timing::Replacement,
@@ -4002,6 +5365,20 @@ fn compile_standalone_rule_program(
                 (
                     Timing::Static,
                     StandaloneRuleProgram::CombatRestriction(Box::new(program)),
+                )
+            })
+        })
+        .or_else(|| {
+            compile_regeneration_action_program(exact_clause, normalized_clause).map(|program| {
+                let timing = match program.kind() {
+                    crate::regeneration_action_runtime::RegenerationActionKind::StaticDestructionReplacement(_) => Timing::Replacement,
+                    crate::regeneration_action_runtime::RegenerationActionKind::StandaloneResolution(_) => Timing::SpellResolution,
+                    crate::regeneration_action_runtime::RegenerationActionKind::Activated(_)
+                    | crate::regeneration_action_runtime::RegenerationActionKind::Triggered(_) => Timing::TypedStandaloneProgram,
+                };
+                (
+                    timing,
+                    StandaloneRuleProgram::RegenerationAction(Box::new(program)),
                 )
             })
         })
@@ -4333,11 +5710,56 @@ fn collect_standalone_rule_program_context(effects: &[Effect], context: &mut Vec
                     program.semantic_digest()
                 ));
             }
+            Effect::StandaloneRuleProgram(StandaloneRuleProgram::LinkedOracleAbilityEnvelope(
+                program,
+            )) => {
+                context.push(format!(
+                    "oracle-ability-envelope-linked/v1/{}/{}/{}/{}/{}",
+                    ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION,
+                    ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION,
+                    ORACLE_ABILITY_ENVELOPE_RULES_CONTEXT_VERSION,
+                    program.semantic_digest(),
+                    program.body().semantic_digest()
+                ));
+            }
+            Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::RetainedOracleAbilityEnvelope(program),
+            ) => {
+                context.push(format!(
+                    "oracle-ability-envelope-retained/v1/{}/{}/{}/{}",
+                    ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION,
+                    ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION,
+                    ORACLE_ABILITY_ENVELOPE_RULES_CONTEXT_VERSION,
+                    program.semantic_digest()
+                ));
+            }
+            Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::StructuralOracleAbilityEnvelope(program),
+            ) => {
+                context.push(format!(
+                    "oracle-ability-envelope-structural/v1/{}/{}/{}/{}",
+                    ORACLE_ABILITY_ENVELOPE_COMPILER_VERSION,
+                    ORACLE_ABILITY_ENVELOPE_RUNTIME_VERSION,
+                    ORACLE_ABILITY_ENVELOPE_RULES_CONTEXT_VERSION,
+                    program.semantic_digest()
+                ));
+            }
             Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleStaticReplacement(
                 program,
             )) => {
                 context.push(format!(
                     "oracle-static-replacement/v1/{}/{}/{}/{}",
+                    ORACLE_STATIC_REPLACEMENT_COMPILER_VERSION,
+                    ORACLE_STATIC_REPLACEMENT_RUNTIME_VERSION,
+                    ORACLE_STATIC_REPLACEMENT_RULES_CONTEXT_VERSION,
+                    program.semantic_digest()
+                ));
+            }
+            Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::RetainedOracleStaticReplacement(program),
+            ) => {
+                context.push(format!(
+                    "oracle-static-replacement-retained/v1/{}/{}/{}/{}",
                     ORACLE_STATIC_REPLACEMENT_COMPILER_VERSION,
                     ORACLE_STATIC_REPLACEMENT_RUNTIME_VERSION,
                     ORACLE_STATIC_REPLACEMENT_RULES_CONTEXT_VERSION,
@@ -4643,6 +6065,17 @@ fn collect_standalone_rule_program_context(effects: &[Effect], context: &mut Vec
                     program.semantic_digest()
                 ));
             }
+            Effect::StandaloneRuleProgram(StandaloneRuleProgram::RetainedOracleComposition(
+                program,
+            )) => {
+                context.push(format!(
+                    "oracle-composition-retained/v1/{}/{}/{}/{}",
+                    ORACLE_CLAUSE_COMPOSITION_COMPILER_VERSION,
+                    ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION,
+                    ORACLE_CLAUSE_COMPOSITION_RULES_CONTEXT_VERSION,
+                    program.semantic_digest()
+                ));
+            }
             Effect::Optional(nested) => {
                 collect_standalone_rule_program_context(nested, context);
             }
@@ -4837,7 +6270,8 @@ fn collect_predefined_token_definitions<'a>(
                 ReplacementEffect::EnterAsCopy(copy) => {
                     collect_copy_predefined_token_definitions(copy, definitions);
                 }
-                ReplacementEffect::MultiplyEvent { .. }
+                ReplacementEffect::PreventCounters { .. }
+                | ReplacementEffect::MultiplyEvent { .. }
                 | ReplacementEffect::IncreaseEvent { .. }
                 | ReplacementEffect::EntersTapped(_) => {}
             },
@@ -5091,6 +6525,8 @@ fn encode_contract_target_amount(context: &mut CanonicalContextBuilder, amount: 
             context.push("exactly");
             context.push(&value.to_string());
         }
+        TargetAmount::ExactlyX => context.push("exactly-x"),
+        TargetAmount::UpToX => context.push("up-to-x"),
         TargetAmount::UpTo(value) => {
             context.push("up-to");
             context.push(&value.to_string());
@@ -5454,6 +6890,45 @@ fn parse_reminder(
     parsed: &ParsedClause,
 ) -> Result<ReminderSemantics, CompileError> {
     let lower = reminder.to_ascii_lowercase();
+    if lower.trim() == "each deals damage equal to its power to the other."
+        && parsed.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleAction(program))
+                    if program.root().kind.family() == OracleActionFamily::Fight
+            )
+        })
+    {
+        return Ok(ReminderSemantics::FightProcedure);
+    }
+    if let Some(subtype) = ["Plains", "Island", "Swamp", "Mountain", "Forest"]
+        .into_iter()
+        .find(|subtype| {
+            lower.trim()
+                == format!(
+                    "it can't be blocked as long as defending player controls a {}.",
+                    subtype.to_ascii_lowercase()
+                )
+        })
+        && parsed.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::Restriction(Restriction::CannotBeBlockedWhen { .. })
+            )
+        })
+    {
+        return Ok(ReminderSemantics::LandwalkExplanation {
+            subtype: subtype.to_owned(),
+        });
+    }
+    if lower.trim() == "create a token that's a copy of a creature token you control."
+        && parsed
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Populate { .. }))
+    {
+        return Ok(ReminderSemantics::PopulateProcedure);
+    }
     let body_lower = body.to_ascii_lowercase();
     let canonical = canonical_reminder_text(reminder);
 
@@ -5472,6 +6947,27 @@ fn parse_reminder(
             ReminderSemantics::HistoricDefinition,
             remaining,
         ]));
+    }
+
+    let reminder_body = body_lower
+        .rsplit_once(": ")
+        .map_or(body_lower.as_str(), |(_, effect)| effect)
+        .trim()
+        .trim_end_matches('.');
+    if canonical == "mana abilities can't be targeted."
+        && matches!(
+            reminder_body,
+            "counter target activated ability"
+                | "counter target activated ability from an artifact source"
+        )
+        && matches!(
+            parsed.effects.as_slice(),
+            [Effect::Counter {
+                object: ObjectRef::Target(target_id),
+            }] if parsed.targets.iter().any(|target| target.id == *target_id)
+        )
+    {
+        return Ok(ReminderSemantics::ManaAbilityTargetingExclusion);
     }
 
     let has_exert = parsed.effects.iter().any(|effect| {
@@ -5648,8 +7144,11 @@ fn parse_reminder(
         return Ok(mana_notation);
     }
 
-    if canonical == "exile cards with total mana value 6 or greater from your graveyard."
-        && body_lower.contains("you may collect evidence 6")
+    if matches!(
+        canonical.as_str(),
+        "exile cards with total mana value 6 or greater from your graveyard."
+            | "to collect evidence 6, exile cards with total mana value 6 or greater from your graveyard."
+    ) && body_lower.contains("you may collect evidence 6")
         && matches!(
             parsed.costs.as_slice(),
             [Cost::Optional(cost)] if matches!(
@@ -5682,6 +7181,64 @@ fn parse_reminder(
         return Ok(ReminderSemantics::BlightProcedure {
             amount: Amount::Constant(1),
         });
+    }
+    if canonical == "to blight 2, put two -1/-1 counters on a creature you control."
+        && body_lower.contains("blight 2 or pay {1}")
+        && matches!(
+            parsed.costs.as_slice(),
+            [Cost::Alternative { options, .. }]
+                if options.iter().any(|cost| matches!(
+                    cost,
+                    Cost::PutCounterSelection {
+                        counter: CounterKind::MinusOneMinusOne,
+                        amount: Amount::Constant(2),
+                        ..
+                    }
+                )) && options.iter().any(|cost| matches!(
+                    cost,
+                    Cost::Mana(ManaCost(mana)) if mana == "{1}"
+                ))
+        )
+    {
+        return Ok(ReminderSemantics::BlightProcedure {
+            amount: Amount::Constant(2),
+        });
+    }
+    if canonical == "to blight 1, put a -1/-1 counter on a creature you control."
+        && body_lower.contains("blight 1 or pay {3}")
+        && matches!(
+            parsed.costs.as_slice(),
+            [Cost::Alternative { options, .. }]
+                if options.iter().any(|cost| matches!(
+                    cost,
+                    Cost::PutCounterSelection {
+                        counter: CounterKind::MinusOneMinusOne,
+                        amount: Amount::Constant(1),
+                        ..
+                    }
+                )) && options.iter().any(|cost| matches!(
+                    cost,
+                    Cost::Mana(ManaCost(mana)) if mana == "{3}"
+                ))
+        )
+    {
+        return Ok(ReminderSemantics::BlightProcedure {
+            amount: Amount::Constant(1),
+        });
+    }
+    if canonical == "to forage, exile three cards from your graveyard or sacrifice a food."
+        && body_lower.contains("forage or pay {b}")
+        && matches!(
+            parsed.costs.as_slice(),
+            [Cost::Alternative { options, .. }]
+                if options.iter().any(|cost| matches!(cost, Cost::Alternative { .. }))
+                    && options.iter().any(|cost| matches!(
+                        cost,
+                        Cost::Mana(ManaCost(mana)) if mana == "{B}"
+                    ))
+        )
+    {
+        return Ok(ReminderSemantics::ForageProcedure);
     }
     if canonical == "you may choose a dragon you control or reveal a dragon card from your hand."
         && body_lower.contains("you may behold a dragon")
@@ -5839,6 +7396,49 @@ fn parse_reminder(
         } else {
             ReminderSemantics::KeywordExplanations(keywords)
         });
+    }
+    if matches!(
+        canonical.as_str(),
+        "it can't be blocked, targeted, dealt damage, enchanted, or equipped by anything of that color."
+            | "you can't be targeted, dealt damage, or enchanted by anything of the chosen color."
+    ) && parsed.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Effect::StandaloneRuleProgram(StandaloneRuleProgram::TargetingProtection(program))
+                if matches!(
+                    program.kind(),
+                    TargetingProtectionKind::Protection { qualities }
+                        if qualities == &[crate::targeting_protection_runtime::ProtectionQualitySpec::ChosenColor]
+                )
+                    && program.duration()
+                        == crate::targeting_protection_runtime::ProtectionDuration::UntilEndOfTurn
+        )
+    }) {
+        return Ok(ReminderSemantics::ProtectionExplanation);
+    }
+    if matches!(
+        canonical.as_str(),
+        "enter the first room or advance to the next room."
+            | "to venture into the dungeon, enter the first room or advance to the next room."
+    ) && parsed.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Effect::StandaloneRuleProgram(StandaloneRuleProgram::CommonActionProcedure(program))
+                if matches!(program.kind(), CommonActionKind::VentureIntoDungeon)
+        )
+    }) {
+        return Ok(ReminderSemantics::DungeonVentureProcedure);
+    }
+    if canonical == "put the top card of your attraction deck onto the battlefield."
+        && parsed.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::StandaloneRuleProgram(StandaloneRuleProgram::CommonActionProcedure(program))
+                    if matches!(program.kind(), CommonActionKind::OpenAttraction)
+            )
+        })
+    {
+        return Ok(ReminderSemantics::AttractionOpenProcedure);
     }
     if let Some(keyword) = explained_keyword(body)
         && keyword_reminder_matches(&keyword, &canonical)
@@ -6068,10 +7668,15 @@ fn parse_reminder(
     }
     if canonical
         == "choose any number of permanents and/or players, then give each another counter of each kind already there."
-        && parsed
-            .effects
-            .iter()
-            .any(|effect| matches!(effect, Effect::Proliferate { .. }))
+        && parsed.effects.iter().any(|effect| {
+            matches!(effect, Effect::Proliferate { .. })
+                || matches!(
+                    effect,
+                    Effect::StandaloneRuleProgram(
+                        StandaloneRuleProgram::CommonActionProcedure(program)
+                    ) if matches!(program.kind(), CommonActionKind::Proliferate)
+                )
+        })
     {
         return Ok(ReminderSemantics::ProliferateProcedure);
     }
@@ -6122,6 +7727,37 @@ fn parse_reminder(
             }
         });
     }
+    if canonical
+        == "it's an artifact with \"{t}: add {c}. this mana can't be spent to cast a nonartifact spell.\""
+        && parsed.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleAction(program))
+                    if matches!(
+                        program.root().kind,
+                        ActionKind::CreateToken { ref template, .. }
+                            if template.name == "Powerstone"
+                                && template.ability_semantic_ids.contains(
+                                    "oracle-token-ability/powerstone-mana-restricted-nonartifact-cast/v1"
+                                )
+                    )
+            )
+        })
+    {
+        return Ok(ReminderSemantics::PowerstoneDefinition);
+    }
+    if canonical
+        == "each clashing player reveals the top card of their library, then puts that card on their choice of the top or bottom. a player wins if their card had a greater mana value."
+        && parsed.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                Effect::StandaloneRuleProgram(StandaloneRuleProgram::CommonActionProcedure(program))
+                    if program.kind() == &CommonActionKind::ClashWithOpponent
+            )
+        })
+    {
+        return Ok(ReminderSemantics::ClashProcedure);
+    }
     if let Some(amount) =
         parsed_library_action_amount(&parsed.effects, LibraryReminderAction::Surveil, &canonical)
     {
@@ -6134,6 +7770,7 @@ fn parse_reminder(
     }
     if let Some((player, amount, optional)) =
         parsed_mill_reminder_semantics(&parsed.effects, &canonical)
+            .or_else(|| parsed_mill_cost_reminder_semantics(&parsed.costs, &canonical))
     {
         return Ok(ReminderSemantics::MillProcedure {
             player,
@@ -6234,10 +7871,11 @@ fn parse_reminder(
         || (body_lower == "ready to run"
             && lower == "you can have two commanders if both have ready to run.")
         || (body_lower.starts_with("partner\u{2014}")
-            && !body_lower
+            && body_lower
                 .trim_start_matches("partner\u{2014}")
                 .trim()
-                .is_empty()
+                .len()
+                > 0
             && lower == "you can have two commanders if both have this ability.")
     {
         return Ok(ReminderSemantics::PartnerProcedure);
@@ -7163,6 +8801,9 @@ fn keyword_reminder_matches(keyword: &Keyword, reminder: &str) -> bool {
             reminder == "this object can't be blocked except by two or more creatures."
         }
         Keyword::Reach => reminder == "this object can block creatures with flying.",
+        Keyword::Shadow => {
+            reminder == "this object can block or be blocked only by creatures with shadow."
+        }
         Keyword::Shroud => reminder == "this object can't be the target of spells or abilities.",
         Keyword::Trample => {
             reminder
@@ -7483,6 +9124,23 @@ fn parsed_mill_reminder_semantics(
     reminder: &str,
 ) -> Option<(PlayerRef, Amount, bool)> {
     parsed_mill_reminder_semantics_with_optionality(effects, reminder, false)
+}
+
+fn parsed_mill_cost_reminder_semantics(
+    costs: &[Cost],
+    reminder: &str,
+) -> Option<(PlayerRef, Amount, bool)> {
+    costs.iter().find_map(|cost| match cost {
+        Cost::Mill { player, amount }
+            if mill_definition_scope_matches(player, amount, false, reminder) =>
+        {
+            Some((player.clone(), amount.clone(), false))
+        }
+        Cost::Optional(cost) => {
+            parsed_mill_cost_reminder_semantics(std::slice::from_ref(cost.as_ref()), reminder)
+        }
+        _ => None,
+    })
 }
 
 fn parsed_mill_reminder_semantics_with_optionality(
@@ -8019,6 +9677,38 @@ fn parse_saga_lore_clause(
 ) -> Option<Result<ParsedClause, CompileError>> {
     let trimmed = clause.trim();
     let lower = trimmed.to_ascii_lowercase();
+    const READ_AHEAD_PREFIX: &str = "Read ahead (Choose a chapter and start with that many lore counters. Add one after your draw step. Skipped chapters don't trigger. Sacrifice after ";
+    if let Some(roman_with_suffix) = trimmed.strip_prefix(READ_AHEAD_PREFIX) {
+        let source_is_saga = words(source_type_line).iter().any(|word| word == "saga");
+        let Some(roman) = roman_with_suffix.strip_suffix(".)") else {
+            return Some(Err(unsupported(address, clause)));
+        };
+        let Some(final_chapter) = parse_canonical_roman_chapter(roman) else {
+            return Some(Err(unsupported(address, clause)));
+        };
+        if !source_is_saga {
+            return Some(Err(unsupported(address, clause)));
+        }
+        let final_chapter = SagaFinalChapter::PrintedUnvalidated(final_chapter);
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.saga_lore_procedure = Some(SagaLoreProcedure {
+            object: ObjectRef::Source,
+            lore_counter: CounterKind::Named("lore".to_owned()),
+            entry_lore: SagaEntryLoreProcedure::ReadAhead {
+                first_chapter: 1,
+                final_chapter: final_chapter.clone(),
+                skipped_chapters_do_not_trigger: true,
+            },
+            after_controller_draw_step: Amount::Constant(1),
+            final_chapter,
+            state_based_sacrifice: SagaStateBasedSacrifice {
+                sacrifice_source: true,
+                lore_at_least_final_chapter: true,
+                no_source_chapter_ability_on_stack: true,
+            },
+        });
+        return Some(Ok(parsed));
+    }
     if !lower.contains("as this saga enters and after your draw step") {
         return None;
     }
@@ -8060,7 +9750,7 @@ fn parse_saga_lore_clause(
     parsed.saga_lore_procedure = Some(SagaLoreProcedure {
         object: ObjectRef::Source,
         lore_counter: CounterKind::Named("lore".to_owned()),
-        enters_with: Amount::Constant(1),
+        entry_lore: SagaEntryLoreProcedure::Fixed(Amount::Constant(1)),
         after_controller_draw_step: Amount::Constant(1),
         final_chapter,
         state_based_sacrifice: SagaStateBasedSacrifice {
@@ -8150,6 +9840,124 @@ fn parse_modal_clause(
     if trimmed.eq_ignore_ascii_case("Choose one.") {
         let choices = ChoiceCount::Exactly(1);
         let mut parsed = ParsedClause::new(Timing::ModalHeader {
+            choices: choices.clone(),
+        });
+        parsed.effects.push(Effect::ChooseMode { count: choices });
+        return Some(Ok(parsed));
+    }
+    if trimmed.eq_ignore_ascii_case(
+        "Choose one. If this object spell was kicked, choose any number instead.",
+    ) {
+        let choices = ChoiceCount::Conditional {
+            condition: Box::new(Condition::CardWasKicked),
+            when_true: Box::new(ChoiceCount::OneOrMore),
+            when_false: Box::new(ChoiceCount::Exactly(1)),
+        };
+        let mut parsed = ParsedClause::new(Timing::ModalHeader {
+            choices: choices.clone(),
+        });
+        parsed.effects.push(Effect::ChooseMode { count: choices });
+        return Some(Ok(parsed));
+    }
+    if trimmed.eq_ignore_ascii_case(
+        "Choose one. If there are four or more card types among cards in your graveyard, choose both instead.",
+    ) {
+        let choices = ChoiceCount::Conditional {
+            condition: Box::new(Condition::CardTypesInGraveyard {
+                player: PlayerRef::You,
+                comparison: Comparison::AtLeast,
+                amount: Amount::Constant(4),
+            }),
+            when_true: Box::new(ChoiceCount::Between {
+                minimum: 1,
+                maximum: 2,
+            }),
+            when_false: Box::new(ChoiceCount::Exactly(1)),
+        };
+        let mut parsed = ParsedClause::new(Timing::ModalHeader {
+            choices: choices.clone(),
+        });
+        parsed.effects.push(Effect::ChooseModeFrom {
+            count: choices,
+            option_count: 2,
+        });
+        return Some(Ok(parsed));
+    }
+    if trimmed.eq_ignore_ascii_case(
+        "Choose one. If an opponent has eight or more cards in their graveyard, you may choose both instead.",
+    ) {
+        let choices = ChoiceCount::Conditional {
+            condition: Box::new(Condition::GraveyardCardCount {
+                player: PlayerRef::Opponent,
+                comparison: Comparison::AtLeast,
+                amount: Amount::Constant(8),
+            }),
+            when_true: Box::new(ChoiceCount::Between {
+                minimum: 1,
+                maximum: 2,
+            }),
+            when_false: Box::new(ChoiceCount::Exactly(1)),
+        };
+        let mut parsed = ParsedClause::new(Timing::ModalHeader {
+            choices: choices.clone(),
+        });
+        parsed.effects.push(Effect::ChooseModeFrom {
+            count: choices,
+            option_count: 2,
+        });
+        return Some(Ok(parsed));
+    }
+    if trimmed.eq_ignore_ascii_case(
+        "Choose one. If you control an artifact and an enchantment as you cast this object spell, you may choose both instead.",
+    ) {
+        let choices = ChoiceCount::Conditional {
+            condition: Box::new(Condition::All(vec![
+                Condition::ControlCount {
+                    player: PlayerRef::You,
+                    filter: ObjectFilter::with_type(CardType::Artifact),
+                    comparison: Comparison::AtLeast,
+                    amount: Amount::Constant(1),
+                },
+                Condition::ControlCount {
+                    player: PlayerRef::You,
+                    filter: ObjectFilter::with_type(CardType::Enchantment),
+                    comparison: Comparison::AtLeast,
+                    amount: Amount::Constant(1),
+                },
+            ])),
+            when_true: Box::new(ChoiceCount::Between {
+                minimum: 1,
+                maximum: 2,
+            }),
+            when_false: Box::new(ChoiceCount::Exactly(1)),
+        };
+        let mut parsed = ParsedClause::new(Timing::ModalHeader {
+            choices: choices.clone(),
+        });
+        parsed.effects.push(Effect::ChooseModeFrom {
+            count: choices,
+            option_count: 2,
+        });
+        return Some(Ok(parsed));
+    }
+    if let Some(trigger_text) = trimmed
+        .strip_suffix(", choose one. If you have no cards in hand, choose one or more instead.")
+        .and_then(|prefix| prefix.strip_prefix("Whenever "))
+    {
+        let Some(trigger) = parse_trigger(&format!("Whenever {trigger_text}")) else {
+            return Some(Err(unsupported(address, clause)));
+        };
+        let choices = ChoiceCount::Conditional {
+            condition: Box::new(Condition::HandCardCount {
+                player: PlayerRef::You,
+                comparison: Comparison::Exactly,
+                amount: Amount::Constant(0),
+            }),
+            when_true: Box::new(ChoiceCount::OneOrMore),
+            when_false: Box::new(ChoiceCount::Exactly(1)),
+        };
+        let mut parsed = ParsedClause::new(Timing::TriggeredModalHeader {
+            trigger: Box::new(trigger),
             choices: choices.clone(),
         });
         parsed.effects.push(Effect::ChooseMode { count: choices });
@@ -8272,6 +10080,18 @@ fn parse_additional_cast_cost_clause(
         .strip_prefix("as an additional cost to cast this object spell, ")
         .or_else(|| lower.strip_prefix("as an additional cost to cast this object, "))
         .and_then(|text| text.strip_suffix('.'))?;
+    if cost_text == "sacrifice a creature or land" {
+        let mut permanent = ObjectFilter::in_zone(Zone::Battlefield);
+        permanent.controller = Some(PlayerRef::You);
+        permanent.card_types = vec![CardType::Creature, CardType::Land];
+        permanent.card_type_match_any = true;
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::Sacrifice {
+            amount: Amount::Constant(1),
+            filter: permanent,
+        });
+        return Some(Ok(parsed));
+    }
     if matches!(
         cost_text,
         "you may collect evidence 6"
@@ -8291,6 +10111,271 @@ fn parse_additional_cast_cost_clause(
                 minimum: Amount::Constant(6),
             },
         )));
+        return Some(Ok(parsed));
+    }
+    if matches!(
+        cost_text,
+        "you may collect evidence 6. this object spell costs {2} less to cast if evidence was collected"
+            | "you may collect evidence 6. this object costs {2} less to cast if evidence was collected"
+            | "you may collect evidence 6. this object spell costs {2} less to cast if evidence was collected. (to collect evidence 6, exile cards with total mana value 6 or greater from your graveyard.)"
+            | "you may collect evidence 6. this object costs {2} less to cast if evidence was collected. (to collect evidence 6, exile cards with total mana value 6 or greater from your graveyard.)"
+    ) {
+        let mut filter = ObjectFilter::in_zone(Zone::Graveyard);
+        filter.owner = Some(PlayerRef::You);
+        let evidence_cost = Cost::ExileSelectionWithTotalManaValue {
+            selection: ObjectSelection {
+                id: 0,
+                chooser: PlayerRef::You,
+                filter,
+                amount: TargetAmount::AnyNumber,
+            },
+            minimum: Amount::Constant(6),
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed
+            .costs
+            .push(Cost::Optional(Box::new(evidence_cost.clone())));
+        parsed.effects.push(Effect::ReduceSpellCostWhen {
+            object: ObjectRef::Source,
+            mana: ManaCost("{2}".to_owned()),
+            condition: Condition::PaymentAccepted(evidence_cost),
+        });
+        parsed.reminder = Some(ReminderSemantics::CollectEvidenceProcedure {
+            minimum: Amount::Constant(6),
+        });
+        return Some(Ok(parsed));
+    }
+    if matches!(
+        cost_text,
+        "discard a card or pay {2}" | "discard a card or pay {5}"
+    ) {
+        let mut filter = ObjectFilter::in_zone(Zone::Hand);
+        filter.owner = Some(PlayerRef::You);
+        let mana = if cost_text.ends_with("{2}") {
+            "{2}"
+        } else {
+            "{5}"
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::Alternative {
+            choice_id: 0,
+            options: vec![
+                Cost::DiscardSelection(ObjectSelection {
+                    id: 0,
+                    chooser: PlayerRef::You,
+                    filter,
+                    amount: TargetAmount::Exactly(1),
+                }),
+                Cost::Mana(ManaCost(mana.to_owned())),
+            ],
+        });
+        return Some(Ok(parsed));
+    }
+    if matches!(
+        cost_text,
+        "sacrifice a creature or pay {3}{b}"
+            | "sacrifice a creature or pay {4}"
+            | "sacrifice a creature or discard a card"
+            | "sacrifice an artifact or discard a card"
+            | "discard a card or pay 3 life"
+            | "pay {4} or sacrifice an artifact or creature"
+            | "pay 5 life or sacrifice a creature or enchantment"
+    ) {
+        let mut creature = ObjectFilter::in_zone(Zone::Battlefield);
+        creature.controller = Some(PlayerRef::You);
+        creature.card_types = vec![CardType::Creature];
+        let mut hand = ObjectFilter::in_zone(Zone::Hand);
+        hand.owner = Some(PlayerRef::You);
+        let discard = Cost::DiscardSelection(ObjectSelection {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter: hand,
+            amount: TargetAmount::Exactly(1),
+        });
+        let sacrifice_creature = Cost::Sacrifice {
+            amount: Amount::Constant(1),
+            filter: creature,
+        };
+        let options = match cost_text {
+            "sacrifice a creature or pay {3}{b}" => vec![
+                sacrifice_creature,
+                Cost::Mana(ManaCost("{3}{B}".to_owned())),
+            ],
+            "sacrifice a creature or pay {4}" => {
+                vec![sacrifice_creature, Cost::Mana(ManaCost("{4}".to_owned()))]
+            }
+            "sacrifice a creature or discard a card" => {
+                vec![sacrifice_creature, discard]
+            }
+            "sacrifice an artifact or discard a card" => {
+                let mut artifact = ObjectFilter::in_zone(Zone::Battlefield);
+                artifact.controller = Some(PlayerRef::You);
+                artifact.card_types = vec![CardType::Artifact];
+                vec![
+                    Cost::Sacrifice {
+                        amount: Amount::Constant(1),
+                        filter: artifact,
+                    },
+                    discard,
+                ]
+            }
+            "discard a card or pay 3 life" => {
+                vec![discard, Cost::PayLife(Amount::Constant(3))]
+            }
+            "pay {4} or sacrifice an artifact or creature" => {
+                let mut permanent = ObjectFilter::in_zone(Zone::Battlefield);
+                permanent.controller = Some(PlayerRef::You);
+                permanent.card_types = vec![CardType::Artifact, CardType::Creature];
+                permanent.card_type_match_any = true;
+                vec![
+                    Cost::Mana(ManaCost("{4}".to_owned())),
+                    Cost::Sacrifice {
+                        amount: Amount::Constant(1),
+                        filter: permanent,
+                    },
+                ]
+            }
+            "pay 5 life or sacrifice a creature or enchantment" => {
+                let mut permanent = ObjectFilter::in_zone(Zone::Battlefield);
+                permanent.controller = Some(PlayerRef::You);
+                permanent.card_types = vec![CardType::Creature, CardType::Enchantment];
+                permanent.card_type_match_any = true;
+                vec![
+                    Cost::PayLife(Amount::Constant(5)),
+                    Cost::Sacrifice {
+                        amount: Amount::Constant(1),
+                        filter: permanent,
+                    },
+                ]
+            }
+            _ => unreachable!(),
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::Alternative {
+            choice_id: 0,
+            options,
+        });
+        return Some(Ok(parsed));
+    }
+    if cost_text == "put a -1/-1 counter on a creature you control" {
+        let filter = ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            controller: Some(PlayerRef::You),
+            card_types: vec![CardType::Creature],
+            ..ObjectFilter::default()
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::PutCounterSelection {
+            selection: ObjectSelection {
+                id: 0,
+                chooser: PlayerRef::You,
+                filter,
+                amount: TargetAmount::Exactly(1),
+            },
+            counter: CounterKind::MinusOneMinusOne,
+            amount: Amount::Constant(1),
+        });
+        return Some(Ok(parsed));
+    }
+    if cost_text == "discard two cards" {
+        let mut filter = ObjectFilter::in_zone(Zone::Hand);
+        filter.owner = Some(PlayerRef::You);
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::DiscardSelection(ObjectSelection {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter,
+            amount: TargetAmount::Exactly(2),
+        }));
+        return Some(Ok(parsed));
+    }
+    if cost_text == "tap four untapped creatures you control" {
+        let filter = ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            controller: Some(PlayerRef::You),
+            card_types: vec![CardType::Creature],
+            tapped: Some(false),
+            ..ObjectFilter::default()
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::TapSelection(ObjectSelection {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter,
+            amount: TargetAmount::Exactly(4),
+        }));
+        return Some(Ok(parsed));
+    }
+    if cost_text == "tap three untapped white creatures you control" {
+        let filter = ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            controller: Some(PlayerRef::You),
+            card_types: vec![CardType::Creature],
+            colors: vec![Color::White],
+            tapped: Some(false),
+            ..ObjectFilter::default()
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::TapSelection(ObjectSelection {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter,
+            amount: TargetAmount::Exactly(3),
+        }));
+        return Some(Ok(parsed));
+    }
+    if matches!(
+        cost_text,
+        "forage or pay {b}"
+            | "forage or pay {b}. (to forage, exile three cards from your graveyard or sacrifice a food.)"
+    ) {
+        let mut graveyard = ObjectFilter::in_zone(Zone::Graveyard);
+        graveyard.owner = Some(PlayerRef::You);
+        let mut food = ObjectFilter::in_zone(Zone::Battlefield);
+        food.controller = Some(PlayerRef::You);
+        food.subtypes = vec!["Food".to_owned()];
+        let forage = Cost::Alternative {
+            choice_id: 1,
+            options: vec![
+                Cost::ExileSelection(ObjectSelection {
+                    id: 0,
+                    chooser: PlayerRef::You,
+                    filter: graveyard,
+                    amount: TargetAmount::Exactly(3),
+                }),
+                Cost::Sacrifice {
+                    amount: Amount::Constant(1),
+                    filter: food,
+                },
+            ],
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::Alternative {
+            choice_id: 0,
+            options: vec![forage, Cost::Mana(ManaCost("{B}".to_owned()))],
+        });
+        return Some(Ok(parsed));
+    }
+    if cost_text
+        == "you may tap any number of untapped creatures you control. this object spell costs {1} less to cast for each creature tapped this way"
+    {
+        let filter = ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            controller: Some(PlayerRef::You),
+            card_types: vec![CardType::Creature],
+            tapped: Some(false),
+            ..ObjectFilter::default()
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::TapSelectionForSpellReduction {
+            selection: ObjectSelection {
+                id: 0,
+                chooser: PlayerRef::You,
+                filter,
+                amount: TargetAmount::AnyNumber,
+            },
+            reduction_per_object: ManaCost("{1}".to_owned()),
+        });
         return Some(Ok(parsed));
     }
     if matches!(
@@ -8368,15 +10453,185 @@ fn parse_additional_cast_cost_clause(
         });
         return Some(Ok(parsed));
     }
-    if cost_text == "sacrifice a creature or enchantment" {
+    if matches!(
+        cost_text,
+        "sacrifice a creature or enchantment"
+            | "sacrifice an artifact or creature"
+            | "sacrifice a creature or planeswalker"
+    ) {
         let mut filter = ObjectFilter::in_zone(Zone::Battlefield);
         filter.controller = Some(PlayerRef::You);
-        filter.card_types = vec![CardType::Creature, CardType::Enchantment];
+        filter.card_types = match cost_text {
+            "sacrifice a creature or enchantment" => {
+                vec![CardType::Creature, CardType::Enchantment]
+            }
+            "sacrifice an artifact or creature" => {
+                vec![CardType::Artifact, CardType::Creature]
+            }
+            "sacrifice a creature or planeswalker" => {
+                vec![CardType::Creature, CardType::Planeswalker]
+            }
+            _ => unreachable!(),
+        };
         filter.card_type_match_any = true;
         let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
         parsed.costs.push(Cost::Sacrifice {
             amount: Amount::Constant(1),
             filter,
+        });
+        return Some(Ok(parsed));
+    }
+    if matches!(
+        cost_text,
+        "return a land you control to its owner's hand"
+            | "return a creature you control to its owner's hand"
+            | "return a permanent you control to its owner's hand"
+    ) {
+        let filter = ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            controller: Some(PlayerRef::You),
+            card_types: match cost_text {
+                "return a land you control to its owner's hand" => vec![CardType::Land],
+                "return a creature you control to its owner's hand" => vec![CardType::Creature],
+                "return a permanent you control to its owner's hand" => Vec::new(),
+                _ => unreachable!(),
+            },
+            ..ObjectFilter::default()
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed
+            .costs
+            .push(Cost::ReturnSelectionToHand(ObjectSelection {
+                id: 0,
+                chooser: PlayerRef::You,
+                filter,
+                amount: TargetAmount::Exactly(1),
+            }));
+        return Some(Ok(parsed));
+    }
+    if cost_text == "tap an untapped artifact you control or pay {1}" {
+        let filter = ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            controller: Some(PlayerRef::You),
+            card_types: vec![CardType::Artifact],
+            tapped: Some(false),
+            ..ObjectFilter::default()
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::Alternative {
+            choice_id: 0,
+            options: vec![
+                Cost::TapSelection(ObjectSelection {
+                    id: 0,
+                    chooser: PlayerRef::You,
+                    filter,
+                    amount: TargetAmount::Exactly(1),
+                }),
+                Cost::Mana(ManaCost("{1}".to_owned())),
+            ],
+        });
+        return Some(Ok(parsed));
+    }
+    if matches!(
+        cost_text,
+        "blight 2 or pay {1}"
+            | "blight 2 or pay {1}. (to blight 2, put two -1/-1 counters on a creature you control.)"
+    ) {
+        let filter = ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            controller: Some(PlayerRef::You),
+            card_types: vec![CardType::Creature],
+            ..ObjectFilter::default()
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::Alternative {
+            choice_id: 0,
+            options: vec![
+                Cost::PutCounterSelection {
+                    selection: ObjectSelection {
+                        id: 0,
+                        chooser: PlayerRef::You,
+                        filter,
+                        amount: TargetAmount::Exactly(1),
+                    },
+                    counter: CounterKind::MinusOneMinusOne,
+                    amount: Amount::Constant(2),
+                },
+                Cost::Mana(ManaCost("{1}".to_owned())),
+            ],
+        });
+        return Some(Ok(parsed));
+    }
+    if matches!(
+        cost_text,
+        "blight 1 or pay {3}"
+            | "blight 1 or pay {3}. (to blight 1, put a -1/-1 counter on a creature you control.)"
+    ) {
+        let filter = ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            controller: Some(PlayerRef::You),
+            card_types: vec![CardType::Creature],
+            ..ObjectFilter::default()
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(Cost::Alternative {
+            choice_id: 0,
+            options: vec![
+                Cost::PutCounterSelection {
+                    selection: ObjectSelection {
+                        id: 0,
+                        chooser: PlayerRef::You,
+                        filter,
+                        amount: TargetAmount::Exactly(1),
+                    },
+                    counter: CounterKind::MinusOneMinusOne,
+                    amount: Amount::Constant(1),
+                },
+                Cost::Mana(ManaCost("{3}".to_owned())),
+            ],
+        });
+        return Some(Ok(parsed));
+    }
+    if matches!(
+        cost_text,
+        "exile x cards from your graveyard"
+            | "exile x creature cards from your graveyard"
+            | "discard x cards"
+            | "discard x land cards"
+            | "discard x creature cards"
+    ) {
+        let discards_from_hand = cost_text.starts_with("discard x ");
+        let mut filter = ObjectFilter::in_zone(if discards_from_hand {
+            Zone::Hand
+        } else {
+            Zone::Graveyard
+        });
+        filter.owner = Some(PlayerRef::You);
+        if matches!(
+            cost_text,
+            "exile x creature cards from your graveyard" | "discard x creature cards"
+        ) {
+            filter.card_types = vec![CardType::Creature];
+        } else if cost_text == "discard x land cards" {
+            filter.card_types = vec![CardType::Land];
+        }
+        let selection = ObjectSelection {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter,
+            amount: TargetAmount::AnyNumber,
+        };
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.costs.push(if discards_from_hand {
+            Cost::DiscardSelectionAmount {
+                selection,
+                amount: Amount::X,
+            }
+        } else {
+            Cost::ExileSelectionAmount {
+                selection,
+                amount: Amount::X,
+            }
         });
         return Some(Ok(parsed));
     }
@@ -8438,9 +10693,140 @@ fn parse_additional_cast_cost_clause(
 fn parse_common_oracle_family_clause(
     address: ClauseAddress,
     clause: &str,
-    _source_type_line: &str,
+    source_type_line: &str,
 ) -> Option<Result<ParsedClause, CompileError>> {
     let lower = clause.trim().to_ascii_lowercase();
+    let dragon_condition = Condition::RevealedOrControlledSubtype {
+        subtype: "Dragon".to_owned(),
+    };
+    if lower
+        == "if you revealed a dragon card or controlled a dragon as you cast this object spell, this object spell can't be countered."
+    {
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.effects.push(Effect::Conditional {
+            condition: dragon_condition.clone(),
+            if_true: vec![Effect::Restriction(Restriction::SpellCannotBeCountered {
+                object: ObjectRef::Source,
+            })],
+            if_false: Vec::new(),
+        });
+        return Some(Ok(parsed));
+    }
+    if lower
+        == "this object enters with a +1/+1 counter on it if you revealed a dragon card or controlled a dragon as you cast this object spell."
+    {
+        let mut parsed = ParsedClause::new(Timing::Replacement);
+        parsed.effects.push(Effect::Conditional {
+            condition: dragon_condition.clone(),
+            if_true: vec![Effect::PutCounter {
+                object: ObjectRef::Source,
+                counter: CounterKind::PlusOnePlusOne,
+                amount: Amount::Constant(1),
+            }],
+            if_false: Vec::new(),
+        });
+        return Some(Ok(parsed));
+    }
+    if lower
+        == "when this object enters, if you revealed a dragon card or controlled a dragon as you cast this object spell, draw a card."
+    {
+        let mut parsed = ParsedClause::new(Timing::Triggered(Box::new(Trigger::SourceEnters)));
+        parsed.conditions.push(dragon_condition);
+        parsed.effects.push(Effect::Draw {
+            player: PlayerRef::You,
+            amount: Amount::Constant(1),
+            optional: false,
+            delayed_until: None,
+        });
+        return Some(Ok(parsed));
+    }
+    if lower
+        == "counter target spell unless its controller pays {1}. if you revealed a dragon card or controlled a dragon as you cast this object spell, counter that spell instead."
+    {
+        let mut state = EffectParseState::new();
+        let target = match parse_target_description(address, "target spell", &mut state) {
+            Ok(target) => target,
+            Err(error) => return Some(Err(error)),
+        };
+        let object = ObjectRef::Target(target.id);
+        let mut parsed = ParsedClause::new(Timing::SpellResolution);
+        parsed.targets.push(target);
+        parsed.effects.push(Effect::Conditional {
+            condition: dragon_condition.clone(),
+            if_true: vec![Effect::Counter {
+                object: object.clone(),
+            }],
+            if_false: vec![Effect::Conditional {
+                condition: Condition::UnlessPaid {
+                    player: PlayerRef::ControllerOf(Box::new(object.clone())),
+                    cost: Cost::Mana(ManaCost("{1}".to_owned())),
+                },
+                if_true: vec![Effect::Counter { object }],
+                if_false: Vec::new(),
+            }],
+        });
+        return Some(Ok(parsed));
+    }
+    if lower
+        == "this object deals 3 damage to target creature. if you revealed a dragon card or controlled a dragon as you cast this object spell, this object deals 3 damage to that creature's controller."
+    {
+        let mut state = EffectParseState::new();
+        let target = match parse_target_description(address, "target creature", &mut state) {
+            Ok(target) => target,
+            Err(error) => return Some(Err(error)),
+        };
+        let mut parsed = ParsedClause::new(Timing::SpellResolution);
+        parsed.targets.push(target);
+        let Some(damage_program) = compile_damage_resolution_leaf_program(
+            "this object deals 3 damage to target creature.",
+        ) else {
+            return Some(Err(unsupported(address, clause)));
+        };
+        parsed.effects.push(Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::DamageClause(Box::new(damage_program)),
+        ));
+        let Some(controller_damage_program) = compile_damage_resolution_leaf_program(
+            "this object deals 3 damage to that creature's controller.",
+        ) else {
+            return Some(Err(unsupported(address, clause)));
+        };
+        parsed.effects.push(Effect::Conditional {
+            condition: dragon_condition.clone(),
+            if_true: vec![Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::DamageClause(Box::new(controller_damage_program)),
+            )],
+            if_false: Vec::new(),
+        });
+        return Some(Ok(parsed));
+    }
+    if lower
+        == "target player sacrifices a creature of their choice. if you revealed a dragon card or controlled a dragon as you cast this object spell, you gain 4 life."
+    {
+        let mut state = EffectParseState::new();
+        let target = match parse_target_description(address, "target player", &mut state) {
+            Ok(target) => target,
+            Err(error) => return Some(Err(error)),
+        };
+        let player = PlayerRef::TargetPlayer(target.id);
+        let mut creature = ObjectFilter::with_type(CardType::Creature);
+        creature.zones = vec![Zone::Battlefield];
+        let mut parsed = ParsedClause::new(Timing::SpellResolution);
+        parsed.targets.push(target);
+        parsed.effects.push(Effect::PlayersSacrifice {
+            players: player,
+            filter: creature,
+            amount: 1,
+        });
+        parsed.effects.push(Effect::Conditional {
+            condition: dragon_condition,
+            if_true: vec![Effect::GainLife {
+                player: PlayerRef::You,
+                amount: Amount::Constant(4),
+            }],
+            if_false: Vec::new(),
+        });
+        return Some(Ok(parsed));
+    }
 
     if lower == "for each token you control, create a token that's a copy of that permanent." {
         let mut tokens = ObjectFilter::in_zone(Zone::Battlefield);
@@ -8459,7 +10845,7 @@ fn parse_common_oracle_family_clause(
 
     if lower == "station" {
         let is_station_permanent =
-            _source_type_line
+            source_type_line
                 .split_once('\u{2014}')
                 .is_some_and(|(_, subtypes)| {
                     subtypes.split_whitespace().any(|subtype| {
@@ -8628,6 +11014,73 @@ fn parse_common_oracle_family_clause(
         return Some(Ok(parsed));
     }
 
+    if lower == "you can't cast noncreature spells." {
+        let mut filter = ObjectFilter::in_zone(Zone::Stack);
+        filter.excluded_card_types.push(CardType::Creature);
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::Restriction(Restriction::CannotCast {
+                affected: PlayerRef::You,
+                filter,
+                duration: Duration::WhileSourceOnBattlefield,
+                during_turn_of: None,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "you can't lose the game." {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::Restriction(Restriction::PlayerCannotLoseGame {
+                players: PlayerRef::You,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if let Some(basic_type) = lower
+        .strip_prefix("this land enters tapped unless you control a ")
+        .or_else(|| lower.strip_prefix("this land enters tapped unless you control an "))
+        .or_else(|| lower.strip_prefix("this object enters tapped unless you control a "))
+        .or_else(|| lower.strip_prefix("this object enters tapped unless you control an "))
+        .and_then(|text| text.strip_suffix('.'))
+        .filter(|text| ["plains", "island", "swamp", "mountain", "forest"].contains(text))
+    {
+        let mut land = ObjectFilter::with_type(CardType::Land);
+        land.zones = vec![Zone::Battlefield];
+        land.controller = Some(PlayerRef::You);
+        land.subtypes.push(
+            match basic_type {
+                "plains" => "Plains",
+                "island" => "Island",
+                "swamp" => "Swamp",
+                "mountain" => "Mountain",
+                "forest" => "Forest",
+                _ => unreachable!("basic land type was filtered above"),
+            }
+            .to_owned(),
+        );
+        let unless = Condition::ControlCount {
+            player: PlayerRef::You,
+            filter: land,
+            comparison: Comparison::AtLeast,
+            amount: Amount::Constant(1),
+        };
+        let mut parsed = ParsedClause::new(Timing::Replacement);
+        parsed.effects.push(Effect::Replacement(Box::new(
+            ReplacementEffect::EntersTapped(Box::new(EntersTappedReplacement {
+                object: ObjectRef::Source,
+                when: None,
+                unless: Some(unless),
+                optional_cost: None,
+                optional_reveal: None,
+            })),
+        )));
+        return Some(Ok(parsed));
+    }
+
     if lower == "draw three cards. then discard two cards unless you discard a creature card." {
         let mut alternative = ObjectFilter::with_type(CardType::Creature);
         alternative.zones = vec![Zone::Hand];
@@ -8789,6 +11242,170 @@ fn parse_common_oracle_family_clause(
         return Some(Ok(parsed));
     }
 
+    let global_added_basic_land_type =
+        if lower == "each land is a swamp in addition to its other land types." {
+            Some(("Swamp", Color::Black))
+        } else {
+            lower
+                .strip_prefix("all lands are ")
+                .and_then(|text| text.strip_suffix(" in addition to their other types."))
+                .and_then(|subtype| match subtype {
+                    "plains" => Some(("Plains", Color::White)),
+                    "islands" => Some(("Island", Color::Blue)),
+                    "swamps" => Some(("Swamp", Color::Black)),
+                    "mountains" => Some(("Mountain", Color::Red)),
+                    "forests" => Some(("Forest", Color::Green)),
+                    _ => None,
+                })
+        };
+    if let Some((subtype, color)) = global_added_basic_land_type {
+        let mut lands = ObjectFilter::with_type(CardType::Land);
+        lands.zones = vec![Zone::Battlefield];
+        let objects = ObjectRef::EachMatching(lands);
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::SetCharacteristics(SetCharacteristics {
+                object: objects.clone(),
+                colors: None,
+                card_types: None,
+                subtypes: Some(vec![subtype.to_owned()]),
+                name: None,
+                base_power: None,
+                base_toughness: None,
+                retain_other_card_types: true,
+                retain_other_subtypes: true,
+                retain_other_colors: true,
+                retain_other_names: true,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        parsed.effects.push(Effect::GrantAbility {
+            objects,
+            ability: GrantedAbility {
+                costs: vec![Cost::Tap(ObjectRef::Source)],
+                effects: vec![Effect::AddMana(ManaProduction {
+                    player: PlayerRef::ControllerOf(Box::new(ObjectRef::Source)),
+                    choices: vec![ManaChoice {
+                        symbols: vec![color],
+                    }],
+                    amount: Amount::Constant(1),
+                    commander_identity_only: false,
+                    scales_with: None,
+                    typed: None,
+                })],
+            },
+            duration: Duration::WhileSourceOnBattlefield,
+        });
+        return Some(Ok(parsed));
+    }
+
+    if lower == "all permanents are artifacts in addition to their other types." {
+        let mut permanents = ObjectFilter::with_type(CardType::Permanent);
+        permanents.zones = vec![Zone::Battlefield];
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::SetCharacteristics(SetCharacteristics {
+                object: ObjectRef::EachMatching(permanents),
+                colors: None,
+                card_types: Some(vec![CardType::Artifact]),
+                subtypes: None,
+                name: None,
+                base_power: None,
+                base_toughness: None,
+                retain_other_card_types: true,
+                retain_other_subtypes: true,
+                retain_other_colors: true,
+                retain_other_names: true,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    let replacement_basic_land_type = if lower == "nonbasic lands are mountains." {
+        Some((None, Some(Supertype::Nonbasic), "Mountain", Color::Red))
+    } else if lower == "all mountains are plains." {
+        Some((Some("Mountain"), None, "Plains", Color::White))
+    } else {
+        None
+    };
+    if let Some((required_subtype, required_supertype, subtype, color)) =
+        replacement_basic_land_type
+    {
+        let mut lands = ObjectFilter::with_type(CardType::Land);
+        lands.zones = vec![Zone::Battlefield];
+        if let Some(required_subtype) = required_subtype {
+            lands.subtypes.push(required_subtype.to_owned());
+        }
+        if let Some(required_supertype) = required_supertype {
+            lands.supertypes.push(required_supertype);
+        }
+        let objects = ObjectRef::EachMatching(lands);
+        let duration = Duration::WhileSourceOnBattlefield;
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.extend([
+            Effect::LoseAllAbilities {
+                object: objects.clone(),
+                duration: duration.clone(),
+            },
+            Effect::SetCharacteristics(SetCharacteristics {
+                object: objects.clone(),
+                colors: None,
+                card_types: None,
+                subtypes: Some(vec![subtype.to_owned()]),
+                name: None,
+                base_power: None,
+                base_toughness: None,
+                retain_other_card_types: true,
+                retain_other_subtypes: false,
+                retain_other_colors: true,
+                retain_other_names: true,
+                duration: duration.clone(),
+            }),
+            Effect::GrantAbility {
+                objects,
+                ability: GrantedAbility {
+                    costs: vec![Cost::Tap(ObjectRef::Source)],
+                    effects: vec![Effect::AddMana(ManaProduction {
+                        player: PlayerRef::ControllerOf(Box::new(ObjectRef::Source)),
+                        choices: vec![ManaChoice {
+                            symbols: vec![color],
+                        }],
+                        amount: Amount::Constant(1),
+                        commander_identity_only: false,
+                        scales_with: None,
+                        typed: None,
+                    })],
+                },
+                duration,
+            },
+        ]);
+        return Some(Ok(parsed));
+    }
+
+    if lower == "this object gets +1/+1 as long as an opponent controls an island." {
+        let mut island = ObjectFilter::with_type(CardType::Land);
+        island.zones = vec![Zone::Battlefield];
+        island.subtypes.push("Island".to_owned());
+        let condition = Condition::ControlCount {
+            player: PlayerRef::Opponent,
+            filter: island,
+            comparison: Comparison::AtLeast,
+            amount: Amount::Constant(1),
+        };
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::Source,
+                operation: PowerToughnessOperation::Add,
+                power: Amount::Constant(1),
+                toughness: Amount::Constant(1),
+                duration: Duration::WhileCondition(Box::new(condition)),
+            }));
+        return Some(Ok(parsed));
+    }
+
     if matches!(
         lower.as_str(),
         "enchanted land is an island." | "enchanted land is a swamp."
@@ -8872,6 +11489,24 @@ fn parse_common_oracle_family_clause(
                 blocker_filter: fear_blocker_target_filter(),
                 duration: Duration::WhileSourceOnBattlefield,
             }));
+        return Some(Ok(parsed));
+    }
+
+    if let Some(keyword_text) = lower
+        .strip_prefix("enchanted creature loses ")
+        .and_then(|text| text.strip_suffix('.'))
+        && source_type_line_can_supply_attachment_kind(source_type_line, AttachmentKind::Aura)
+        && let Ok(keywords) = parse_keyword_list(address, keyword_text)
+        && !keywords.is_empty()
+    {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::RemoveKeyword {
+            objects: ObjectRef::AttachmentTarget {
+                kind: AttachmentKind::Aura,
+            },
+            keywords,
+            duration: Duration::WhileSourceOnBattlefield,
+        });
         return Some(Ok(parsed));
     }
 
@@ -9107,6 +11742,20 @@ fn parse_common_oracle_family_clause(
         return Some(Ok(parsed));
     }
 
+    if matches!(
+        lower.as_str(),
+        "this spell costs {1} less to cast if it's bargained."
+            | "this object spell costs {1} less to cast if it's bargained."
+    ) {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::ReduceSpellCostWhen {
+            object: ObjectRef::Source,
+            mana: ManaCost("{1}".to_owned()),
+            condition: Condition::CardWasBargained,
+        });
+        return Some(Ok(parsed));
+    }
+
     if lower
         == "this object spell costs {1} less to cast for each creature that attacked this turn."
     {
@@ -9118,6 +11767,35 @@ fn parse_common_oracle_family_clause(
                 player: PlayerRef::Any,
             },
             maximum_reduction: None,
+        });
+        return Some(Ok(parsed));
+    }
+
+    if lower == "this spell costs {1} less to cast for each creature you attacked with this turn."
+        || lower
+            == "this object spell costs {1} less to cast for each creature you attacked with this turn."
+    {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::ReduceSpellCost {
+            object: ObjectRef::Source,
+            mana: ManaCost("{1}".to_owned()),
+            per: CountExpression::CreaturesAttackedThisTurn {
+                player: PlayerRef::You,
+            },
+            maximum_reduction: None,
+        });
+        return Some(Ok(parsed));
+    }
+
+    if lower == "this spell costs {2} less to cast if you've cast another spell this turn."
+        || lower
+            == "this object spell costs {2} less to cast if you've cast another spell this turn."
+    {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::ReduceSpellCostWhen {
+            object: ObjectRef::Source,
+            mana: ManaCost("{2}".to_owned()),
+            condition: Condition::AnotherSpellCastThisTurn,
         });
         return Some(Ok(parsed));
     }
@@ -9208,6 +11886,53 @@ fn parse_common_oracle_family_clause(
                 attacker: Some(ObjectRef::Target(0)),
                 duration: Duration::UntilEndOfTurn,
             }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "all creatures block each combat if able." {
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::Restriction(Restriction::MustBlockIfAble {
+                blockers: ObjectRef::EachMatching(creatures),
+                attacker: None,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "all creatures able to block enchanted creature do so."
+        && source_type_line_can_supply_attachment_kind(source_type_line, AttachmentKind::Aura)
+    {
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::Restriction(Restriction::MustBlockIfAble {
+                blockers: ObjectRef::EachMatching(creatures),
+                attacker: Some(ObjectRef::AttachmentTarget {
+                    kind: AttachmentKind::Aura,
+                }),
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "enchanted creature's activated abilities can't be activated."
+        && source_type_line_can_supply_attachment_kind(source_type_line, AttachmentKind::Aura)
+    {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::Restriction(
+            Restriction::ActivatedAbilitiesCannotBeActivated {
+                object: ObjectRef::AttachmentTarget {
+                    kind: AttachmentKind::Aura,
+                },
+                duration: Duration::WhileSourceOnBattlefield,
+            },
+        ));
         return Some(Ok(parsed));
     }
 
@@ -9382,6 +12107,97 @@ fn parse_common_oracle_family_clause(
             }],
             if_false: Vec::new(),
         });
+        return Some(Ok(parsed));
+    }
+
+    if let Some(counter_name) = lower
+        .strip_prefix("this object enters with a ")
+        .or_else(|| lower.strip_prefix("this object enters with an "))
+        .and_then(|text| text.strip_suffix(" counter on it if you cast it from your hand."))
+        .filter(|counter| !counter.is_empty())
+    {
+        let mut parsed = ParsedClause::new(Timing::Replacement);
+        parsed.effects.push(Effect::Conditional {
+            condition: Condition::SpellCastFromHand,
+            if_true: vec![Effect::PutCounter {
+                object: ObjectRef::Source,
+                counter: parse_counter_kind(counter_name),
+                amount: Amount::Constant(1),
+            }],
+            if_false: Vec::new(),
+        });
+        return Some(Ok(parsed));
+    }
+
+    if let Some((keyword, counter_name)) = lower
+        .strip_prefix("this object has ")
+        .or_else(|| lower.strip_prefix("this creature has "))
+        .and_then(|text| text.split_once(" as long as it has a "))
+        .and_then(|(keyword, remainder)| {
+            remainder
+                .strip_suffix(" counter on it.")
+                .map(|counter| (keyword, counter))
+        })
+        .and_then(|(keyword, counter)| {
+            parse_keyword_list(address, keyword)
+                .ok()
+                .filter(|keywords| keywords.len() == 1)
+                .map(|keywords| (keywords[0].clone(), counter))
+        })
+        .filter(|(_, counter)| !counter.is_empty())
+    {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::GrantKeyword {
+            objects: ObjectRef::Source,
+            keywords: vec![keyword],
+            duration: Duration::WhileCondition(Box::new(Condition::SourceHasCounter {
+                counter: parse_counter_kind(counter_name),
+            })),
+        });
+        return Some(Ok(parsed));
+    }
+
+    if lower == "this creature has flying as long as it's enchanted."
+        || lower == "this object has flying as long as it's enchanted."
+    {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::GrantKeyword {
+            objects: ObjectRef::Source,
+            keywords: vec![Keyword::Flying],
+            duration: Duration::WhileCondition(Box::new(Condition::SourceIsAttached)),
+        });
+        return Some(Ok(parsed));
+    }
+
+    if lower
+        == "this creature enters with x +1/+1 counters on it, where x is the number of other creatures on the battlefield."
+        || lower
+            == "this object enters with x +1/+1 counters on it, where x is the number of other creatures on the battlefield."
+    {
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        creatures.other_than_source = true;
+        let mut parsed = ParsedClause::new(Timing::Replacement);
+        parsed.effects.push(Effect::PutCounter {
+            object: ObjectRef::Source,
+            counter: CounterKind::PlusOnePlusOne,
+            amount: Amount::Count(Box::new(CountExpression::MatchingObjects {
+                player: PlayerRef::Any,
+                filter: creatures,
+            })),
+        });
+        return Some(Ok(parsed));
+    }
+
+    if lower == "this creature can't have counters put on it."
+        || lower == "this object can't have counters put on it."
+    {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::Replacement(Box::new(
+            ReplacementEffect::PreventCounters {
+                object: ObjectRef::Source,
+            },
+        )));
         return Some(Ok(parsed));
     }
 
@@ -9868,6 +12684,26 @@ fn parse_common_oracle_family_clause(
         return Some(Ok(parsed));
     }
 
+    if lower
+        == "cast this object spell only during the declare attackers step and only if you've been attacked this step."
+        || lower
+            == "cast this object only during the declare attackers step and only if you've been attacked this step."
+    {
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed
+            .conditions
+            .push(Condition::CastOnlyDuringDeclareAttackersIfActorWasAttackedThisStep);
+        return Some(Ok(parsed));
+    }
+
+    if lower == "cast this object spell only during your end step."
+        || lower == "cast this object only during your end step."
+    {
+        let mut parsed = ParsedClause::new(Timing::CastingAdditionalCost);
+        parsed.conditions.push(Condition::CastOnlyDuringYourEndStep);
+        return Some(Ok(parsed));
+    }
+
     if lower == "whenever this object deals damage to a player, that player discards a card." {
         let mut parsed =
             ParsedClause::new(Timing::Triggered(Box::new(Trigger::SourceDamageToPlayer)));
@@ -9929,6 +12765,37 @@ fn parse_common_oracle_family_clause(
 
     const DELIRIUM_CONDITION: &str =
         "there are four or more card types among cards in your graveyard";
+    if let Some((pair_text, keyword_text)) = lower
+        .strip_prefix("this object gets ")
+        .and_then(|text| text.strip_suffix(&format!(" as long as {DELIRIUM_CONDITION}.")))
+        .and_then(|text| text.split_once(" and has "))
+        && let Some((operation, power, toughness)) = parse_power_toughness_modifier_pair(pair_text)
+        && let Ok(keywords) = parse_keyword_list(address, keyword_text)
+        && !keywords.is_empty()
+    {
+        let condition = Condition::CardTypesInGraveyard {
+            player: PlayerRef::You,
+            comparison: Comparison::AtLeast,
+            amount: Amount::Constant(4),
+        };
+        let duration = Duration::WhileCondition(Box::new(condition));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.extend([
+            Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::Source,
+                operation,
+                power,
+                toughness,
+                duration: duration.clone(),
+            }),
+            Effect::GrantKeyword {
+                objects: ObjectRef::Source,
+                keywords,
+                duration,
+            },
+        ]);
+        return Some(Ok(parsed));
+    }
     if let Some(modifier_text) = lower
         .strip_prefix("this object gets ")
         .and_then(|text| text.strip_suffix(&format!(" as long as {DELIRIUM_CONDITION}.")))
@@ -10289,6 +13156,22 @@ fn parse_common_oracle_family_clause(
         return Some(Ok(parsed));
     }
 
+    if lower == "if you were the starting player, this object enters tapped." {
+        let condition = Condition::PlayingFirst;
+        let mut parsed = ParsedClause::new(Timing::Replacement);
+        parsed.conditions.push(condition.clone());
+        parsed.effects.push(Effect::Replacement(Box::new(
+            ReplacementEffect::EntersTapped(Box::new(EntersTappedReplacement {
+                object: ObjectRef::Source,
+                when: Some(condition),
+                unless: None,
+                optional_cost: None,
+                optional_reveal: None,
+            })),
+        )));
+        return Some(Ok(parsed));
+    }
+
     if lower == "noncreature spells you cast cost {1} less to cast." {
         let mut filter = ObjectFilter::in_zone(Zone::Stack);
         filter.controller = Some(PlayerRef::You);
@@ -10299,6 +13182,44 @@ fn parse_common_oracle_family_clause(
             mana: ManaCost("{1}".to_owned()),
             per: CountExpression::Constant(1),
             maximum_reduction: None,
+        });
+        return Some(Ok(parsed));
+    }
+
+    let first_creature_reduction = [
+        (
+            "the first creature spell you cast each turn costs {1} less to cast.",
+            false,
+            "{1}",
+        ),
+        (
+            "the first creature spell you cast each turn costs {2} less to cast.",
+            false,
+            "{2}",
+        ),
+        (
+            "the first legendary creature spell you cast each turn costs {2} less to cast.",
+            true,
+            "{2}",
+        ),
+    ]
+    .into_iter()
+    .find(|(text, _, _)| lower == *text);
+    if let Some((_, legendary, mana)) = first_creature_reduction {
+        let mut filter = ObjectFilter::with_type(CardType::Creature);
+        filter.zones = vec![Zone::Stack];
+        filter.controller = Some(PlayerRef::You);
+        if legendary {
+            filter.supertypes.push(Supertype::Legendary);
+        }
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::ReduceSpellCostWhen {
+            object: ObjectRef::EachMatching(filter),
+            mana: ManaCost(mana.to_owned()),
+            condition: Condition::SpellsCastByActorThisTurn {
+                comparison: Comparison::Exactly,
+                amount: 0,
+            },
         });
         return Some(Ok(parsed));
     }
@@ -10496,17 +13417,62 @@ fn parse_common_oracle_family_clause(
         return Some(Ok(parsed));
     }
 
-    if lower == "this object escapes with a +1/+1 counter on it." {
+    let escape_counter_amount = lower
+        .strip_prefix("this object escapes with ")
+        .and_then(|text| text.strip_suffix(" on it."))
+        .and_then(|text| {
+            if text == "a +1/+1 counter" {
+                Some(Amount::Constant(1))
+            } else {
+                text.strip_suffix(" +1/+1 counters")
+                    .and_then(parse_english_amount)
+            }
+        });
+    if let Some(amount) = escape_counter_amount {
         let mut parsed = ParsedClause::new(Timing::Replacement);
         parsed.effects.push(Effect::Conditional {
             condition: Condition::CardWasCastUsingEscape,
             if_true: vec![Effect::PutCounter {
                 object: ObjectRef::Source,
                 counter: CounterKind::PlusOnePlusOne,
-                amount: Amount::Constant(1),
+                amount,
             }],
             if_false: Vec::new(),
         });
+        return Some(Ok(parsed));
+    }
+
+    if let Some((pair_text, keyword_text)) = lower
+        .strip_prefix(
+            "as long as there are seven or more cards in your graveyard, this object gets ",
+        )
+        .and_then(|text| text.strip_suffix('.'))
+        .and_then(|text| text.split_once(" and has "))
+        && let Some((operation, power, toughness)) = parse_power_toughness_modifier_pair(pair_text)
+        && let Ok(keywords) = parse_keyword_list(address, keyword_text)
+        && !keywords.is_empty()
+    {
+        let condition = Condition::GraveyardCardCount {
+            player: PlayerRef::You,
+            comparison: Comparison::AtLeast,
+            amount: Amount::Constant(7),
+        };
+        let duration = Duration::WhileCondition(Box::new(condition));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.extend([
+            Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::Source,
+                operation,
+                power,
+                toughness,
+                duration: duration.clone(),
+            }),
+            Effect::GrantKeyword {
+                objects: ObjectRef::Source,
+                keywords,
+                duration,
+            },
+        ]);
         return Some(Ok(parsed));
     }
 
@@ -10619,6 +13585,64 @@ fn parse_common_oracle_family_clause(
         return Some(Ok(parsed));
     }
 
+    if let Some(keyword_text) = lower
+        .strip_prefix("this object has ")
+        .and_then(|text| text.strip_suffix(" as long as you control three or more artifacts."))
+        && let Ok(keywords) = parse_keyword_list(address, keyword_text)
+        && !keywords.is_empty()
+    {
+        let mut artifacts = ObjectFilter::with_type(CardType::Artifact);
+        artifacts.zones = vec![Zone::Battlefield];
+        artifacts.controller = Some(PlayerRef::You);
+        let condition = Condition::ControlCount {
+            player: PlayerRef::You,
+            filter: artifacts,
+            comparison: Comparison::AtLeast,
+            amount: Amount::Constant(3),
+        };
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::GrantKeyword {
+            objects: ObjectRef::Source,
+            keywords,
+            duration: Duration::WhileCondition(Box::new(condition)),
+        });
+        return Some(Ok(parsed));
+    }
+
+    if let Some((pair_text, keyword_text)) = lower
+        .strip_prefix("as long as you control an artifact, this object gets ")
+        .and_then(|text| text.strip_suffix('.'))
+        .and_then(|text| text.split_once(" and has "))
+        && let Some((operation, power, toughness)) = parse_power_toughness_modifier_pair(pair_text)
+        && let Ok(keywords) = parse_keyword_list(address, keyword_text)
+        && !keywords.is_empty()
+    {
+        let mut artifacts = ObjectFilter::with_type(CardType::Artifact);
+        artifacts.zones = vec![Zone::Battlefield];
+        artifacts.controller = Some(PlayerRef::You);
+        let condition = Condition::ControlAny {
+            player: PlayerRef::You,
+            filters: vec![artifacts],
+        };
+        let duration = Duration::WhileCondition(Box::new(condition));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.extend([
+            Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::Source,
+                operation,
+                power,
+                toughness,
+                duration: duration.clone(),
+            }),
+            Effect::GrantKeyword {
+                objects: ObjectRef::Source,
+                keywords,
+                duration,
+            },
+        ]);
+        return Some(Ok(parsed));
+    }
+
     if let Some(pair_text) = lower
         .strip_prefix("creatures you control get ")
         .and_then(|text| text.strip_suffix(" as long as you control three or more artifacts."))
@@ -10724,7 +13748,7 @@ fn parse_common_oracle_family_clause(
         .strip_prefix("enchanted creature gets ")
         .and_then(|text| text.strip_suffix('.'))
         && let Some((operation, power, toughness)) = parse_power_toughness_modifier_pair(pair_text)
-        && source_type_line_can_supply_attachment_kind(_source_type_line, AttachmentKind::Aura)
+        && source_type_line_can_supply_attachment_kind(source_type_line, AttachmentKind::Aura)
     {
         let mut parsed = ParsedClause::new(Timing::Static);
         parsed
@@ -10755,6 +13779,148 @@ fn parse_common_oracle_family_clause(
             .push(Effect::ModifyPowerToughness(PowerToughnessChange {
                 objects: ObjectRef::AttachmentTarget {
                     kind: AttachmentKind::Equipment,
+                },
+                operation: PowerToughnessOperation::Add,
+                power: amount.clone(),
+                toughness: amount,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "equipped creature gets +1/+0 for each artifact you control." {
+        let mut artifacts = ObjectFilter::with_type(CardType::Artifact);
+        artifacts.zones = vec![Zone::Battlefield];
+        artifacts.controller = Some(PlayerRef::You);
+        let amount = Amount::Count(Box::new(CountExpression::MatchingObjects {
+            player: PlayerRef::You,
+            filter: artifacts,
+        }));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::AttachmentTarget {
+                    kind: AttachmentKind::Equipment,
+                },
+                operation: PowerToughnessOperation::Add,
+                power: amount,
+                toughness: Amount::Constant(0),
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "equipped creature gets +1/+1 for each swamp you control." {
+        let mut swamps = ObjectFilter::with_type(CardType::Land);
+        swamps.zones = vec![Zone::Battlefield];
+        swamps.controller = Some(PlayerRef::You);
+        swamps.subtypes.push("Swamp".to_owned());
+        let amount = Amount::Count(Box::new(CountExpression::MatchingObjects {
+            player: PlayerRef::You,
+            filter: swamps,
+        }));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::AttachmentTarget {
+                    kind: AttachmentKind::Equipment,
+                },
+                operation: PowerToughnessOperation::Add,
+                power: amount.clone(),
+                toughness: amount,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "equipped creature gets +1/+1 for each charge counter on this equipment." {
+        let amount = Amount::Count(Box::new(CountExpression::CountersOn {
+            object: ObjectRef::Source,
+            counter: CounterKind::Named("charge".to_owned()),
+        }));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::AttachmentTarget {
+                    kind: AttachmentKind::Equipment,
+                },
+                operation: PowerToughnessOperation::Add,
+                power: amount.clone(),
+                toughness: amount,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if matches!(
+        lower.as_str(),
+        "enchanted creature gets -1/-1 for each plague counter on this aura."
+            | "enchanted creature gets -1/-1 for each plague counter on this object."
+    ) && source_type_line_can_supply_attachment_kind(source_type_line, AttachmentKind::Aura)
+    {
+        let amount = Amount::Count(Box::new(CountExpression::CountersOn {
+            object: ObjectRef::Source,
+            counter: CounterKind::Named("plague".to_owned()),
+        }));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::AttachmentTarget {
+                    kind: AttachmentKind::Aura,
+                },
+                operation: PowerToughnessOperation::Subtract,
+                power: amount.clone(),
+                toughness: amount,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "enchanted creature gets -x/-0, where x is the number of cards in your graveyard."
+        && source_type_line_can_supply_attachment_kind(source_type_line, AttachmentKind::Aura)
+    {
+        let mut cards = ObjectFilter::in_zone(Zone::Graveyard);
+        cards.owner = Some(PlayerRef::You);
+        let amount = Amount::Count(Box::new(CountExpression::CardsInZone {
+            player: PlayerRef::You,
+            zone: Zone::Graveyard,
+            filter: cards,
+        }));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::AttachmentTarget {
+                    kind: AttachmentKind::Aura,
+                },
+                operation: PowerToughnessOperation::Subtract,
+                power: amount,
+                toughness: Amount::Constant(0),
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "enchanted creature gets +1/+1 for each creature you control."
+        && source_type_line_can_supply_attachment_kind(source_type_line, AttachmentKind::Aura)
+    {
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        creatures.controller = Some(PlayerRef::You);
+        let amount = Amount::Count(Box::new(CountExpression::MatchingObjects {
+            player: PlayerRef::You,
+            filter: creatures,
+        }));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::AttachmentTarget {
+                    kind: AttachmentKind::Aura,
                 },
                 operation: PowerToughnessOperation::Add,
                 power: amount.clone(),
@@ -11114,6 +14280,21 @@ fn parse_common_oracle_family_clause(
         }));
         return Some(Ok(parsed));
     }
+    if lower == "target player takes an extra turn after this one." {
+        let mut parsed = ParsedClause::new(Timing::SpellResolution);
+        parsed.targets.push(Target {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter: TargetFilter::Player,
+            amount: TargetAmount::Exactly(1),
+            relationship: TargetRelationship::Independent,
+        });
+        parsed.effects.push(Effect::TakeExtraTurn(ExtraTurnEffect {
+            player: PlayerRef::TargetPlayer(0),
+            lose_at_end_step: false,
+        }));
+        return Some(Ok(parsed));
+    }
 
     if let Some(cost_text) = lower
         .strip_prefix("at the beginning of your next upkeep, pay ")
@@ -11148,6 +14329,42 @@ fn parse_common_oracle_family_clause(
                 amount: Amount::Constant(7),
             },
         ));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "each player shuffles their graveyard into their library." {
+        let mut parsed = ParsedClause::new(Timing::SpellResolution);
+        parsed.effects.push(Effect::LibraryProcedure(
+            LibraryProcedure::ShuffleGraveyardIntoLibrary {
+                player: PlayerRef::Any,
+            },
+        ));
+        return Some(Ok(parsed));
+    }
+
+    if lower == "draw a card for each tapped creature target opponent controls." {
+        let opponent = PlayerRef::TargetPlayer(0);
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        creatures.controller = Some(opponent.clone());
+        creatures.tapped = Some(true);
+        let mut parsed = ParsedClause::new(Timing::SpellResolution);
+        parsed.targets.push(Target {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter: TargetFilter::Opponent,
+            amount: TargetAmount::Exactly(1),
+            relationship: TargetRelationship::Independent,
+        });
+        parsed.effects.push(Effect::Draw {
+            player: PlayerRef::You,
+            amount: Amount::Count(Box::new(CountExpression::MatchingObjects {
+                player: opponent,
+                filter: creatures,
+            })),
+            optional: false,
+            delayed_until: None,
+        });
         return Some(Ok(parsed));
     }
 
@@ -11522,15 +14739,20 @@ fn parse_common_oracle_family_clause(
     if lower
         == "choose one. if you control a commander as you cast this object spell, you may choose both instead."
     {
+        let choices = ChoiceCount::Conditional {
+            condition: Box::new(Condition::CommanderControlled {
+                player: PlayerRef::You,
+            }),
+            when_true: Box::new(ChoiceCount::Between {
+                minimum: 1,
+                maximum: 2,
+            }),
+            when_false: Box::new(ChoiceCount::Exactly(1)),
+        };
         let mut parsed = ParsedClause::new(Timing::ModalHeader {
-            choices: ChoiceCount::UpTo(2),
+            choices: choices.clone(),
         });
-        parsed.conditions.push(Condition::CommanderControlled {
-            player: PlayerRef::You,
-        });
-        parsed.effects.push(Effect::ChooseMode {
-            count: ChoiceCount::UpTo(2),
-        });
+        parsed.effects.push(Effect::ChooseMode { count: choices });
         return Some(Ok(parsed));
     }
 
@@ -12429,7 +15651,7 @@ fn parse_keyword_clause(
     }
 
     let mut keywords = Vec::new();
-    for part in lower.split(',').map(str::trim) {
+    for part in lower.split([',', ';']).map(str::trim) {
         let keyword = match part {
             "deathtouch" => Keyword::Deathtouch,
             "defender" => Keyword::Defender,
@@ -13522,6 +16744,52 @@ fn parse_activated_clause(
             amount: TargetAmount::Exactly(1),
         });
     }
+    let binds_sacrificed_power_damage = parsed.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program))
+                if program.amount()
+                    == crate::damage_clause_compiler::DamageAmountTemplate::SacrificedCreaturePower
+        )
+    });
+    if binds_sacrificed_power_damage {
+        let sacrifice_indices = costs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cost)| {
+                matches!(
+                    cost,
+                    Cost::Sacrifice {
+                        amount: Amount::Constant(1),
+                        filter,
+                    } if filter.card_types.contains(&CardType::Creature)
+                )
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let [index] = sacrifice_indices.as_slice() else {
+            return Some(Err(unsupported(address, clause)));
+        };
+        let Cost::Sacrifice { filter, .. } = costs[*index].clone() else {
+            unreachable!("the exact sacrifice cost was selected above");
+        };
+        costs[*index] = Cost::SacrificeSelection(ObjectSelection {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter,
+            amount: TargetAmount::Exactly(1),
+        });
+        for effect in &mut parsed.effects {
+            let Effect::StandaloneRuleProgram(StandaloneRuleProgram::DamageClause(program)) =
+                effect
+            else {
+                continue;
+            };
+            if !program.bind_same_clause_sacrificed_creature_power(0) {
+                return Some(Err(unsupported(address, clause)));
+            }
+        }
+    }
     parsed.costs = costs;
     parsed.activation_restriction = activation_restriction;
     if let Some(condition) = activation_condition {
@@ -13543,10 +16811,10 @@ fn parse_loyalty_activation_cost(
             return Some(Err(unsupported(address, text)));
         };
         LoyaltyCost::Add(amount)
-    } else {
-        let amount = text
-            .strip_prefix('\u{2212}')
-            .or_else(|| text.strip_prefix('-'))?;
+    } else if let Some(amount) = text
+        .strip_prefix('\u{2212}')
+        .or_else(|| text.strip_prefix('-'))
+    {
         if amount == "X" {
             LoyaltyCost::Remove(Amount::X)
         } else {
@@ -13555,6 +16823,8 @@ fn parse_loyalty_activation_cost(
             };
             LoyaltyCost::Remove(Amount::Constant(amount))
         }
+    } else {
+        return None;
     };
 
     if !words(source_type_line)
@@ -13575,6 +16845,20 @@ fn parse_strict_positive_decimal(text: &str) -> Option<u32> {
 
 fn strip_activation_condition(text: &str) -> (&str, Option<Condition>) {
     let lower = text.to_ascii_lowercase();
+    if let Some((body, amount_text)) = lower
+        .strip_suffix(" cards in hand.")
+        .and_then(|prefix| prefix.rsplit_once(" activate only if you have exactly "))
+        && let Some(amount) = parse_english_amount(amount_text)
+    {
+        return (
+            text[..body.len()].trim_end(),
+            Some(Condition::HandCardCount {
+                player: PlayerRef::You,
+                comparison: Comparison::Exactly,
+                amount,
+            }),
+        );
+    }
     if lower.ends_with(" activate only if you have no cards in hand.") {
         let suffix = " Activate only if you have no cards in hand.";
         let end = text.len() - suffix.len();
@@ -13788,6 +17072,18 @@ fn parse_costs(address: ClauseAddress, text: &str) -> Result<Vec<Cost>, CompileE
         if lower == "discard your hand" {
             costs.push(Cost::DiscardHand {
                 player: PlayerRef::You,
+            });
+            part_index += 1;
+            continue;
+        }
+        if let Some(amount_text) = lower.strip_prefix("mill ").and_then(|text| {
+            text.strip_suffix(" card")
+                .or_else(|| text.strip_suffix(" cards"))
+        }) && let Some(amount) = parse_english_amount(amount_text)
+        {
+            costs.push(Cost::Mill {
+                player: PlayerRef::You,
+                amount,
             });
             part_index += 1;
             continue;
@@ -14274,6 +17570,54 @@ fn parse_triggered_clause(
     source_type_line: &str,
 ) -> Option<Result<ParsedClause, CompileError>> {
     let lower = clause.to_ascii_lowercase();
+    if lower
+        == "at the beginning of your upkeep, create a token that's a copy of another target nonland permanent you control."
+    {
+        let mut filter = ObjectFilter::with_type(CardType::Permanent);
+        filter.zones = vec![Zone::Battlefield];
+        filter.controller = Some(PlayerRef::You);
+        filter.excluded_card_types.push(CardType::Land);
+        filter.other_than_source = true;
+        let target = Target {
+            id: 0,
+            chooser: PlayerRef::You,
+            filter: TargetFilter::Object(filter),
+            amount: TargetAmount::Exactly(1),
+            relationship: TargetRelationship::Independent,
+        };
+        let mut parsed = ParsedClause::new(Timing::Triggered(Box::new(Trigger::BeginningOf {
+            step: Step::Upkeep,
+            player: TurnPlayer::You,
+        })));
+        parsed.targets.push(target);
+        parsed.effects.push(Effect::CreateToken(TokenCreation {
+            player: PlayerRef::You,
+            amount: Amount::Constant(1),
+            specification: TokenSpecification::CopyOf(ObjectRef::Target(0)),
+            tapped: false,
+            attacking: false,
+        }));
+        return Some(Ok(parsed));
+    }
+    if lower
+        == "at the beginning of your upkeep, create a token that's a copy of enchanted creature."
+        && source_type_line_can_supply_attachment_kind(source_type_line, AttachmentKind::Aura)
+    {
+        let mut parsed = ParsedClause::new(Timing::Triggered(Box::new(Trigger::BeginningOf {
+            step: Step::Upkeep,
+            player: TurnPlayer::You,
+        })));
+        parsed.effects.push(Effect::CreateToken(TokenCreation {
+            player: PlayerRef::You,
+            amount: Amount::Constant(1),
+            specification: TokenSpecification::CopyOf(ObjectRef::AttachmentTarget {
+                kind: AttachmentKind::Aura,
+            }),
+            tapped: false,
+            attacking: false,
+        }));
+        return Some(Ok(parsed));
+    }
     if lower == "when this object enters, tap all other creatures." {
         let mut creatures = ObjectFilter::with_type(CardType::Creature);
         creatures.zones = vec![Zone::Battlefield];
@@ -14488,6 +17832,10 @@ fn initial_effect_object_for_trigger(trigger: &Trigger) -> Option<ObjectRef> {
             TriggerSubject::Source => ObjectRef::Source,
             TriggerSubject::Matching(_) => ObjectRef::TriggeringObject,
         }),
+        Trigger::CountersPlaced { subject, .. } => Some(match subject {
+            TriggerSubject::Source => ObjectRef::Source,
+            TriggerSubject::Matching(_) => ObjectRef::TriggeringObject,
+        }),
         Trigger::PlayerAction {
             subject: Some(subject),
             ..
@@ -14540,6 +17888,7 @@ fn initial_effect_player_for_trigger(trigger: &Trigger) -> Option<PlayerRef> {
         | Trigger::SourceAttacks
         | Trigger::SourceBlocks { .. }
         | Trigger::ObjectEvent { .. }
+        | Trigger::CountersPlaced { .. }
         | Trigger::SourceCombatDamageToObject { .. }
         | Trigger::BeginningOf { .. }
         | Trigger::BeginningOfNextEndStep
@@ -14564,6 +17913,59 @@ fn parse_trigger(text: &str) -> Option<Trigger> {
         }
         if let Some(trigger) = parse_player_action_trigger_event(event) {
             return Some(trigger);
+        }
+        for (ordinal, resulting_total) in [("second", 2), ("third", 3), ("fourth", 4)] {
+            let Some(counter_event) = event
+                .strip_prefix("the ")
+                .and_then(|event| event.strip_prefix(ordinal))
+                .and_then(|event| event.strip_prefix(' '))
+            else {
+                continue;
+            };
+            let Some((counter_name, subject)) = counter_event.split_once(" counter is put on ")
+            else {
+                continue;
+            };
+            if counter_name.is_empty() {
+                continue;
+            }
+            return Some(Trigger::CountersPlaced {
+                subject: parse_trigger_subject(subject)?,
+                counter: parse_counter_kind(counter_name),
+                one_or_more: true,
+                resulting_total: Some(resulting_total),
+            });
+        }
+        for (prefix, counter, one_or_more) in [
+            (
+                "one or more +1/+1 counters are put on ",
+                CounterKind::PlusOnePlusOne,
+                true,
+            ),
+            (
+                "one or more -1/-1 counters are put on ",
+                CounterKind::MinusOneMinusOne,
+                true,
+            ),
+            (
+                "a +1/+1 counter is put on ",
+                CounterKind::PlusOnePlusOne,
+                false,
+            ),
+            (
+                "a -1/-1 counter is put on ",
+                CounterKind::MinusOneMinusOne,
+                false,
+            ),
+        ] {
+            if let Some(subject) = event.strip_prefix(prefix) {
+                return Some(Trigger::CountersPlaced {
+                    subject: parse_trigger_subject(subject)?,
+                    counter,
+                    one_or_more,
+                    resulting_total: None,
+                });
+            }
         }
         if event == "you gain life" {
             return Some(Trigger::LifeGained {
@@ -14697,6 +18099,7 @@ fn parse_trigger(text: &str) -> Option<Trigger> {
             ),
             (" is turned face up", ObjectEventKind::TurnedFaceUp),
             (" becomes tapped", ObjectEventKind::BecomesTapped),
+            (" becomes untapped", ObjectEventKind::BecomesUntapped),
             (" becomes blocked", ObjectEventKind::BecomesBlocked),
             (" blocks", ObjectEventKind::Blocks),
             (" is dealt damage", ObjectEventKind::DealtDamage),
@@ -14819,9 +18222,10 @@ fn parse_cast_trigger_event(event: &str) -> Option<Trigger> {
         (PlayerRef::You, spell)
     } else if let Some(spell) = event.strip_prefix("an opponent casts ") {
         (PlayerRef::Opponent, spell)
-    } else {
-        let spell = event.strip_prefix("a player casts ")?;
+    } else if let Some(spell) = event.strip_prefix("a player casts ") {
         (PlayerRef::Any, spell)
+    } else {
+        return None;
     };
     if matches!(spell_text, "this object" | "this object spell") {
         return Some(Trigger::SourceCast);
@@ -14866,9 +18270,10 @@ fn parse_card_draw_trigger_event(event: &str) -> Option<Trigger> {
         (PlayerRef::You, text)
     } else if let Some(text) = event.strip_prefix("an opponent draws ") {
         (PlayerRef::Opponent, text)
-    } else {
-        let text = event.strip_prefix("a player draws ")?;
+    } else if let Some(text) = event.strip_prefix("a player draws ") {
         (PlayerRef::Any, text)
+    } else {
+        return None;
     };
     let occurrence_this_turn = match draw_text {
         "a card" => None,
@@ -15153,6 +18558,27 @@ fn parse_condition(text: &str) -> Option<Condition> {
     if lower == "this object is tapped" {
         return Some(Condition::SourceState(ObjectState::Tapped));
     }
+    if lower == "you attacked this turn" {
+        return Some(Condition::YouAttackedThisTurn);
+    }
+    if lower == "an opponent lost life this turn" {
+        return Some(Condition::OpponentLostLifeThisTurn);
+    }
+    if lower == "you've cast another spell this turn" {
+        return Some(Condition::AnotherSpellCastThisTurn);
+    }
+    if matches!(lower.as_str(), "it's not your turn" | "it isn't your turn") {
+        return Some(Condition::NotYourTurn);
+    }
+    if matches!(
+        lower.as_str(),
+        "it's not their turn"
+            | "it isn't their turn"
+            | "it's not that player's turn"
+            | "it isn't that player's turn"
+    ) {
+        return Some(Condition::NotThatPlayersTurn);
+    }
     if let Some(counter_name) = lower
         .strip_prefix("there are no ")
         .and_then(|text| text.strip_suffix(" counters on this object"))
@@ -15168,6 +18594,9 @@ fn parse_condition(text: &str) -> Option<Condition> {
         return Some(Condition::CommanderControlled {
             player: PlayerRef::You,
         });
+    }
+    if lower == "you win" {
+        return Some(Condition::YouWonPreviousClash);
     }
     if matches!(lower.as_str(), "it was kicked" | "this object was kicked") {
         return Some(Condition::CardWasKicked);
@@ -15210,6 +18639,48 @@ fn parse_static_clause(
     source_type_line: &str,
 ) -> Option<Result<ParsedClause, CompileError>> {
     let lower = clause.to_ascii_lowercase();
+    if lower == "all creatures get -x/-0, where x is the number of cards in your hand." {
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        let hand_size = Amount::Count(Box::new(CountExpression::CardsInZone {
+            player: PlayerRef::You,
+            zone: Zone::Hand,
+            filter: ObjectFilter::default(),
+        }));
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::EachMatching(creatures),
+                operation: PowerToughnessOperation::Subtract,
+                power: hand_size,
+                toughness: Amount::Constant(0),
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
+    if let Some(pair_text) = lower
+        .strip_prefix("all creatures get ")
+        .and_then(|text| text.strip_suffix('.'))
+        && !type_line_has_word(source_type_line, "instant")
+        && !type_line_has_word(source_type_line, "sorcery")
+        && !type_line_has_word(source_type_line, "plane")
+        && let Some((operation, power, toughness)) = parse_power_toughness_modifier_pair(pair_text)
+    {
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::EachMatching(creatures),
+                operation,
+                power,
+                toughness,
+                duration: Duration::WhileSourceOnBattlefield,
+            }));
+        return Some(Ok(parsed));
+    }
     if lower == "you have shroud." {
         let mut parsed = ParsedClause::new(Timing::Static);
         parsed
@@ -15285,12 +18756,15 @@ fn parse_static_clause(
     }
     if matches!(
         lower.as_str(),
-        "each creature you control assigns combat damage equal to its toughness rather than its power."
+        "each creature assigns combat damage equal to its toughness rather than its power."
+            | "each creature you control assigns combat damage equal to its toughness rather than its power."
             | "each creature you control with toughness greater than its power assigns combat damage equal to its toughness rather than its power."
     ) {
         let mut creatures = ObjectFilter::with_type(CardType::Creature);
         creatures.zones = vec![Zone::Battlefield];
-        creatures.controller = Some(PlayerRef::You);
+        if lower.contains("you control") {
+            creatures.controller = Some(PlayerRef::You);
+        }
         let mut parsed = ParsedClause::new(Timing::Static);
         parsed.effects.push(Effect::Restriction(
             Restriction::AssignCombatDamageUsingToughness {
@@ -15595,15 +19069,20 @@ fn parse_static_clause(
         return Some(Ok(parsed));
     }
     if let Some(body) = lower.strip_suffix('.')
-        && let Some((subject_text, keyword_text)) = body.split_once(" have ")
+        && let Some((subject_text, keyword_text)) = body
+            .split_once(" have ")
+            .or_else(|| body.split_once(" has "))
         && !subject_text.starts_with("target ")
         && !subject_text.starts_with("enchanted ")
         && !subject_text.starts_with("equipped ")
         && let Ok(keywords) = parse_keyword_list(address, keyword_text)
         && !keywords.is_empty()
-        && keywords
-            .iter()
-            .all(|keyword| matches!(keyword, Keyword::Defender | Keyword::Vigilance))
+        && keywords.iter().all(|keyword| {
+            matches!(
+                keyword,
+                Keyword::Defender | Keyword::Trample | Keyword::Vigilance
+            )
+        })
         && let Some(mut filter) = parse_card_filter_phrase(subject_text)
     {
         filter.zones = vec![Zone::Battlefield];
@@ -15638,8 +19117,10 @@ fn parse_static_clause(
             }
         }
     }
-    if lower.starts_with("lands you control have \"")
-        || lower.starts_with("creatures you control have \"")
+    if lower.contains(" have \"")
+        && clause
+            .split_once(" have \"")
+            .is_some_and(|(subject, _)| !subject.contains('.'))
     {
         let Some((subject_text, quoted)) = clause.split_once(" have \"") else {
             return Some(Err(CompileError::UnsupportedSyntax {
@@ -15662,29 +19143,41 @@ fn parse_static_clause(
                 }));
             }
         };
-        filter.controller = Some(PlayerRef::You);
+        if subject_text.to_ascii_lowercase().contains(" you control") {
+            filter.controller = Some(PlayerRef::You);
+        }
         filter.zones = vec![Zone::Battlefield];
-        let Some(colon) = find_top_level(ability, ':') else {
-            return Some(Err(CompileError::UnsupportedSyntax {
-                address,
-                normalized_clause: clause.to_string(),
-            }));
-        };
-        let costs = match parse_costs(address, &ability[..colon]) {
-            Ok(costs) => costs,
-            Err(error) => return Some(Err(error)),
-        };
-        let nested = match parse_effect_body(address, &ability[colon + 1..], Timing::Activated) {
-            Ok(parsed) => parsed,
+        let granted = match parse_granted_activated_ability(address, ability) {
+            Ok(granted) => granted,
             Err(error) => return Some(Err(error)),
         };
         let mut parsed = ParsedClause::new(Timing::Static);
         parsed.effects.push(Effect::GrantAbility {
             objects: ObjectRef::EachMatching(filter),
-            ability: GrantedAbility {
-                costs,
-                effects: nested.effects,
-            },
+            ability: granted,
+            duration: Duration::WhileSourceOnBattlefield,
+        });
+        return Some(Ok(parsed));
+    }
+    if let Some((subject, quoted)) = clause.split_once(" has \"")
+        && matches!(
+            subject.trim().to_ascii_lowercase().as_str(),
+            "this object"
+                | "this creature"
+                | "this artifact"
+                | "this enchantment"
+                | "this permanent"
+        )
+        && let Some(ability) = quoted.strip_suffix('"')
+    {
+        let granted = match parse_granted_activated_ability(address, ability) {
+            Ok(granted) => granted,
+            Err(error) => return Some(Err(error)),
+        };
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.push(Effect::GrantAbility {
+            objects: ObjectRef::Source,
+            ability: granted,
             duration: Duration::WhileSourceOnBattlefield,
         });
         return Some(Ok(parsed));
@@ -15717,31 +19210,28 @@ fn parse_attachment_static_clause(
     }
     let object = ObjectRef::AttachmentTarget { kind };
 
+    if let Some(subtype) = parse_basic_landwalk(predicate.trim_end_matches('.')) {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::Restriction(landwalk_restriction(
+                object,
+                subtype,
+                Duration::WhileSourceOnBattlefield,
+            )));
+        return Ok(parsed);
+    }
+
     if kind == AttachmentKind::Aura
         && let Some(ability) = predicate
             .strip_prefix("has \"")
             .and_then(|text| text.strip_suffix('"'))
     {
-        let Some(colon) = find_top_level(ability, ':') else {
-            return Err(unsupported(address, clause));
-        };
-        let costs = parse_costs(address, &ability[..colon])?;
-        let nested = parse_effect_body(address, &ability[colon + 1..], Timing::Activated)?;
-        if !nested.conditions.is_empty()
-            || !nested.costs.is_empty()
-            || !nested.targets.is_empty()
-            || nested.activation_restriction.is_some()
-            || nested.effects.is_empty()
-        {
-            return Err(unsupported(address, clause));
-        }
+        let granted = parse_granted_activated_ability(address, ability)?;
         let mut parsed = ParsedClause::new(Timing::Static);
         parsed.effects.push(Effect::GrantAbility {
             objects: object,
-            ability: GrantedAbility {
-                costs,
-                effects: nested.effects,
-            },
+            ability: granted,
             duration: Duration::WhileSourceOnBattlefield,
         });
         return Ok(parsed);
@@ -15797,6 +19287,72 @@ fn parse_attachment_static_clause(
         ]);
         return Ok(parsed);
     }
+    if let Some((pair_text, rest)) = predicate
+        .strip_prefix("gets ")
+        .and_then(|text| text.split_once(", has "))
+        && let Some((keyword_text, type_text)) = rest.split_once(", and is ")
+        && let Some((operation, power, toughness)) = parse_power_toughness_modifier_pair(pair_text)
+    {
+        let keywords = parse_keyword_list(address, keyword_text)?;
+        let type_text = type_text.trim_end_matches('.');
+        let (description, retains_colors) = type_text
+            .strip_suffix(" in addition to its other colors and types")
+            .map(|text| (text, true))
+            .or_else(|| {
+                type_text
+                    .strip_suffix(" in addition to its other types")
+                    .map(|text| (text, false))
+            })
+            .ok_or_else(|| unsupported(address, clause))?;
+        let words = description
+            .strip_prefix("a ")
+            .or_else(|| description.strip_prefix("an "))
+            .unwrap_or(description)
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        let (colors, subtype_words) = words
+            .first()
+            .and_then(|word| parse_color_word(word))
+            .map_or_else(
+                || (None, words.as_slice()),
+                |color| (Some(vec![color]), &words[1..]),
+            );
+        if subtype_words.is_empty() {
+            return Err(unsupported(address, clause));
+        }
+        let retain_other_colors = retains_colors || colors.is_none();
+        let duration = Duration::WhileSourceOnBattlefield;
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed.effects.extend([
+            Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: object.clone(),
+                operation,
+                power,
+                toughness,
+                duration: duration.clone(),
+            }),
+            Effect::GrantKeyword {
+                objects: object.clone(),
+                keywords,
+                duration: duration.clone(),
+            },
+            Effect::SetCharacteristics(SetCharacteristics {
+                object,
+                colors,
+                card_types: None,
+                subtypes: Some(subtype_words.iter().map(|word| title_case(word)).collect()),
+                name: None,
+                base_power: None,
+                base_toughness: None,
+                retain_other_card_types: true,
+                retain_other_subtypes: true,
+                retain_other_colors,
+                retain_other_names: true,
+                duration,
+            }),
+        ]);
+        return Ok(parsed);
+    }
     if let Some(pair_text) = predicate
         .strip_prefix("loses all abilities and has base power and toughness ")
         .and_then(|text| text.strip_suffix('.'))
@@ -15838,6 +19394,21 @@ fn parse_attachment_static_clause(
             }));
         return Ok(parsed);
     }
+    if predicate
+        == "doesn't untap during its controller's untap step unless that player is the monarch."
+    {
+        let mut parsed = ParsedClause::new(Timing::Static);
+        parsed
+            .effects
+            .push(Effect::Restriction(Restriction::DoesNotUntapDuringIf {
+                object: object.clone(),
+                step: Step::UntapStep,
+                condition: Condition::PlayerIsNotMonarch {
+                    player: PlayerRef::ControllerOf(Box::new(object)),
+                },
+            }));
+        return Ok(parsed);
+    }
     if let Some(restrictions) = exact_attachment_restrictions(&object, predicate) {
         let mut parsed = ParsedClause::new(Timing::Static);
         parsed
@@ -15865,6 +19436,52 @@ fn parse_attachment_static_clause(
         return Err(unsupported(address, clause));
     }
     Ok(parsed)
+}
+
+fn parse_granted_activated_ability(
+    address: ClauseAddress,
+    ability: &str,
+) -> Result<GrantedAbility, CompileError> {
+    let Some(colon) = find_top_level(ability, ':') else {
+        let Some(program) = compile_ability_clause_bridge(ability, "Granted creature", "Creature")
+        else {
+            return Err(unsupported(address, ability));
+        };
+        return Ok(GrantedAbility {
+            costs: Vec::new(),
+            effects: vec![Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::AbilityClause(Box::new(program)),
+            )],
+        });
+    };
+    let costs = parse_costs(address, &ability[..colon])?;
+    let effect_source = ability[colon + 1..].trim();
+    if let Ok(nested) = parse_effect_body(address, effect_source, Timing::Activated)
+        && nested.conditions.is_empty()
+        && nested.costs.is_empty()
+        && nested.targets.is_empty()
+        && nested.activation_restriction.is_none()
+        && !nested.effects.is_empty()
+    {
+        return Ok(GrantedAbility {
+            costs,
+            effects: nested.effects,
+        });
+    }
+
+    let normalized = reviewed_oracle_action_normalized_source(effect_source);
+    let program = compile_oracle_action_program(OracleActionCompileInput {
+        exact_source: effect_source,
+        normalized_source: &normalized,
+        semantic_context: OracleActionSemanticContext::ResolvingActivatedAbilityInstruction,
+    })
+    .map_err(|_| unsupported(address, ability))?;
+    Ok(GrantedAbility {
+        costs,
+        effects: vec![Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::OracleAction(Box::new(program)),
+        )],
+    })
 }
 
 fn source_type_line_has_attachment_kind(source_type_line: &str, kind: AttachmentKind) -> bool {
@@ -15935,6 +19552,11 @@ fn exact_attachment_static_effect_is_live(effect: &Effect) -> bool {
             keywords,
             duration: Duration::WhileSourceOnBattlefield,
         } => !keywords.is_empty(),
+        Effect::SetCharacteristics(SetCharacteristics {
+            object: ObjectRef::AttachmentTarget { .. },
+            duration: Duration::WhileSourceOnBattlefield,
+            ..
+        }) => true,
         _ => false,
     }
 }
@@ -15976,6 +19598,38 @@ fn exact_attachment_restrictions(object: &ObjectRef, predicate: &str) -> Option<
         }
         _ => return None,
     })
+}
+
+fn parse_basic_landwalk(text: &str) -> Option<&'static str> {
+    let keyword = text
+        .strip_prefix("has ")
+        .or_else(|| text.strip_prefix("gains "))
+        .unwrap_or(text)
+        .trim();
+    match keyword {
+        "plainswalk" => Some("Plains"),
+        "islandwalk" => Some("Island"),
+        "swampwalk" => Some("Swamp"),
+        "mountainwalk" => Some("Mountain"),
+        "forestwalk" => Some("Forest"),
+        _ => None,
+    }
+}
+
+fn landwalk_restriction(object: ObjectRef, subtype: &str, duration: Duration) -> Restriction {
+    let mut land = ObjectFilter::with_type(CardType::Land);
+    land.zones = vec![Zone::Battlefield];
+    land.subtypes = vec![subtype.to_owned()];
+    Restriction::CannotBeBlockedWhen {
+        object,
+        condition: Condition::ControlCount {
+            player: PlayerRef::DefendingPlayer,
+            filter: land,
+            comparison: Comparison::AtLeast,
+            amount: Amount::Constant(1),
+        },
+        duration,
+    }
 }
 
 fn parse_spell_cost_reduction_count(text: &str) -> Option<CountExpression> {
@@ -16062,6 +19716,7 @@ fn parse_keyword_list(address: ClauseAddress, text: &str) -> Result<Vec<Keyword>
     let mut keywords = Vec::new();
     let normalized = text
         .replace(" and ", ", ")
+        .replace(';', ",")
         .replace("gets ", "")
         .replace("gains ", "");
     for part in normalized
@@ -16248,9 +19903,10 @@ fn parse_signed_power_toughness_amount(text: &str) -> Option<(bool, Amount)> {
     let text = text.trim();
     let (negative, magnitude) = if let Some(magnitude) = text.strip_prefix('-') {
         (true, magnitude)
-    } else {
-        let magnitude = text.strip_prefix('+')?;
+    } else if let Some(magnitude) = text.strip_prefix('+') {
         (false, magnitude)
+    } else {
+        return None;
     };
     Some((negative, parse_english_amount(magnitude)?))
 }
@@ -16274,6 +19930,8 @@ fn parse_resolution_clause(
     let lower = clause.to_ascii_lowercase();
     let starts_like_effect = [
         "add ",
+        "all creatures ",
+        "blight ",
         "choose ",
         "copy ",
         "counter ",
@@ -16283,6 +19941,7 @@ fn parse_resolution_clause(
         "destroy ",
         "draw ",
         "each opponent ",
+        "each other player ",
         "each player ",
         "exile ",
         "for each ",
@@ -16291,8 +19950,10 @@ fn parse_resolution_clause(
         "look ",
         "manifest ",
         "mill ",
+        "open an attraction",
         "permanents ",
         "play ",
+        "populate",
         "prevent ",
         "proliferate",
         "put ",
@@ -16305,8 +19966,11 @@ fn parse_resolution_clause(
         "switch ",
         "tap ",
         "target ",
+        "the ring tempts you",
+        "this object fights ",
         "untap ",
         "up to ",
+        "venture into the dungeon",
         "you draw ",
         "you gain ",
         "you get ",
@@ -16315,9 +19979,14 @@ fn parse_resolution_clause(
         "your opponents ",
     ]
     .iter()
-    .any(|prefix| lower.starts_with(prefix));
+    .any(|prefix| lower.starts_with(prefix))
+        || (lower.starts_with("this object deals ")
+            && (type_line_has_word(source_type_line, "instant")
+                || type_line_has_word(source_type_line, "sorcery")));
     starts_like_effect.then(|| {
         let mut state = EffectParseState::new();
+        state.source_is_spell = type_line_has_word(source_type_line, "instant")
+            || type_line_has_word(source_type_line, "sorcery");
         state.source_attachment_kind = [AttachmentKind::Aura, AttachmentKind::Equipment]
             .into_iter()
             .find(|kind| source_type_line_has_attachment_kind(source_type_line, *kind));
@@ -16334,6 +20003,7 @@ struct EffectParseState {
     pending_hand_choice: Option<ObjectSelection>,
     selected_targets: Vec<u8>,
     source_attachment_kind: Option<AttachmentKind>,
+    source_is_spell: bool,
 }
 
 impl EffectParseState {
@@ -16346,6 +20016,7 @@ impl EffectParseState {
             pending_hand_choice: None,
             selected_targets: Vec::new(),
             source_attachment_kind: None,
+            source_is_spell: false,
         }
     }
 
@@ -16399,9 +20070,250 @@ fn parse_effect_body_with_state(
     mut state: EffectParseState,
 ) -> Result<ParsedClause, CompileError> {
     let mut parsed = ParsedClause::new(timing);
-    if text.eq_ignore_ascii_case(
+    let lower_body = text.trim().to_ascii_lowercase();
+    if lower_body.starts_with("target player draws x cards. ")
+        && lower_body.ends_with("deals x damage to up to one target creature or planeswalker.")
+    {
+        parse_effect_statement(
+            address,
+            "Target player draws X cards.",
+            &mut state,
+            &mut parsed,
+        )?;
+        parse_effect_statement(
+            address,
+            "This object deals X damage to up to one target creature or planeswalker.",
+            &mut state,
+            &mut parsed,
+        )?;
+        return Ok(parsed);
+    }
+    if lower_body
+        == "look at target opponent's hand and choose x cards from it. that player discards those cards."
+    {
+        let target = state.allocate_target(
+            TargetFilter::Player,
+            TargetAmount::Exactly(1),
+            TargetRelationship::Independent,
+        );
+        let player = PlayerRef::TargetPlayer(target.id);
+        parsed.targets.push(target);
+        state.last_player = Some(player.clone());
+        parsed.effects.extend([
+            Effect::LookAtHand {
+                viewer: PlayerRef::You,
+                player: player.clone(),
+            },
+            Effect::PlayersDiscardAmount {
+                players: player,
+                amount: Amount::X,
+            },
+        ]);
+        return Ok(parsed);
+    }
+    if lower_body
+        == "return x target cards from your graveyard to your hand. exile nostalgic dreams."
+    {
+        parse_effect_statement(
+            address,
+            "Return X target cards from your graveyard to your hand.",
+            &mut state,
+            &mut parsed,
+        )?;
+        parsed.effects.push(Effect::MoveZone(ZoneMove {
+            object: ObjectRef::Source,
+            from: Some(Zone::Stack),
+            to: Zone::Exile,
+            tapped: false,
+            face_down: false,
+            delayed_until: None,
+        }));
+        return Ok(parsed);
+    }
+    if lower_body
+        == "search your library for an equipment or vehicle card, put that card onto the battlefield, then shuffle. if it has mana value less than the sacrificed permanent's mana value, scry 2."
+    {
+        parse_effect_statement(
+            address,
+            "Search your library for an Equipment or Vehicle card, put that card onto the battlefield, then shuffle.",
+            &mut state,
+            &mut parsed,
+        )?;
+        parsed.effects.push(Effect::LibraryProcedure(
+            LibraryProcedure::ScryIfSearchedCardCheaperThanSacrificedPermanent {
+                player: PlayerRef::You,
+                binding: SacrificedCreatureProcedureBinding::Unbound,
+                search_id: 0,
+                amount: 2,
+            },
+        ));
+        return Ok(parsed);
+    }
+    if lower_body
+        == "destroy target creature or vehicle. if the sacrificed permanent was a vehicle, draw a card."
+    {
+        parse_effect_statement(
+            address,
+            "Destroy target creature or Vehicle.",
+            &mut state,
+            &mut parsed,
+        )?;
+        parsed.effects.push(Effect::LibraryProcedure(
+            LibraryProcedure::DrawIfSacrificedPermanentWasVehicle {
+                player: PlayerRef::You,
+                binding: SacrificedCreatureProcedureBinding::Unbound,
+            },
+        ));
+        return Ok(parsed);
+    }
+    let sacrificed_mana_value = match lower_body.as_str() {
+        "draw cards equal to the sacrificed permanent's mana value."
+        | "draw cards equal to the mana value of the sacrificed permanent." => {
+            Some((true, false, 0))
+        }
+        "you gain life equal to the sacrificed permanent's mana value. draw two cards." => {
+            Some((false, true, 2))
+        }
+        _ => None,
+    };
+    if let Some((draw_equal_mana_value, gain_life_equal_mana_value, fixed_draw)) =
+        sacrificed_mana_value
+    {
+        parsed.effects.push(Effect::LibraryProcedure(
+            LibraryProcedure::SacrificedPermanentManaValue {
+                player: PlayerRef::You,
+                binding: SacrificedCreatureProcedureBinding::Unbound,
+                draw_equal_mana_value,
+                gain_life_equal_mana_value,
+                fixed_draw,
+            },
+        ));
+        return Ok(parsed);
+    }
+    if lower_body.ends_with(". you gain life equal to the damage dealt this way.")
+        && let Some(program) = compile_damage_resolution_leaf_program(text)
+    {
+        parsed.effects.push(Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::DamageClause(Box::new(program)),
+        ));
+        return Ok(parsed);
+    }
+    if lower_body
+        == "target player discards a number of cards equal to the sacrificed creature's power."
+    {
+        let target = state.allocate_target(
+            TargetFilter::Player,
+            TargetAmount::Exactly(1),
+            TargetRelationship::Independent,
+        );
+        parsed.targets.push(target.clone());
+        parsed
+            .effects
+            .push(Effect::PlayersDiscardSacrificedCreaturePower {
+                players: PlayerRef::TargetPlayer(target.id),
+                binding: SacrificedCreatureProcedureBinding::Unbound,
+            });
+        return Ok(parsed);
+    }
+    if lower_body
+        == "create x 0/1 black insect creature tokens, where x is the sacrificed creature's power."
+    {
+        parsed
+            .effects
+            .push(Effect::CreateTokensSacrificedCreaturePower {
+                creation: TokenCreation {
+                    player: PlayerRef::You,
+                    amount: Amount::Constant(0),
+                    specification: TokenSpecification::Defined(Box::new(TokenDefinition {
+                        name: None,
+                        power: Some(Amount::Constant(0)),
+                        toughness: Some(Amount::Constant(1)),
+                        colors: vec![Color::Black],
+                        card_types: vec![CardType::Creature],
+                        subtypes: vec!["Insect".to_owned()],
+                        keywords: Vec::new(),
+                        abilities: Vec::new(),
+                    })),
+                    tapped: false,
+                    attacking: false,
+                },
+                binding: SacrificedCreatureProcedureBinding::Unbound,
+            });
+        return Ok(parsed);
+    }
+    let sacrificed_power_draw = match lower_body.as_str() {
+        "draw cards equal to the sacrificed creature's power." => Some(false),
+        "you draw cards equal to the sacrificed creature's power, then you gain life equal to its toughness." => {
+            Some(true)
+        }
+        _ => None,
+    };
+    if let Some(gain_life_equal_toughness) = sacrificed_power_draw {
+        parsed.effects.push(Effect::LibraryProcedure(
+            LibraryProcedure::DrawSacrificedCreaturePower {
+                player: PlayerRef::You,
+                binding: SacrificedCreatureProcedureBinding::Unbound,
+                gain_life_equal_toughness,
+            },
+        ));
+        return Ok(parsed);
+    }
+    let flashback_suffix =
+        " gains flashback until end of turn. the flashback cost is equal to its mana cost.";
+    if let Some(subject) = lower_body.strip_suffix(flashback_suffix) {
+        let mut filter = ObjectFilter::in_zone(Zone::Graveyard);
+        filter.owner = Some(PlayerRef::You);
+        filter.card_types =
+            if subject.contains("instant or sorcery") || subject.contains("instant and sorcery") {
+                vec![CardType::Instant, CardType::Sorcery]
+            } else if subject.contains("sorcery") {
+                vec![CardType::Sorcery]
+            } else if subject.contains("instant") {
+                vec![CardType::Instant]
+            } else {
+                Vec::new()
+            };
+        filter.card_type_match_any = filter.card_types.len() > 1;
+        if filter.card_types.is_empty() {
+            return Err(unsupported(address, text));
+        }
+        let objects = if subject.starts_with("target ") {
+            let target = state.allocate_target(
+                TargetFilter::Object(filter.clone()),
+                TargetAmount::Exactly(1),
+                TargetRelationship::Independent,
+            );
+            let objects = ObjectRef::Target(target.id);
+            parsed.targets.push(target);
+            objects
+        } else if subject.starts_with("each ") {
+            ObjectRef::EachMatching(filter.clone())
+        } else {
+            return Err(unsupported(address, text));
+        };
+        parsed
+            .effects
+            .push(Effect::GrantCastPermission(CastPermission {
+                affected: PlayerRef::You,
+                objects: Some(objects),
+                filter,
+                from: Zone::Graveyard,
+                timing: CastTiming::Normal,
+                duration: Duration::UntilEndOfTurn,
+                alternative_cost: Some(AlternativeCost::PrintedManaCost),
+                additional_costs: Vec::new(),
+                mana_as_any_type: false,
+                exile_after_resolution: true,
+            }));
+        return Ok(parsed);
+    }
+    if [
         "reveal the top card of your library and put that card into your hand. you lose life equal to its mana value.",
-    ) {
+        "reveal the top card of your library and put that card into your hand. you lose life equal to that card's mana value.",
+    ]
+    .iter()
+    .any(|exact| text.eq_ignore_ascii_case(exact))
+    {
         parsed.effects.push(Effect::LibraryProcedure(
             LibraryProcedure::RevealTopToHandLoseManaValue {
                 player: PlayerRef::You,
@@ -16506,16 +20418,18 @@ fn parse_standalone_optional_effect(
         return Ok(false);
     };
 
-    let mut direct_state = state.clone();
-    let mut direct_parsed = parsed.clone();
-    match parse_effect_statement(address, statement, &mut direct_state, &mut direct_parsed) {
-        Ok(()) => {
-            *state = direct_state;
-            *parsed = direct_parsed;
-            return Ok(true);
+    if !required_text.starts_with("mill ") {
+        let mut direct_state = state.clone();
+        let mut direct_parsed = parsed.clone();
+        match parse_effect_statement(address, statement, &mut direct_state, &mut direct_parsed) {
+            Ok(()) => {
+                *state = direct_state;
+                *parsed = direct_parsed;
+                return Ok(true);
+            }
+            Err(CompileError::UnsupportedSyntax { .. }) => {}
+            Err(error) => return Err(error),
         }
-        Err(CompileError::UnsupportedSyntax { .. }) => {}
-        Err(error) => return Err(error),
     }
 
     let required_start = statement.len() - required_text.len();
@@ -16539,6 +20453,570 @@ fn parse_standalone_optional_effect(
     Ok(true)
 }
 
+fn lower_oracle_action_amount(
+    amount: &crate::oracle_action_algebra_runtime::Amount,
+) -> Option<Amount> {
+    use crate::oracle_action_algebra_runtime::{Amount as ActionAmount, VariableAmount};
+    match amount {
+        ActionAmount::Fixed(value) => Some(Amount::Constant(*value)),
+        ActionAmount::Variable(VariableAmount::X) => Some(Amount::X),
+        _ => None,
+    }
+}
+
+fn lower_oracle_action_player(
+    player: crate::oracle_action_algebra_runtime::PlayerOperand,
+    action_id: u32,
+    parsed: &mut ParsedClause,
+) -> Option<PlayerRef> {
+    use crate::oracle_action_algebra_runtime::PlayerOperand;
+    match player {
+        PlayerOperand::You => Some(PlayerRef::You),
+        PlayerOperand::EachPlayer => Some(PlayerRef::Any),
+        PlayerOperand::EachOpponent => Some(PlayerRef::Opponent),
+        PlayerOperand::ThatPlayer => Some(PlayerRef::ThatPlayer),
+        PlayerOperand::TargetPlayer | PlayerOperand::TargetOpponent => {
+            let id = u8::try_from(action_id).ok()?;
+            if !parsed.targets.iter().any(|target| target.id == id) {
+                parsed.targets.push(Target {
+                    id,
+                    chooser: PlayerRef::You,
+                    filter: if player == PlayerOperand::TargetOpponent {
+                        TargetFilter::Opponent
+                    } else {
+                        TargetFilter::Player
+                    },
+                    amount: TargetAmount::Exactly(1),
+                    relationship: TargetRelationship::Independent,
+                });
+            }
+            Some(PlayerRef::TargetPlayer(id))
+        }
+        _ => None,
+    }
+}
+
+fn lower_oracle_action_card_type(
+    card_type: crate::oracle_action_algebra_runtime::CardType,
+) -> Option<CardType> {
+    use crate::oracle_action_algebra_runtime::CardType as ActionCardType;
+    Some(match card_type {
+        ActionCardType::Artifact => CardType::Artifact,
+        ActionCardType::Battle => CardType::Battle,
+        ActionCardType::Creature => CardType::Creature,
+        ActionCardType::Enchantment => CardType::Enchantment,
+        ActionCardType::Instant => CardType::Instant,
+        ActionCardType::Land => CardType::Land,
+        ActionCardType::Planeswalker => CardType::Planeswalker,
+        ActionCardType::Sorcery => CardType::Sorcery,
+        ActionCardType::Kindred => return None,
+    })
+}
+
+fn lower_oracle_action_color(color: crate::oracle_action_algebra_runtime::Color) -> Color {
+    use crate::oracle_action_algebra_runtime::Color as ActionColor;
+    match color {
+        ActionColor::White => Color::White,
+        ActionColor::Blue => Color::Blue,
+        ActionColor::Black => Color::Black,
+        ActionColor::Red => Color::Red,
+        ActionColor::Green => Color::Green,
+        ActionColor::Colorless => Color::Colorless,
+    }
+}
+
+fn lower_oracle_action_keyword(
+    keyword: crate::oracle_action_algebra_runtime::KeywordAbility,
+) -> Option<Keyword> {
+    use crate::oracle_action_algebra_runtime::KeywordAbility as ActionKeyword;
+    Some(match keyword {
+        ActionKeyword::Deathtouch => Keyword::Deathtouch,
+        ActionKeyword::Defender => Keyword::Defender,
+        ActionKeyword::DoubleStrike => Keyword::DoubleStrike,
+        ActionKeyword::FirstStrike => Keyword::FirstStrike,
+        ActionKeyword::Flying => Keyword::Flying,
+        ActionKeyword::Haste => Keyword::Haste,
+        ActionKeyword::Hexproof => Keyword::Hexproof,
+        ActionKeyword::Indestructible => Keyword::Indestructible,
+        ActionKeyword::Lifelink => Keyword::Lifelink,
+        ActionKeyword::Menace => Keyword::Menace,
+        ActionKeyword::Reach => Keyword::Reach,
+        ActionKeyword::Trample => Keyword::Trample,
+        ActionKeyword::Vigilance => Keyword::Vigilance,
+        ActionKeyword::Flash
+        | ActionKeyword::Infect
+        | ActionKeyword::Ward
+        | ActionKeyword::Wither => {
+            return None;
+        }
+    })
+}
+
+fn lower_oracle_action_filter(
+    filter: &crate::oracle_action_algebra_runtime::ObjectFilter,
+    zone: Zone,
+) -> Option<ObjectFilter> {
+    use crate::oracle_action_algebra_runtime::ControllerConstraint;
+    let mut lowered = ObjectFilter::in_zone(zone);
+    lowered.card_types = filter
+        .required_types
+        .iter()
+        .copied()
+        .map(lower_oracle_action_card_type)
+        .collect::<Option<Vec<_>>>()?;
+    if !filter.any_types.is_empty() {
+        lowered.card_types.extend(
+            filter
+                .any_types
+                .iter()
+                .copied()
+                .map(lower_oracle_action_card_type)
+                .collect::<Option<Vec<_>>>()?,
+        );
+        lowered.card_type_match_any = true;
+    }
+    lowered.excluded_card_types = filter
+        .excluded_types
+        .iter()
+        .copied()
+        .map(lower_oracle_action_card_type)
+        .collect::<Option<Vec<_>>>()?;
+    for supertype in &filter.required_supertypes {
+        lowered
+            .supertypes
+            .push(match supertype.to_ascii_lowercase().as_str() {
+                "basic" => Supertype::Basic,
+                "legendary" => Supertype::Legendary,
+                "snow" => Supertype::Snow,
+                "nonbasic" => Supertype::Nonbasic,
+                _ => return None,
+            });
+    }
+    lowered.subtypes = filter.required_subtypes.iter().cloned().collect();
+    lowered.colors = filter
+        .required_colors
+        .iter()
+        .copied()
+        .map(lower_oracle_action_color)
+        .collect();
+    lowered.excluded_colors = filter
+        .excluded_colors
+        .iter()
+        .copied()
+        .map(lower_oracle_action_color)
+        .collect();
+    lowered.keywords = filter
+        .required_keywords
+        .iter()
+        .copied()
+        .map(lower_oracle_action_keyword)
+        .collect::<Option<Vec<_>>>()?;
+    lowered.controller = match filter.controller {
+        ControllerConstraint::Any => None,
+        ControllerConstraint::You => Some(PlayerRef::You),
+        ControllerConstraint::NotYou | ControllerConstraint::Opponent => Some(PlayerRef::Opponent),
+    };
+    lowered.other_than_source = filter.other_than_source;
+    lowered.token = filter.token;
+    lowered.attacking = filter.attacking;
+    lowered.blocking = filter.blocking;
+    if filter.attacking_or_blocking {
+        return None;
+    }
+    lowered.tapped = filter.tapped;
+    Some(lowered)
+}
+
+fn lower_oracle_action_target_amount(
+    cardinality: crate::oracle_action_algebra_runtime::Cardinality,
+) -> Option<TargetAmount> {
+    use crate::oracle_action_algebra_runtime::Cardinality;
+    Some(match cardinality {
+        Cardinality::ExactlyOne => TargetAmount::Exactly(1),
+        Cardinality::Exactly(amount) => TargetAmount::Exactly(u16::try_from(amount).ok()?),
+        Cardinality::UpTo(amount) => TargetAmount::UpTo(u16::try_from(amount).ok()?),
+        Cardinality::AnyNumber => TargetAmount::AnyNumber,
+        Cardinality::All => TargetAmount::All,
+    })
+}
+
+fn lower_oracle_action_exact_count(
+    cardinality: crate::oracle_action_algebra_runtime::Cardinality,
+) -> Option<u16> {
+    use crate::oracle_action_algebra_runtime::Cardinality;
+    match cardinality {
+        Cardinality::ExactlyOne => Some(1),
+        Cardinality::Exactly(amount) => u16::try_from(amount).ok(),
+        _ => None,
+    }
+}
+
+fn lower_oracle_action_zone(zone: crate::oracle_action_algebra_runtime::Zone) -> Zone {
+    use crate::oracle_action_algebra_runtime::Zone as ActionZone;
+    match zone {
+        ActionZone::Library => Zone::Library,
+        ActionZone::Hand => Zone::Hand,
+        ActionZone::Battlefield => Zone::Battlefield,
+        ActionZone::Graveyard => Zone::Graveyard,
+        ActionZone::Exile => Zone::Exile,
+        ActionZone::Command => Zone::Command,
+        ActionZone::Stack => Zone::Stack,
+    }
+}
+
+fn lower_oracle_action_comparison(
+    comparison: &crate::oracle_action_algebra_runtime::CountComparison,
+) -> (Comparison, Amount) {
+    use crate::oracle_action_algebra_runtime::CountComparison;
+    match comparison {
+        CountComparison::Exactly(amount) => (Comparison::Exactly, Amount::Constant(*amount)),
+        CountComparison::AtLeast(amount) => (Comparison::AtLeast, Amount::Constant(*amount)),
+        CountComparison::AtMost(amount) => (Comparison::AtMost, Amount::Constant(*amount)),
+    }
+}
+
+fn lower_oracle_action_predicate(
+    predicate: &crate::oracle_action_algebra_runtime::StatePredicate,
+) -> Option<Condition> {
+    use crate::oracle_action_algebra_runtime::StatePredicate;
+    match predicate {
+        StatePredicate::YouControl { filter, comparison } => {
+            let (comparison, amount) = lower_oracle_action_comparison(comparison);
+            Some(Condition::ControlCount {
+                player: PlayerRef::You,
+                filter: lower_oracle_action_filter(filter, Zone::Battlefield)?,
+                comparison,
+                amount,
+            })
+        }
+        StatePredicate::YourHandIsEmpty => Some(Condition::HandCardCount {
+            player: PlayerRef::You,
+            comparison: Comparison::Exactly,
+            amount: Amount::Constant(0),
+        }),
+        StatePredicate::YourGraveyardHas { filter, comparison } => {
+            let (comparison, amount) = lower_oracle_action_comparison(comparison);
+            let filter = lower_oracle_action_filter(filter, Zone::Graveyard)?;
+            if filter == ObjectFilter::in_zone(Zone::Graveyard) {
+                Some(Condition::GraveyardCardCount {
+                    player: PlayerRef::You,
+                    comparison,
+                    amount,
+                })
+            } else {
+                Some(Condition::ControlCount {
+                    player: PlayerRef::You,
+                    filter,
+                    comparison,
+                    amount,
+                })
+            }
+        }
+        StatePredicate::PreviousActionSucceeded => None,
+    }
+}
+
+fn lower_oracle_action_object(
+    object: &crate::oracle_action_algebra_runtime::ObjectOperand,
+    parsed: &mut ParsedClause,
+) -> Option<ObjectRef> {
+    use crate::oracle_action_algebra_runtime::ObjectOperand;
+    match object {
+        ObjectOperand::Source | ObjectOperand::It => Some(ObjectRef::Source),
+        ObjectOperand::ThatObject => Some(ObjectRef::ThatObject(0)),
+        ObjectOperand::EnchantedObject => Some(ObjectRef::AttachmentTarget {
+            kind: AttachmentKind::Aura,
+        }),
+        ObjectOperand::EquippedObject => Some(ObjectRef::AttachmentTarget {
+            kind: AttachmentKind::Equipment,
+        }),
+        ObjectOperand::Target {
+            slot,
+            cardinality,
+            filter,
+        } => {
+            if !parsed.targets.iter().any(|target| target.id == *slot) {
+                parsed.targets.push(Target {
+                    id: *slot,
+                    chooser: PlayerRef::You,
+                    filter: TargetFilter::Object(lower_oracle_action_filter(
+                        filter,
+                        Zone::Battlefield,
+                    )?),
+                    amount: lower_oracle_action_target_amount(*cardinality)?,
+                    relationship: TargetRelationship::Independent,
+                });
+            }
+            Some(ObjectRef::Target(*slot))
+        }
+        ObjectOperand::Set { filter, .. } => Some(ObjectRef::EachMatching(
+            lower_oracle_action_filter(filter, Zone::Battlefield)?,
+        )),
+        ObjectOperand::PreviousSelection => None,
+    }
+}
+
+fn lower_oracle_action_duration(
+    duration: crate::oracle_action_algebra_runtime::Duration,
+) -> Duration {
+    use crate::oracle_action_algebra_runtime::Duration as ActionDuration;
+    match duration {
+        ActionDuration::Permanent => Duration::Permanent,
+        ActionDuration::ThisTurn | ActionDuration::UntilEndOfTurn => Duration::UntilEndOfTurn,
+        ActionDuration::UntilYourNextTurn => Duration::UntilEndOfNextTurn,
+        ActionDuration::UntilSourceLeavesBattlefield => Duration::WhileSourceOnBattlefield,
+    }
+}
+
+fn lower_oracle_action_node(node: &ActionNode, parsed: &mut ParsedClause) -> Option<Vec<Effect>> {
+    use crate::oracle_action_algebra_runtime::{
+        ActionKind as A, CounterOperation, KeywordOperation,
+    };
+    let id = node.id.0;
+    Some(match &node.kind {
+        A::Draw { player, amount } => vec![Effect::Draw {
+            player: lower_oracle_action_player(*player, id, parsed)?,
+            amount: lower_oracle_action_amount(amount)?,
+            optional: false,
+            delayed_until: None,
+        }],
+        A::GainLife { player, amount } => vec![Effect::GainLife {
+            player: lower_oracle_action_player(*player, id, parsed)?,
+            amount: lower_oracle_action_amount(amount)?,
+        }],
+        A::LoseLife { player, amount } => vec![Effect::LoseLife {
+            player: lower_oracle_action_player(*player, id, parsed)?,
+            amount: lower_oracle_action_amount(amount)?,
+        }],
+        A::Discard { player, selection } if !selection.random && !selection.from_top => {
+            let player = lower_oracle_action_player(*player, id, parsed)?;
+            vec![Effect::Discard(ObjectSelection {
+                id: u8::try_from(id).ok()?,
+                chooser: player.clone(),
+                filter: {
+                    let mut filter = lower_oracle_action_filter(
+                        &selection.filter,
+                        lower_oracle_action_zone(selection.zone.zone),
+                    )?;
+                    filter.owner = Some(player);
+                    filter
+                },
+                amount: lower_oracle_action_target_amount(selection.cardinality)?,
+            })]
+        }
+        A::Sacrifice {
+            player,
+            selection:
+                crate::oracle_action_algebra_runtime::SacrificeSelection::Choice {
+                    cardinality,
+                    filter,
+                },
+        } => {
+            let player = lower_oracle_action_player(*player, id, parsed)?;
+            let mut filter = lower_oracle_action_filter(filter, Zone::Battlefield)?;
+            filter.controller = Some(player.clone());
+            vec![Effect::PlayersSacrifice {
+                players: player,
+                filter,
+                amount: lower_oracle_action_exact_count(*cardinality)?,
+            }]
+        }
+        A::Tap { objects } => vec![Effect::Tap {
+            object: lower_oracle_action_object(objects, parsed)?,
+        }],
+        A::Untap { objects } => vec![Effect::Untap {
+            object: lower_oracle_action_object(objects, parsed)?,
+        }],
+        A::ChangeCounters {
+            operation,
+            objects,
+            counter,
+            amount,
+        } => {
+            let object = lower_oracle_action_object(objects, parsed)?;
+            let counter = parse_counter_kind(counter);
+            let amount = lower_oracle_action_amount(amount)?;
+            vec![match operation {
+                CounterOperation::Put => Effect::PutCounter {
+                    object,
+                    counter,
+                    amount,
+                },
+                CounterOperation::Remove => Effect::RemoveCounter {
+                    object,
+                    counter,
+                    amount,
+                },
+            }]
+        }
+        A::ModifyPowerToughness {
+            objects,
+            power,
+            toughness,
+            duration,
+        } => {
+            let operation = match (power.signum(), toughness.signum()) {
+                (0 | 1, 0 | 1) => PowerToughnessOperation::Add,
+                (-1, -1) => PowerToughnessOperation::Subtract,
+                (1, -1) => PowerToughnessOperation::AddPowerSubtractToughness,
+                (-1, 1) => PowerToughnessOperation::SubtractPowerAddToughness,
+                _ => return None,
+            };
+            vec![Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: lower_oracle_action_object(objects, parsed)?,
+                operation,
+                power: Amount::Constant(power.unsigned_abs()),
+                toughness: Amount::Constant(toughness.unsigned_abs()),
+                duration: lower_oracle_action_duration(*duration),
+            })]
+        }
+        A::ChangeKeywords {
+            operation: KeywordOperation::Grant,
+            objects,
+            keywords,
+            duration,
+        } => vec![Effect::GrantKeyword {
+            objects: lower_oracle_action_object(objects, parsed)?,
+            keywords: keywords
+                .iter()
+                .copied()
+                .map(lower_oracle_action_keyword)
+                .collect::<Option<Vec<_>>>()?,
+            duration: lower_oracle_action_duration(*duration),
+        }],
+        A::ChangeKeywords {
+            operation: KeywordOperation::Lose,
+            objects,
+            keywords,
+            duration,
+        } => vec![Effect::RemoveKeyword {
+            objects: lower_oracle_action_object(objects, parsed)?,
+            keywords: keywords
+                .iter()
+                .copied()
+                .map(lower_oracle_action_keyword)
+                .collect::<Option<Vec<_>>>()?,
+            duration: lower_oracle_action_duration(*duration),
+        }],
+        A::MoveZone {
+            objects,
+            from,
+            destination,
+            position: None,
+            tapped,
+        } if matches!(
+            destination.owner,
+            crate::oracle_action_algebra_runtime::ZoneOwner::ObjectOwner
+                | crate::oracle_action_algebra_runtime::ZoneOwner::ObjectController
+        ) =>
+        {
+            vec![Effect::MoveZone(ZoneMove {
+                object: lower_oracle_action_object(objects, parsed)?,
+                from: from.map(lower_oracle_action_zone),
+                to: lower_oracle_action_zone(destination.zone),
+                tapped: *tapped,
+                face_down: false,
+                delayed_until: None,
+            })]
+        }
+        A::CreateToken {
+            player,
+            amount,
+            template,
+        } if template.ability_semantic_ids.is_empty() => {
+            let definition = TokenDefinition {
+                name: (!template.name.is_empty()).then(|| template.name.clone()),
+                power: template
+                    .power
+                    .map(|value| Amount::Constant(value.max(0) as u32)),
+                toughness: template
+                    .toughness
+                    .map(|value| Amount::Constant(value.max(0) as u32)),
+                colors: template
+                    .colors
+                    .iter()
+                    .copied()
+                    .map(lower_oracle_action_color)
+                    .collect(),
+                card_types: template
+                    .card_types
+                    .iter()
+                    .copied()
+                    .map(lower_oracle_action_card_type)
+                    .collect::<Option<Vec<_>>>()?,
+                subtypes: template.subtypes.iter().cloned().collect(),
+                keywords: template
+                    .keywords
+                    .iter()
+                    .copied()
+                    .map(lower_oracle_action_keyword)
+                    .collect::<Option<Vec<_>>>()?,
+                abilities: Vec::new(),
+            };
+            vec![Effect::CreateToken(TokenCreation {
+                player: lower_oracle_action_player(*player, id, parsed)?,
+                amount: lower_oracle_action_amount(amount)?,
+                specification: TokenSpecification::Defined(Box::new(definition)),
+                tapped: template.tapped,
+                attacking: template.attacking,
+            })]
+        }
+        A::CreateCopyToken {
+            player,
+            source,
+            tapped,
+        } => vec![Effect::CreateToken(TokenCreation {
+            player: lower_oracle_action_player(*player, id, parsed)?,
+            amount: Amount::Constant(1),
+            specification: TokenSpecification::CopyOf(lower_oracle_action_object(source, parsed)?),
+            tapped: *tapped,
+            attacking: false,
+        })],
+        A::Mill { player, amount } => vec![Effect::Mill {
+            player: lower_oracle_action_player(*player, id, parsed)?,
+            amount: lower_oracle_action_amount(amount)?,
+        }],
+        A::ShuffleLibrary { player } => vec![Effect::ShuffleLibrary {
+            player: lower_oracle_action_player(*player, id, parsed)?,
+        }],
+        A::Optional { action, .. } => {
+            vec![Effect::Optional(lower_oracle_action_node(action, parsed)?)]
+        }
+        A::Conditional {
+            predicate,
+            if_true,
+            if_false,
+        } => vec![Effect::Conditional {
+            condition: lower_oracle_action_predicate(predicate)?,
+            if_true: lower_oracle_action_node(if_true, parsed)?,
+            if_false: if let Some(if_false) = if_false {
+                lower_oracle_action_node(if_false, parsed)?
+            } else {
+                Vec::new()
+            },
+        }],
+        A::OrderedSequence { actions, .. } => {
+            let mut effects = Vec::new();
+            for action in actions {
+                effects.extend(lower_oracle_action_node(action, parsed)?);
+            }
+            effects
+        }
+        _ => return None,
+    })
+}
+
+fn lower_oracle_action_program(
+    program: &OracleActionProgram,
+    parsed: &mut ParsedClause,
+) -> Option<()> {
+    let mut trial = parsed.clone();
+    let effects = lower_oracle_action_node(program.root(), &mut trial)?;
+    trial.effects.extend(effects);
+    *parsed = trial;
+    Some(())
+}
+
 fn parse_effect_statement(
     address: ClauseAddress,
     statement: &str,
@@ -16547,6 +21025,204 @@ fn parse_effect_statement(
 ) -> Result<(), CompileError> {
     let statement = statement.trim();
     let lower = statement.to_ascii_lowercase();
+
+    if let Some(continuation) = lower.strip_prefix("sacrifice it, ")
+        && let Some((middle, final_effect)) = continuation.rsplit_once(", and ")
+    {
+        let continuation_start = statement.len() - continuation.len();
+        let exact_continuation = &statement[continuation_start..];
+        let split_index = exact_continuation
+            .to_ascii_lowercase()
+            .rfind(", and ")
+            .expect("the lowercase continuation contains the split");
+        let first = "sacrifice it.";
+        let second = format!(
+            "{}.",
+            exact_continuation[..split_index].trim_end_matches('.')
+        );
+        let third = format!(
+            "{}.",
+            exact_continuation[split_index + ", and ".len()..].trim_end_matches('.')
+        );
+        if !middle.is_empty() && !final_effect.is_empty() {
+            let mut trial_state = state.clone();
+            let mut trial_parsed = parsed.clone();
+            parse_effect_statement(address, first, &mut trial_state, &mut trial_parsed)?;
+            parse_effect_statement(address, &second, &mut trial_state, &mut trial_parsed)?;
+            parse_effect_statement(address, &third, &mut trial_state, &mut trial_parsed)?;
+            *state = trial_state;
+            *parsed = trial_parsed;
+            return Ok(());
+        }
+    }
+    if let Some(continuation) = lower.strip_prefix("sacrifice it and ") {
+        let continuation_start = statement.len() - continuation.len();
+        let first = "sacrifice it.";
+        let second = format!("{}.", statement[continuation_start..].trim_end_matches('.'));
+        let mut trial_state = state.clone();
+        let mut trial_parsed = parsed.clone();
+        parse_effect_statement(address, first, &mut trial_state, &mut trial_parsed)?;
+        parse_effect_statement(address, &second, &mut trial_state, &mut trial_parsed)?;
+        *state = trial_state;
+        *parsed = trial_parsed;
+        return Ok(());
+    }
+    if lower == "tap enchanted creature and you become the monarch." {
+        let mut trial_state = state.clone();
+        let mut trial_parsed = parsed.clone();
+        parse_effect_statement(
+            address,
+            "Tap enchanted creature.",
+            &mut trial_state,
+            &mut trial_parsed,
+        )?;
+        parse_effect_statement(
+            address,
+            "You become the monarch.",
+            &mut trial_state,
+            &mut trial_parsed,
+        )?;
+        *state = trial_state;
+        *parsed = trial_parsed;
+        return Ok(());
+    }
+
+    let semantic_context = match parsed.timing {
+        Timing::Activated => OracleActionSemanticContext::ResolvingActivatedAbilityInstruction,
+        Timing::Triggered(_) | Timing::TriggeredModalHeader { .. } => {
+            OracleActionSemanticContext::ResolvingTriggeredAbilityInstruction
+        }
+        Timing::SpecialAction(_) => OracleActionSemanticContext::ResolvingSpecialActionInstruction,
+        _ => OracleActionSemanticContext::ResolvingSpellInstruction,
+    };
+    let normalized_action_source =
+        crate::oracle_action_algebra_runtime::reviewed_oracle_action_normalized_source(statement);
+    if let Ok(program) = compile_oracle_action_program(OracleActionCompileInput {
+        exact_source: statement,
+        normalized_source: &normalized_action_source,
+        semantic_context,
+    }) && program.root().kind.family() == OracleActionFamily::Fight
+    {
+        parsed.effects.push(Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::OracleAction(Box::new(program)),
+        ));
+        return Ok(());
+    }
+
+    if let Some(index) = lower.find(" and you gain ")
+        && lower[..index].trim().starts_with("this object deals ")
+    {
+        let first = format!("{}.", statement[..index].trim_end_matches('.'));
+        let second = format!(
+            "you gain {}.",
+            statement[index + " and you gain ".len()..].trim_end_matches('.')
+        );
+        let mut trial_state = state.clone();
+        let mut trial_parsed = parsed.clone();
+        parse_effect_statement(address, &first, &mut trial_state, &mut trial_parsed)?;
+        parse_effect_statement(address, &second, &mut trial_state, &mut trial_parsed)?;
+        *state = trial_state;
+        *parsed = trial_parsed;
+        return Ok(());
+    }
+    if let Some(mut program) = compile_damage_resolution_leaf_program(statement) {
+        let mut selected_target_id = None;
+        if let Some(mut target) = damage_clause_target(program.recipient()) {
+            target.id = state.next_target_id;
+            if program.recipient_optional() {
+                target.amount = TargetAmount::UpTo(1);
+            }
+            state.next_target_id = state.next_target_id.saturating_add(1);
+            state.selected_targets.push(target.id);
+            selected_target_id = Some(target.id);
+            parsed.targets.push(target);
+        }
+        if let Some(target_id) = selected_target_id {
+            program.bind_recipient_target_id(target_id);
+        }
+        if matches!(
+            program.recipient(),
+            DamageRecipientTemplate::TargetCreature
+                | DamageRecipientTemplate::TargetAttackingOrBlockingCreature
+                | DamageRecipientTemplate::TargetCreatureDealtDamageThisTurn
+        ) {
+            state.last_object = selected_target_id.map(ObjectRef::Target);
+        }
+        parsed.effects.push(Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::DamageClause(Box::new(program)),
+        ));
+        return Ok(());
+    }
+    if statement.to_ascii_lowercase().contains("powerstone token") {
+        let semantic_context = match parsed.timing {
+            Timing::Activated => OracleActionSemanticContext::ResolvingActivatedAbilityInstruction,
+            Timing::Triggered(_) | Timing::TriggeredModalHeader { .. } => {
+                OracleActionSemanticContext::ResolvingTriggeredAbilityInstruction
+            }
+            Timing::SpecialAction(_) => {
+                OracleActionSemanticContext::ResolvingSpecialActionInstruction
+            }
+            _ => OracleActionSemanticContext::ResolvingSpellInstruction,
+        };
+        let normalized_source =
+            crate::oracle_action_algebra_runtime::reviewed_oracle_action_normalized_source(
+                statement,
+            );
+        if let Ok(program) = compile_oracle_action_program(OracleActionCompileInput {
+            exact_source: statement,
+            normalized_source: &normalized_source,
+            semantic_context,
+        }) && matches!(
+            program.root().kind,
+            ActionKind::CreateToken { ref template, .. } if template.name == "Powerstone"
+        ) {
+            parsed.effects.push(Effect::StandaloneRuleProgram(
+                StandaloneRuleProgram::OracleAction(Box::new(program)),
+            ));
+            return Ok(());
+        }
+    }
+    if let Some(program) = compile_targeting_protection_program(statement)
+        && program.duration()
+            == crate::targeting_protection_runtime::ProtectionDuration::UntilEndOfTurn
+        && !matches!(program.recipient(), ProtectionRecipient::EnchantedCreature)
+    {
+        parsed.effects.push(Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::TargetingProtection(Box::new(program)),
+        ));
+        return Ok(());
+    }
+    let common_action_normalized = reviewed_common_action_normalized_source(statement);
+    if let Some(program) = compile_common_action_program(statement, &common_action_normalized)
+        && program.timing() == CommonActionTiming::ResolvingInstruction
+        && matches!(
+            program.kind(),
+            CommonActionKind::TakeInitiative
+                | CommonActionKind::Explore { .. }
+                | CommonActionKind::Learn
+                | CommonActionKind::RingTemptsYou
+                | CommonActionKind::VentureIntoDungeon
+                | CommonActionKind::BecomeMonarch
+                | CommonActionKind::OpenAttraction
+                | CommonActionKind::ClashWithOpponent
+        )
+    {
+        parsed.effects.push(Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::CommonActionProcedure(Box::new(program)),
+        ));
+        return Ok(());
+    }
+    if let Some(program) = compile_regeneration_resolution_leaf_program(statement, statement)
+        && matches!(
+            program.kind(),
+            crate::regeneration_action_runtime::RegenerationActionKind::StandaloneResolution(_)
+        )
+    {
+        parsed.effects.push(Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::RegenerationAction(Box::new(program)),
+        ));
+        return Ok(());
+    }
 
     if matches!(
         lower.as_str(),
@@ -16579,6 +21255,17 @@ fn parse_effect_statement(
         return Ok(());
     }
 
+    if lower == "if that creature would die this turn, exile it instead." {
+        let objects = state
+            .last_object
+            .clone()
+            .ok_or_else(|| unsupported(address, statement))?;
+        parsed
+            .effects
+            .push(Effect::ExileIfWouldDieThisTurn { objects });
+        return Ok(());
+    }
+
     if lower == "this object becomes an artifact creature until end of turn." {
         parsed.effects.push(Effect::Animate(AnimateEffect {
             object: ObjectRef::Source,
@@ -16591,6 +21278,31 @@ fn parse_effect_statement(
             retain_land: false,
             duration: Duration::UntilEndOfTurn,
         }));
+        return Ok(());
+    }
+
+    if lower == "populate." {
+        let mut filter = ObjectFilter::with_type(CardType::Creature);
+        filter.zones = vec![Zone::Battlefield];
+        filter.controller = Some(PlayerRef::You);
+        filter.token = Some(true);
+        parsed.effects.push(Effect::Populate {
+            selection: state.allocate_selection(PlayerRef::You, filter, TargetAmount::Exactly(1)),
+        });
+        return Ok(());
+    }
+
+    if let Some(amount) = lower
+        .strip_prefix("blight ")
+        .and_then(|text| parse_english_amount(text.trim_end_matches('.')))
+    {
+        let mut filter = ObjectFilter::with_type(CardType::Creature);
+        filter.zones = vec![Zone::Battlefield];
+        filter.controller = Some(PlayerRef::You);
+        parsed.effects.push(Effect::Blight {
+            selection: state.allocate_selection(PlayerRef::You, filter, TargetAmount::Exactly(1)),
+            amount,
+        });
         return Ok(());
     }
 
@@ -16746,6 +21458,20 @@ fn parse_effect_statement(
             duration: Duration::Permanent,
         });
         state.last_object = Some(object);
+        return Ok(());
+    }
+
+    if matches!(
+        lower.as_str(),
+        "this object can attack this turn as though it didn't have defender."
+            | "this creature can attack this turn as though it didn't have defender."
+    ) {
+        parsed.effects.push(Effect::RemoveKeyword {
+            objects: ObjectRef::Source,
+            keywords: vec![Keyword::Defender],
+            duration: Duration::ThisTurn,
+        });
+        state.last_object = Some(ObjectRef::Source);
         return Ok(());
     }
 
@@ -17234,6 +21960,67 @@ fn parse_effect_statement(
         return Ok(());
     }
 
+    if matches!(
+        lower.as_str(),
+        "target player sacrifices a creature of their choice."
+            | "target opponent sacrifices a creature of their choice."
+    ) {
+        let filter = if lower.starts_with("target opponent") {
+            TargetFilter::Opponent
+        } else {
+            TargetFilter::Player
+        };
+        let target = state.allocate_target(
+            filter,
+            TargetAmount::Exactly(1),
+            TargetRelationship::Independent,
+        );
+        let player = PlayerRef::TargetPlayer(target.id);
+        let mut creature = ObjectFilter::with_type(CardType::Creature);
+        creature.zones = vec![Zone::Battlefield];
+        parsed.targets.push(target);
+        state.last_player = Some(player.clone());
+        parsed.effects.push(Effect::PlayersSacrifice {
+            players: player,
+            filter: creature,
+            amount: 1,
+        });
+        return Ok(());
+    }
+
+    if let Some((target_text, permanent_text)) = lower
+        .strip_prefix("target ")
+        .and_then(|text| text.split_once(" sacrifices a "))
+        .and_then(|(target, permanent)| {
+            permanent
+                .strip_suffix(" of their choice.")
+                .map(|permanent| (target, permanent))
+        })
+        && matches!(target_text, "player" | "opponent")
+    {
+        let target = state.allocate_target(
+            if target_text == "opponent" {
+                TargetFilter::Opponent
+            } else {
+                TargetFilter::Player
+            },
+            TargetAmount::Exactly(1),
+            TargetRelationship::Independent,
+        );
+        let player = PlayerRef::TargetPlayer(target.id);
+        let mut permanent = parse_card_filter_phrase(permanent_text)
+            .ok_or_else(|| unsupported(address, statement))?;
+        permanent.zones = vec![Zone::Battlefield];
+        parsed.targets.push(target);
+        state.last_player = Some(player.clone());
+        parsed.effects.push(Effect::PlayersSacrifice {
+            players: player,
+            filter: permanent,
+            amount: 1,
+        });
+        return Ok(());
+    }
+
     if let Some(maximum) = lower
         .strip_prefix("return target creature card with mana value ")
         .and_then(|text| text.strip_suffix(" or less from your graveyard to the battlefield."))
@@ -17500,6 +22287,87 @@ fn parse_effect_statement(
         return Ok(());
     }
 
+    if let Some(amount_text) = lower
+        .strip_prefix("target player shuffles up to ")
+        .and_then(|text| {
+            text.strip_suffix(" target cards from their graveyard into their library.")
+        })
+        && let Some(amount) = parse_english_amount(amount_text)
+        && let Some(amount) = amount_as_constant(&amount)
+        && let Ok(amount) = u16::try_from(amount)
+    {
+        let player_target = state.allocate_target(
+            TargetFilter::Player,
+            TargetAmount::Exactly(1),
+            TargetRelationship::Independent,
+        );
+        let player = PlayerRef::TargetPlayer(player_target.id);
+        let mut cards = ObjectFilter::in_zone(Zone::Graveyard);
+        cards.owner = Some(player.clone());
+        let cards_target = state.allocate_target(
+            TargetFilter::Object(cards),
+            TargetAmount::UpTo(amount),
+            TargetRelationship::Independent,
+        );
+        let cards = ObjectRef::Target(cards_target.id);
+        parsed.targets.extend([player_target, cards_target]);
+        parsed.effects.extend([
+            Effect::MoveZone(ZoneMove {
+                object: cards,
+                from: Some(Zone::Graveyard),
+                to: Zone::Library,
+                tapped: false,
+                face_down: false,
+                delayed_until: None,
+            }),
+            Effect::ShuffleLibrary {
+                player: player.clone(),
+            },
+        ]);
+        state.last_player = Some(player);
+        return Ok(());
+    }
+
+    if lower == "shuffle any number of target creature cards from your graveyard into your library."
+    {
+        let mut filter = ObjectFilter::with_type(CardType::Creature);
+        filter.zones = vec![Zone::Graveyard];
+        filter.owner = Some(PlayerRef::You);
+        let target = state.allocate_target(
+            TargetFilter::Object(filter),
+            TargetAmount::AnyNumber,
+            TargetRelationship::Independent,
+        );
+        let object = ObjectRef::Target(target.id);
+        parsed.targets.push(target);
+        parsed.effects.extend([
+            Effect::MoveZone(ZoneMove {
+                object: object.clone(),
+                from: Some(Zone::Graveyard),
+                to: Zone::Library,
+                tapped: false,
+                face_down: false,
+                delayed_until: None,
+            }),
+            Effect::ShuffleLibrary {
+                player: PlayerRef::You,
+            },
+        ]);
+        state.last_object = Some(object);
+        return Ok(());
+    }
+
+    if lower == "put all creatures on the bottom of their owners' libraries." {
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        let object = ObjectRef::EachMatching(creatures);
+        parsed.effects.push(Effect::MoveToLibraryBottom {
+            object: object.clone(),
+        });
+        state.last_object = Some(object);
+        return Ok(());
+    }
+
     if lower == "shuffle the cards from your hand into your library, then draw that many cards." {
         parsed.effects.push(Effect::LibraryProcedure(
             LibraryProcedure::ShuffleHandIntoLibraryAndDrawSame {
@@ -17657,6 +22525,25 @@ fn parse_effect_statement(
         return Ok(());
     }
 
+    if lower == "gain control of target creature with mana value x." {
+        let mut filter = ObjectFilter::with_type(CardType::Creature);
+        filter.zones = vec![Zone::Battlefield];
+        filter.mana_value = Some((Comparison::Exactly, Box::new(Amount::X)));
+        let target = state.allocate_target(
+            TargetFilter::Object(filter),
+            TargetAmount::Exactly(1),
+            TargetRelationship::Independent,
+        );
+        let object = ObjectRef::Target(target.id);
+        parsed.targets.push(target);
+        parsed.effects.push(Effect::ChangeControl {
+            object: object.clone(),
+            controller: PlayerRef::You,
+        });
+        state.last_object = Some(object);
+        return Ok(());
+    }
+
     if matches!(
         lower.as_str(),
         "target creature blocks this turn if able."
@@ -17735,9 +22622,11 @@ fn parse_effect_statement(
         return Ok(());
     }
 
-    if lower
-        == "reveal the top card of your library and put that card into your hand. you lose life equal to its mana value."
-    {
+    if matches!(
+        lower.as_str(),
+        "reveal the top card of your library and put that card into your hand. you lose life equal to its mana value."
+            | "reveal the top card of your library and put that card into your hand. you lose life equal to that card's mana value."
+    ) {
         parsed.effects.push(Effect::LibraryProcedure(
             LibraryProcedure::RevealTopToHandLoseManaValue {
                 player: PlayerRef::You,
@@ -17765,6 +22654,83 @@ fn parse_effect_statement(
             tapped: false,
             face_down: false,
         }));
+        return Ok(());
+    }
+
+    if let Some((draw_text, life_text)) = lower
+        .strip_prefix("target player draws ")
+        .and_then(|text| text.split_once(" and loses "))
+        .and_then(|(draw_text, life_text)| {
+            Some((
+                parse_card_count(draw_text)?,
+                life_text
+                    .strip_suffix(" life.")
+                    .and_then(parse_english_amount)?,
+            ))
+        })
+        && let Some(draw_amount) = amount_as_constant(&draw_text)
+    {
+        let target = state.allocate_target(
+            TargetFilter::Player,
+            TargetAmount::Exactly(1),
+            TargetRelationship::Independent,
+        );
+        let player = PlayerRef::TargetPlayer(target.id);
+        parsed.targets.push(target);
+        state.last_player = Some(player.clone());
+        parsed.effects.extend([
+            Effect::Draw {
+                player: player.clone(),
+                amount: Amount::Constant(draw_amount),
+                optional: false,
+                delayed_until: None,
+            },
+            Effect::LoseLife {
+                player,
+                amount: life_text,
+            },
+        ]);
+        return Ok(());
+    }
+
+    if let Some((draw_text, discard_text)) = lower
+        .strip_prefix("target player draws ")
+        .and_then(|text| text.split_once(", then discards "))
+        .and_then(|(draw_text, discard_text)| {
+            Some((
+                parse_card_count(draw_text)?,
+                parse_card_count(discard_text)?,
+            ))
+        })
+        && let (Some(draw_amount), Some(discard_amount)) = (
+            amount_as_constant(&draw_text),
+            amount_as_constant(&discard_text),
+        )
+        && let Ok(discard_amount) = u16::try_from(discard_amount)
+    {
+        let target = state.allocate_target(
+            TargetFilter::Player,
+            TargetAmount::Exactly(1),
+            TargetRelationship::Independent,
+        );
+        let player = PlayerRef::TargetPlayer(target.id);
+        parsed.targets.push(target);
+        state.last_player = Some(player.clone());
+        parsed.effects.push(Effect::Draw {
+            player: player.clone(),
+            amount: Amount::Constant(draw_amount),
+            optional: false,
+            delayed_until: None,
+        });
+        let mut filter = ObjectFilter::in_zone(Zone::Hand);
+        filter.owner = Some(player.clone());
+        parsed
+            .effects
+            .push(Effect::Discard(state.allocate_selection(
+                player,
+                filter,
+                TargetAmount::Exactly(discard_amount),
+            )));
         return Ok(());
     }
 
@@ -18471,6 +23437,55 @@ fn parse_effect_statement(
         return parse_conditional_statement(address, statement, state, parsed);
     }
 
+    let normalized_source = normalized_action_source;
+    if let Ok(program) = compile_oracle_action_program(OracleActionCompileInput {
+        exact_source: statement,
+        normalized_source: &normalized_source,
+        semantic_context,
+    }) && matches!(
+        program.root().kind.family(),
+        OracleActionFamily::Draw
+            | OracleActionFamily::Discard
+            | OracleActionFamily::Sacrifice
+            | OracleActionFamily::Life
+            | OracleActionFamily::Prevention
+            | OracleActionFamily::Fight
+            | OracleActionFamily::TapUntap
+            | OracleActionFamily::Counters
+            | OracleActionFamily::PowerToughness
+            | OracleActionFamily::Keywords
+            | OracleActionFamily::Token
+            | OracleActionFamily::Copy
+            | OracleActionFamily::Reveal
+            | OracleActionFamily::Look
+            | OracleActionFamily::Search
+            | OracleActionFamily::Mill
+            | OracleActionFamily::Shuffle
+            | OracleActionFamily::Optional
+            | OracleActionFamily::Conditional
+            | OracleActionFamily::Sequence
+    ) {
+        let lowerable_timing = (matches!(parsed.timing, Timing::SpellResolution)
+            && state.source_is_spell)
+            || matches!(
+                parsed.timing,
+                Timing::Activated
+                    | Timing::Triggered(_)
+                    | Timing::TriggeredModalHeader { .. }
+                    | Timing::ModalBranch { .. }
+            );
+        if lowerable_timing && lower_oracle_action_program(&program, parsed).is_some() {
+            return Ok(());
+        }
+        if matches!(parsed.timing, Timing::SpellResolution) && !state.source_is_spell {
+            return Err(unsupported(address, statement));
+        }
+        parsed.effects.push(Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::OracleAction(Box::new(program)),
+        ));
+        return Ok(());
+    }
+
     Err(unsupported(address, statement))
 }
 
@@ -18883,15 +23898,9 @@ fn parse_add_mana_statement(
         return Ok(true);
     }
 
-    if let Ok(expression) = parse_mana_production_expression(statement) {
-        parsed
-            .effects
-            .push(Effect::AddMana(compile_typed_mana_production(expression)));
-        return Ok(true);
-    }
     if let Some(symbol_text) = rest.strip_suffix(" for each card in target opponent's hand") {
         let target = state.allocate_target(
-            TargetFilter::Player,
+            TargetFilter::Opponent,
             TargetAmount::Exactly(1),
             TargetRelationship::Independent,
         );
@@ -18911,6 +23920,13 @@ fn parse_add_mana_statement(
             scales_with: None,
             typed: None,
         }));
+        return Ok(true);
+    }
+
+    if let Ok(expression) = parse_mana_production_expression(statement) {
+        parsed
+            .effects
+            .push(Effect::AddMana(compile_typed_mana_production(expression)));
         return Ok(true);
     }
     if let Some((symbol_text, count_text)) = rest.split_once(" for each ")
@@ -19012,9 +24028,10 @@ fn parse_mana_count_expression(
     }
     let (subject, player, controller) = if let Some(subject) = lower.strip_suffix(" you control") {
         (subject, PlayerRef::You, Some(PlayerRef::You))
-    } else {
-        let subject = lower.strip_suffix(" on the battlefield")?;
+    } else if let Some(subject) = lower.strip_suffix(" on the battlefield") {
         (subject, PlayerRef::Any, None)
+    } else {
+        return None;
     };
     let subject = subject.strip_suffix(" card").unwrap_or(subject).trim();
     let mut filter =
@@ -19135,9 +24152,10 @@ fn parse_count_expression(text: &str) -> Option<CountExpression> {
             PlayerRef::Opponent,
             Some(PlayerRef::Opponent),
         )
-    } else {
-        let subject = lower.strip_suffix(" on the battlefield")?;
+    } else if let Some(subject) = lower.strip_suffix(" on the battlefield") {
         (subject.to_owned(), PlayerRef::Any, None)
+    } else {
+        return None;
     };
     let subject = subject
         .strip_suffix(" cards")
@@ -19203,6 +24221,21 @@ fn parse_counter_destroy_return_statement(
     parsed: &mut ParsedClause,
 ) -> Result<bool, CompileError> {
     let lower = statement.to_ascii_lowercase();
+    if lower == "return up to two target creatures to their owner's hand." {
+        let target = parse_target_description(address, "up to two target creatures", state)?;
+        let object = ObjectRef::Target(target.id);
+        parsed.targets.push(target);
+        state.last_object = Some(object.clone());
+        parsed.effects.push(Effect::MoveZone(ZoneMove {
+            object,
+            from: Some(Zone::Battlefield),
+            to: Zone::Hand,
+            tapped: false,
+            face_down: false,
+            delayed_until: None,
+        }));
+        return Ok(true);
+    }
     if parse_general_zone_move_statement(address, statement, state, parsed)? {
         return Ok(true);
     }
@@ -19861,7 +24894,13 @@ fn parse_target_description(
     state: &mut EffectParseState,
 ) -> Result<Target, CompileError> {
     let mut lower = text.trim().trim_end_matches('.').to_ascii_lowercase();
-    let amount = if let Some(rest) = lower.strip_prefix("up to ") {
+    let amount = if let Some(rest) = lower.strip_prefix("x target ") {
+        lower = format!("target {rest}");
+        TargetAmount::ExactlyX
+    } else if let Some(rest) = lower.strip_prefix("up to x target ") {
+        lower = format!("target {rest}");
+        TargetAmount::UpToX
+    } else if let Some(rest) = lower.strip_prefix("up to ") {
         let (amount_text, description) = rest
             .split_once(' ')
             .ok_or_else(|| unsupported(address, text))?;
@@ -19923,7 +24962,7 @@ fn parse_target_description(
             .ok_or_else(|| unsupported(address, text))?;
         return Ok(state.allocate_target(TargetFilter::Any(filters), amount, relationship));
     }
-    let mut filter = if description == "card" {
+    let mut filter = if matches!(description, "card" | "cards") {
         ObjectFilter::default()
     } else {
         parse_card_filter_phrase(description).ok_or_else(|| unsupported(address, text))?
@@ -19944,6 +24983,17 @@ fn parse_target_description(
 }
 
 fn parse_disjunctive_target_filters(description: &str) -> Option<Vec<TargetFilter>> {
+    if description == "creature or spacecraft" {
+        let creature = ObjectFilter::with_type(CardType::Creature);
+        let spacecraft = ObjectFilter {
+            subtypes: vec!["Spacecraft".to_owned()],
+            ..ObjectFilter::default()
+        };
+        return Some(vec![
+            TargetFilter::Object(creature),
+            TargetFilter::Object(spacecraft),
+        ]);
+    }
     if description == "attacking or blocking creature" {
         let mut attacking = ObjectFilter::with_type(CardType::Creature);
         attacking.attacking = Some(true);
@@ -20191,6 +25241,10 @@ fn parse_search_statement(
             | "then shuffle your library and put it on top."
             | "shuffle and put it on top."
             | "shuffle your library and put it on top."
+            | "then shuffle and put those cards on top in any order."
+            | "then shuffle your library and put those cards on top in any order."
+            | "shuffle and put those cards on top in any order."
+            | "shuffle your library and put those cards on top in any order."
     );
     if shuffle_before_destination {
         parsed.effects.push(Effect::SearchLibrary(SearchLibrary {
@@ -20266,6 +25320,9 @@ fn split_search_selection_and_sequence(search_body: &str) -> Option<(&str, &str)
 }
 
 fn parse_search_amount(selection: &str) -> Option<(Amount, &str)> {
+    if let Some(predicate) = selection.strip_prefix("x ") {
+        return Some((Amount::X, predicate));
+    }
     for (prefix, maximum) in [
         ("up to one ", 1),
         ("up to two ", 2),
@@ -20288,7 +25345,7 @@ fn parse_search_filter(text: &str) -> Option<ObjectFilter> {
         .trim()
         .trim_matches(|character: char| matches!(character, '.' | ','))
         .to_ascii_lowercase();
-    if matches!(raw.as_str(), "a card" | "card" | "one card") {
+    if matches!(raw.as_str(), "a card" | "card" | "cards" | "one card") {
         return Some(ObjectFilter::default());
     }
 
@@ -20598,7 +25655,8 @@ fn effects_have_disallowed_predefined_token_context(
             ReplacementEffect::EnterAsCopy(copy) => {
                 copy_has_disallowed_predefined_token_context(copy)
             }
-            ReplacementEffect::MultiplyEvent { .. }
+            ReplacementEffect::PreventCounters { .. }
+            | ReplacementEffect::MultiplyEvent { .. }
             | ReplacementEffect::IncreaseEvent { .. }
             | ReplacementEffect::EntersTapped(_) => false,
         },
@@ -21043,12 +26101,24 @@ fn parse_draw_life_statement(
     parsed: &mut ParsedClause,
 ) -> Result<bool, CompileError> {
     let lower = statement.to_ascii_lowercase();
+    if lower == "each opponent discards a card, then each opponent mills a card." {
+        parsed.effects.push(Effect::PlayersDiscard {
+            players: PlayerRef::Opponent,
+            amount: 1,
+        });
+        parsed.effects.push(Effect::Mill {
+            player: PlayerRef::Opponent,
+            amount: Amount::Constant(1),
+        });
+        return Ok(true);
+    }
     let action_probe = [
         "target opponent ",
         "target player ",
         "its controller ",
         "you ",
         "each opponent ",
+        "each other player ",
         "each player ",
         "that player ",
     ]
@@ -21094,7 +26164,10 @@ fn parse_draw_life_statement(
         (PlayerRef::ControllerOf(Box::new(object)), rest)
     } else if let Some(rest) = lower.strip_prefix("you ") {
         (PlayerRef::You, rest)
-    } else if let Some(rest) = lower.strip_prefix("each opponent ") {
+    } else if let Some(rest) = lower
+        .strip_prefix("each opponent ")
+        .or_else(|| lower.strip_prefix("each other player "))
+    {
         (PlayerRef::Opponent, rest)
     } else if let Some(rest) = lower.strip_prefix("each player ") {
         (PlayerRef::Any, rest)
@@ -21376,6 +26449,28 @@ fn parse_characteristic_statement(
     parsed: &mut ParsedClause,
 ) -> Result<bool, CompileError> {
     let lower = statement.to_ascii_lowercase();
+    if lower == "all creatures get -1/-1 until end of turn for each swamp you control." {
+        let mut swamps = ObjectFilter::with_type(CardType::Land);
+        swamps.zones = vec![Zone::Battlefield];
+        swamps.controller = Some(PlayerRef::You);
+        swamps.subtypes.push("Swamp".to_owned());
+        let amount = Amount::Count(Box::new(CountExpression::MatchingObjects {
+            player: PlayerRef::You,
+            filter: swamps,
+        }));
+        let mut creatures = ObjectFilter::with_type(CardType::Creature);
+        creatures.zones = vec![Zone::Battlefield];
+        parsed
+            .effects
+            .push(Effect::ModifyPowerToughness(PowerToughnessChange {
+                objects: ObjectRef::EachMatching(creatures),
+                operation: PowerToughnessOperation::Subtract,
+                power: amount.clone(),
+                toughness: amount,
+                duration: Duration::UntilEndOfTurn,
+            }));
+        return Ok(true);
+    }
     if let Some((subject_text, color)) = lower
         .strip_suffix(" until end of turn.")
         .and_then(|body| body.split_once(" becomes "))
@@ -21676,6 +26771,20 @@ fn parse_characteristic_with_duration(
     parsed: &mut ParsedClause,
 ) -> Result<bool, CompileError> {
     let lower = body.to_ascii_lowercase();
+    for verb in [" gains ", " gain ", " has ", " have "] {
+        if let Some((subject_text, keyword_text)) = lower.split_once(verb)
+            && let Some(subtype) = parse_basic_landwalk(keyword_text.trim_end_matches('.'))
+        {
+            let objects = parse_subject_object_ref(address, subject_text, state, parsed)?;
+            state.last_object = Some(objects.clone());
+            parsed
+                .effects
+                .push(Effect::Restriction(landwalk_restriction(
+                    objects, subtype, duration,
+                )));
+            return Ok(true);
+        }
+    }
     if let Some((subject_text, animation_text)) = lower.split_once(" becomes a ")
         && subject_text == "this object"
     {
@@ -21748,7 +26857,8 @@ fn parse_characteristic_with_duration(
     let grant_text = grant_text
         .split_once(", where x is ")
         .map_or(grant_text, |(grant, _)| grant)
-        .trim();
+        .trim()
+        .trim_end_matches('.');
     let grant_text = grant_text
         .replace(" and gains ", ", ")
         .replace(" and gain ", ", ")
@@ -21885,6 +26995,13 @@ fn parse_subject_object_ref(
             kind: AttachmentKind::Equipment,
         });
     }
+    if lower == "all creatures" {
+        return Ok(ObjectRef::EachMatching(ObjectFilter {
+            zones: vec![Zone::Battlefield],
+            card_types: vec![CardType::Creature],
+            ..ObjectFilter::default()
+        }));
+    }
     if lower.contains("target ") {
         let target = parse_target_description(address, &lower, state)?;
         let object = ObjectRef::Target(target.id);
@@ -21997,12 +27114,12 @@ fn parse_utility_statement(
                 .map(|text| (Some(PlayerRef::ThatPlayer), text))
         });
     if let Some((player, amount_text)) = mill_body {
+        let half_target_library =
+            player.is_none() && amount_text == "half their library, rounded down.";
         let amount_text = amount_text
             .trim_end_matches('.')
             .trim_end_matches(" cards")
             .trim_end_matches(" card");
-        let amount =
-            parse_english_amount(amount_text).ok_or_else(|| unsupported(address, statement))?;
         let player = if let Some(player) = player {
             player
         } else {
@@ -22015,6 +27132,13 @@ fn parse_utility_statement(
             parsed.targets.push(target);
             state.last_player = Some(player.clone());
             player
+        };
+        let amount = if half_target_library {
+            Amount::Count(Box::new(CountExpression::HalfLibrary {
+                player: player.clone(),
+            }))
+        } else {
+            parse_english_amount(amount_text).ok_or_else(|| unsupported(address, statement))?
         };
         parsed.effects.push(Effect::Mill { player, amount });
         return Ok(true);
@@ -22474,6 +27598,7 @@ fn parse_conditional_statement(
         pending_hand_choice: state.pending_hand_choice.clone(),
         selected_targets: state.selected_targets.clone(),
         source_attachment_kind: state.source_attachment_kind,
+        source_is_spell: state.source_is_spell,
     };
     parse_effect_statement(address, &effect_text, &mut nested_state, &mut nested)?;
     state.next_target_id = nested_state.next_target_id;
