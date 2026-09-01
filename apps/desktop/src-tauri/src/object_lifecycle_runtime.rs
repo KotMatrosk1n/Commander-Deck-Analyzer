@@ -67,8 +67,37 @@ pub(crate) enum TargetPredicate {
     GreenOrWhiteCreatureAnOpponentControls,
     ArtifactOrEnchantment,
     Land,
+    LandYouControl,
+    PermanentYouControlOtherThanSource,
+    CardFromSingleGraveyard,
+    CardInYourHand,
+    LandPermanent,
+    OtherPermanentYouControl,
+    NonlandCardInTargetOpponentsHand,
+    CardInTargetOpponentsHand,
+    OtherCreatureFromBattlefieldOrGraveyard,
+    ControlledPermanentOrOwnHandCard,
+    CreatureYouControlOtherThanSource,
     AnotherNonlandPermanent,
     AnotherCreatureWithShadow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkedExileSelection {
+    Targeted,
+    ChosenBySourceController,
+    ChosenByOpponent,
+    ChosenFromTargetOpponentsRevealedHand,
+    AllMatching,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkedExileQuantity {
+    One,
+    Exactly(u16),
+    UpTo(u16),
+    UpToX,
+    All,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +110,8 @@ pub(crate) enum LinkedIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LifecycleEvent {
     SourceEntersBattlefield,
+    SourceTurnedFaceUp,
+    SourceCastAdditionalCost,
     SourceLeavesBattlefield,
     BeginningOfNextEndStep,
     SourceDies,
@@ -95,16 +126,25 @@ pub(crate) enum ReturnMechanism {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LinkedExileProgram {
     pub source: SourceRequirement,
+    pub exile_clause_index: u16,
+    pub return_clause_index: u16,
     pub trigger: LifecycleEvent,
     pub target: TargetPredicate,
+    pub selection: LinkedExileSelection,
+    pub quantity: LinkedExileQuantity,
     pub exile_optional: bool,
-    pub exile_from: ObjectZone,
+    pub exile_from: Vec<ObjectZone>,
     pub exile_to: ObjectZone,
     pub identity: LinkedIdentity,
     pub return_event: LifecycleEvent,
     pub return_from: ObjectZone,
     pub return_to: ObjectZone,
     pub return_controller: ControllerScope,
+    pub return_tapped: bool,
+    pub requires_cast_from_hand: bool,
+    pub required_exile_subtype: Option<String>,
+    pub required_exile_alternative_subtype: Option<String>,
+    pub sacrifice_source_if_no_exile: bool,
     pub return_mechanism: ReturnMechanism,
 }
 
@@ -339,6 +379,9 @@ pub(crate) fn compile_object_lifecycle_runtime(
     let clauses = normalize_oracle_root(input.oracle_text)?;
 
     compile_banishing_light(input.type_line, &clauses)
+        .or_else(|| compile_behold_linked_exile(input.type_line, &clauses))
+        .or_else(|| compile_wormfang_drake(input.type_line, &clauses))
+        .or_else(|| compile_champion_lifecycle(input.type_line, &clauses))
         .or_else(|| compile_separate_linked_exile(input.type_line, &clauses))
         .or_else(|| compile_otherworldly_journey(input.type_line, &clauses))
         .or_else(|| compile_enduring_curiosity(input.type_line, &clauses))
@@ -362,31 +405,260 @@ fn compile_banishing_light(type_line: &str, clauses: &[String]) -> Option<Compil
         ownership: complete_root(clauses),
         program: ObjectLifecycleProgram::LinkedExile(LinkedExileProgram {
             source: battlefield_source(&[CardType::Enchantment], &[]),
+            exile_clause_index: 0,
+            return_clause_index: 0,
             trigger: LifecycleEvent::SourceEntersBattlefield,
             target: TargetPredicate::NonlandPermanentAnOpponentControls,
+            selection: LinkedExileSelection::Targeted,
+            quantity: LinkedExileQuantity::One,
             exile_optional: false,
-            exile_from: ObjectZone::Battlefield,
+            exile_from: vec![ObjectZone::Battlefield],
             exile_to: ObjectZone::Exile,
             identity: LinkedIdentity::CardExiledByThisSourceInstance,
             return_event: LifecycleEvent::SourceLeavesBattlefield,
             return_from: ObjectZone::Exile,
             return_to: ObjectZone::Battlefield,
             return_controller: ControllerScope::Owner,
+            return_tapped: false,
+            requires_cast_from_hand: false,
+            required_exile_subtype: None,
+            required_exile_alternative_subtype: None,
+            sacrifice_source_if_no_exile: false,
             return_mechanism: ReturnMechanism::ImmediateWithoutStack,
         }),
     })
+}
+
+fn compile_behold_linked_exile(
+    type_line: &str,
+    clauses: &[String],
+) -> Option<CompiledObjectLifecycle> {
+    if !source_type_matches(type_line, &[CardType::Creature], &[]) {
+        return None;
+    }
+    let mut cost_matches = clauses.iter().enumerate().filter_map(|(index, clause)| {
+        parse_behold_and_exile_subtype(clause).map(|subtype| (index, subtype))
+    });
+    let (cost_index, subtype) = cost_matches.next()?;
+    if cost_matches.next().is_some() {
+        return None;
+    }
+    let exact_return =
+        "when this creature leaves the battlefield, return the exiled card to its owner's hand";
+    let mut return_matches = clauses
+        .iter()
+        .enumerate()
+        .filter(|(index, clause)| *index != cost_index && clause.as_str() == exact_return);
+    let (return_index, _) = return_matches.next()?;
+    if return_matches.next().is_some() {
+        return None;
+    }
+
+    Some(CompiledObjectLifecycle {
+        ownership: OracleOwnership::ExactClauseSet {
+            clause_indices: vec![cost_index as u16, return_index as u16],
+        },
+        program: ObjectLifecycleProgram::LinkedExile(LinkedExileProgram {
+            source: stack_source(&[CardType::Creature], &[]),
+            exile_clause_index: cost_index as u16,
+            return_clause_index: return_index as u16,
+            trigger: LifecycleEvent::SourceCastAdditionalCost,
+            target: TargetPredicate::ControlledPermanentOrOwnHandCard,
+            selection: LinkedExileSelection::ChosenBySourceController,
+            quantity: LinkedExileQuantity::One,
+            exile_optional: false,
+            exile_from: vec![ObjectZone::Battlefield, ObjectZone::Hand],
+            exile_to: ObjectZone::Exile,
+            identity: LinkedIdentity::CardExiledByThisSourceInstance,
+            return_event: LifecycleEvent::SourceLeavesBattlefield,
+            return_from: ObjectZone::Exile,
+            return_to: ObjectZone::Hand,
+            return_controller: ControllerScope::Owner,
+            return_tapped: false,
+            requires_cast_from_hand: false,
+            required_exile_subtype: Some(subtype),
+            required_exile_alternative_subtype: None,
+            sacrifice_source_if_no_exile: false,
+            return_mechanism: ReturnMechanism::DelayedTriggeredAbility,
+        }),
+    })
+}
+
+fn compile_wormfang_drake(type_line: &str, clauses: &[String]) -> Option<CompiledObjectLifecycle> {
+    if !source_type_matches(type_line, &[CardType::Creature], &[])
+        || clauses
+            != [
+                "flying",
+                "when this creature enters, sacrifice it unless you exile a creature you control other than this creature",
+                "when this creature leaves the battlefield, return the exiled card to the battlefield under its owner's control",
+            ]
+    {
+        return None;
+    }
+
+    Some(CompiledObjectLifecycle {
+        ownership: OracleOwnership::ExactClauseSet {
+            clause_indices: vec![1, 2],
+        },
+        program: ObjectLifecycleProgram::LinkedExile(LinkedExileProgram {
+            source: battlefield_source(&[CardType::Creature], &[]),
+            exile_clause_index: 1,
+            return_clause_index: 2,
+            trigger: LifecycleEvent::SourceEntersBattlefield,
+            target: TargetPredicate::CreatureYouControlOtherThanSource,
+            selection: LinkedExileSelection::ChosenBySourceController,
+            quantity: LinkedExileQuantity::UpTo(1),
+            exile_optional: false,
+            exile_from: vec![ObjectZone::Battlefield],
+            exile_to: ObjectZone::Exile,
+            identity: LinkedIdentity::CardExiledByThisSourceInstance,
+            return_event: LifecycleEvent::SourceLeavesBattlefield,
+            return_from: ObjectZone::Exile,
+            return_to: ObjectZone::Battlefield,
+            return_controller: ControllerScope::Owner,
+            return_tapped: false,
+            requires_cast_from_hand: false,
+            required_exile_subtype: None,
+            required_exile_alternative_subtype: None,
+            sacrifice_source_if_no_exile: true,
+            return_mechanism: ReturnMechanism::DelayedTriggeredAbility,
+        }),
+    })
+}
+
+fn compile_champion_lifecycle(
+    type_line: &str,
+    clauses: &[String],
+) -> Option<CompiledObjectLifecycle> {
+    if !source_type_matches(type_line, &[CardType::Creature], &[])
+        || !is_installed_complete_champion_root(clauses)
+    {
+        return None;
+    }
+    let mut champion_matches = clauses.iter().enumerate().filter_map(|(index, clause)| {
+        parse_exact_champion_quality(clause).map(|quality| (index, quality))
+    });
+    let (champion_index, (required_subtype, alternative_subtype)) = champion_matches.next()?;
+    if champion_matches.next().is_some() {
+        return None;
+    }
+    let champion_index = champion_index as u16;
+
+    Some(CompiledObjectLifecycle {
+        ownership: OracleOwnership::ExactClauseSet {
+            clause_indices: vec![champion_index],
+        },
+        program: ObjectLifecycleProgram::LinkedExile(LinkedExileProgram {
+            source: battlefield_source(&[CardType::Creature], &[]),
+            exile_clause_index: champion_index,
+            return_clause_index: champion_index,
+            trigger: LifecycleEvent::SourceEntersBattlefield,
+            target: TargetPredicate::CreatureYouControlOtherThanSource,
+            selection: LinkedExileSelection::ChosenBySourceController,
+            quantity: LinkedExileQuantity::UpTo(1),
+            exile_optional: false,
+            exile_from: vec![ObjectZone::Battlefield],
+            exile_to: ObjectZone::Exile,
+            identity: LinkedIdentity::CardExiledByThisSourceInstance,
+            return_event: LifecycleEvent::SourceLeavesBattlefield,
+            return_from: ObjectZone::Exile,
+            return_to: ObjectZone::Battlefield,
+            return_controller: ControllerScope::Owner,
+            return_tapped: false,
+            requires_cast_from_hand: false,
+            required_exile_subtype: required_subtype,
+            required_exile_alternative_subtype: alternative_subtype,
+            sacrifice_source_if_no_exile: true,
+            return_mechanism: ReturnMechanism::DelayedTriggeredAbility,
+        }),
+    })
+}
+
+fn parse_exact_champion_quality(clause: &str) -> Option<(Option<String>, Option<String>)> {
+    let (first, second) = match clause {
+        "champion a creature (when this enters, sacrifice it unless you exile another creature you control. when this leaves the battlefield, that card returns to the battlefield.)" =>
+        {
+            return Some((None, None));
+        }
+        "champion a faerie (when this enters, sacrifice it unless you exile another faerie you control. when this leaves the battlefield, that card returns to the battlefield.)" => {
+            ("faerie", None)
+        }
+        "champion a goblin (when this enters, sacrifice it unless you exile another goblin you control. when this leaves the battlefield, that card returns to the battlefield.)" => {
+            ("goblin", None)
+        }
+        "champion a goblin or shaman (when this enters, sacrifice it unless you exile another goblin or shaman you control. when this leaves the battlefield, that card returns to the battlefield.)" => {
+            ("goblin", Some("shaman"))
+        }
+        "champion a kithkin (when this enters, sacrifice it unless you exile another kithkin you control. when this leaves the battlefield, that card returns to the battlefield.)" => {
+            ("kithkin", None)
+        }
+        "champion a merfolk (when this enters, sacrifice it unless you exile another merfolk you control. when this leaves the battlefield, that card returns to the battlefield.)" => {
+            ("merfolk", None)
+        }
+        "champion a treefolk or warrior (when this enters, sacrifice it unless you exile another treefolk or warrior you control. when this leaves the battlefield, that card returns to the battlefield.)" => {
+            ("treefolk", Some("warrior"))
+        }
+        "champion an elemental (when this enters, sacrifice it unless you exile another elemental you control. when this leaves the battlefield, that card returns to the battlefield.)" => {
+            ("elemental", None)
+        }
+        "champion an elf (when this creature enters, sacrifice it unless you exile another elf you control. when this creature leaves the battlefield, that card returns to the battlefield.)" => {
+            ("elf", None)
+        }
+        _ => return None,
+    };
+    Some((Some(first.to_owned()), second.map(str::to_owned)))
+}
+
+fn is_installed_complete_champion_root(clauses: &[String]) -> bool {
+    let root = clauses.join("\n");
+    matches!(
+        root.as_str(),
+        "champion a goblin (when this enters, sacrifice it unless you exile another goblin you control. when this leaves the battlefield, that card returns to the battlefield.)\nwhenever a goblin you control deals combat damage to a player, you may create a 1/1 black goblin rogue creature token"
+            | "changeling (this card is every creature type.)\nhaste\nchampion a creature (when this enters, sacrifice it unless you exile another creature you control. when this leaves the battlefield, that card returns to the battlefield.)"
+            | "changeling (this card is every creature type.)\nchampion a creature (when this enters, sacrifice it unless you exile another creature you control. when this leaves the battlefield, that card returns to the battlefield.)\nlifelink (damage dealt by this creature also causes you to gain that much life.)"
+            | "changeling (this card is every creature type.)\nchampion a creature (when this enters, sacrifice it unless you exile another creature you control. when this leaves the battlefield, that card returns to the battlefield.)"
+            | "champion a goblin or shaman (when this enters, sacrifice it unless you exile another goblin or shaman you control. when this leaves the battlefield, that card returns to the battlefield.)\n{t}: this creature deals 3 damage to any target"
+            | "flash\nflying\nchampion a faerie (when this enters, sacrifice it unless you exile another faerie you control. when this leaves the battlefield, that card returns to the battlefield.)\nwhen a faerie is championed with this creature, tap all lands target player controls"
+            | "trample\nchampion an elemental (when this enters, sacrifice it unless you exile another elemental you control. when this leaves the battlefield, that card returns to the battlefield.)"
+            | "flying\nchampion an elemental (when this enters, sacrifice it unless you exile another elemental you control. when this leaves the battlefield, that card returns to the battlefield.)"
+            | "first strike, vigilance\nchampion a kithkin (when this enters, sacrifice it unless you exile another kithkin you control. when this leaves the battlefield, that card returns to the battlefield.)\nthis creature can block any number of creatures"
+            | "trample\nchampion a treefolk or warrior (when this enters, sacrifice it unless you exile another treefolk or warrior you control. when this leaves the battlefield, that card returns to the battlefield.)\nwhenever a creature you control becomes blocked, it gets +0/+5 until end of turn"
+            | "champion a merfolk (when this enters, sacrifice it unless you exile another merfolk you control. when this leaves the battlefield, that card returns to the battlefield.)\nwhenever this creature deals combat damage to a player, you may sacrifice a merfolk. if you do, take an extra turn after this one"
+            | "champion an elf (when this creature enters, sacrifice it unless you exile another elf you control. when this creature leaves the battlefield, that card returns to the battlefield.)\n{2}{g}: create a 2/2 green wolf creature token\nwolves you control have deathtouch"
+    )
+}
+
+fn parse_behold_and_exile_subtype(clause: &str) -> Option<String> {
+    let prefix = "as an additional cost to cast this spell, behold ";
+    let body = clause.strip_prefix(prefix)?;
+    for article in ["a ", "an "] {
+        let Some(article_body) = body.strip_prefix(article) else {
+            continue;
+        };
+        let Some((subtype, _)) = article_body.split_once(" and exile it. (exile ") else {
+            continue;
+        };
+        if subtype.is_empty()
+            || !subtype
+                .chars()
+                .all(|character| character.is_ascii_alphabetic() || character == '-')
+        {
+            return None;
+        }
+        let expected = format!(
+            "{prefix}{article}{subtype} and exile it. (exile {article}{subtype} you control or {article}{subtype} card from your hand.)"
+        );
+        if clause == expected {
+            return Some(subtype.to_owned());
+        }
+    }
+    None
 }
 
 fn compile_separate_linked_exile(
     type_line: &str,
     clauses: &[String],
 ) -> Option<CompiledObjectLifecycle> {
-    let return_index = clauses.iter().position(|clause| {
-        clause
-            == "when this creature leaves the battlefield, return the exiled card to the battlefield under its owner's control"
-            || clause
-                == "when this enchantment leaves the battlefield, return the exiled card to the battlefield under its owner's control"
-    })?;
     let (source_types, source_word) = if source_type_matches(type_line, &[CardType::Creature], &[])
     {
         (vec![CardType::Creature], "creature")
@@ -395,44 +667,301 @@ fn compile_separate_linked_exile(
     } else {
         return None;
     };
-    if clauses[return_index]
-        != format!(
-            "when this {source_word} leaves the battlefield, return the exiled card to the battlefield under its owner's control"
-        )
-    {
-        return None;
-    }
 
     let mut entry_matches = clauses.iter().enumerate().filter_map(|(index, clause)| {
-        let (target, optional) = match clause.as_str() {
+        let (
+            target,
+            selection,
+            quantity,
+            optional,
+            trigger,
+            exile_from,
+            requires_cast_from_hand,
+            expected_return,
+            return_to,
+            return_tapped,
+        ) = match clause.as_str() {
             "when this creature enters, exile another target creature" => {
-                (TargetPredicate::AnotherCreature, false)
+                (
+                    TargetPredicate::AnotherCreature,
+                    LinkedExileSelection::Targeted,
+                    LinkedExileQuantity::One,
+                    false,
+                    LifecycleEvent::SourceEntersBattlefield,
+                    vec![ObjectZone::Battlefield],
+                    false,
+                    "return the exiled card to the battlefield under its owner's control",
+                    ObjectZone::Battlefield,
+                    false,
+                )
             }
             "when this creature enters, you may exile another target creature" => {
-                (TargetPredicate::AnotherCreature, true)
+                (
+                    TargetPredicate::AnotherCreature,
+                    LinkedExileSelection::Targeted,
+                    LinkedExileQuantity::One,
+                    true,
+                    LifecycleEvent::SourceEntersBattlefield,
+                    vec![ObjectZone::Battlefield],
+                    false,
+                    "return the exiled card to the battlefield under its owner's control",
+                    ObjectZone::Battlefield,
+                    false,
+                )
             }
             "when this creature enters, exile target green or white creature an opponent controls" => {
-                (TargetPredicate::GreenOrWhiteCreatureAnOpponentControls, false)
+                (
+                    TargetPredicate::GreenOrWhiteCreatureAnOpponentControls,
+                    LinkedExileSelection::Targeted,
+                    LinkedExileQuantity::One,
+                    false,
+                    LifecycleEvent::SourceEntersBattlefield,
+                    vec![ObjectZone::Battlefield],
+                    false,
+                    "return the exiled card to the battlefield under its owner's control",
+                    ObjectZone::Battlefield,
+                    false,
+                )
             }
             "when this creature enters, you may exile target artifact or enchantment" => {
-                (TargetPredicate::ArtifactOrEnchantment, true)
+                (
+                    TargetPredicate::ArtifactOrEnchantment,
+                    LinkedExileSelection::Targeted,
+                    LinkedExileQuantity::One,
+                    true,
+                    LifecycleEvent::SourceEntersBattlefield,
+                    vec![ObjectZone::Battlefield],
+                    false,
+                    "return the exiled card to the battlefield under its owner's control",
+                    ObjectZone::Battlefield,
+                    false,
+                )
             }
-            "when this creature enters, exile target land" => (TargetPredicate::Land, false),
+            "when this creature enters, exile target land" => (
+                TargetPredicate::Land,
+                LinkedExileSelection::Targeted,
+                LinkedExileQuantity::One,
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Battlefield],
+                false,
+                "return the exiled card to the battlefield under its owner's control",
+                ObjectZone::Battlefield,
+                false,
+            ),
             "when this enchantment enters, exile target creature" => {
-                (TargetPredicate::Creature, false)
+                (
+                    TargetPredicate::Creature,
+                    LinkedExileSelection::Targeted,
+                    LinkedExileQuantity::One,
+                    false,
+                    LifecycleEvent::SourceEntersBattlefield,
+                    vec![ObjectZone::Battlefield],
+                    false,
+                    "return the exiled card to the battlefield under its owner's control",
+                    ObjectZone::Battlefield,
+                    false,
+                )
             }
             "when this enchantment enters, exile another target nonland permanent" => {
-                (TargetPredicate::AnotherNonlandPermanent, false)
+                (
+                    TargetPredicate::AnotherNonlandPermanent,
+                    LinkedExileSelection::Targeted,
+                    LinkedExileQuantity::One,
+                    false,
+                    LifecycleEvent::SourceEntersBattlefield,
+                    vec![ObjectZone::Battlefield],
+                    false,
+                    "return the exiled card to the battlefield under its owner's control",
+                    ObjectZone::Battlefield,
+                    false,
+                )
             }
             "when this creature enters, exile another target creature with shadow" => {
-                (TargetPredicate::AnotherCreatureWithShadow, false)
+                (
+                    TargetPredicate::AnotherCreatureWithShadow,
+                    LinkedExileSelection::Targeted,
+                    LinkedExileQuantity::One,
+                    false,
+                    LifecycleEvent::SourceEntersBattlefield,
+                    vec![ObjectZone::Battlefield],
+                    false,
+                    "return the exiled card to the battlefield under its owner's control",
+                    ObjectZone::Battlefield,
+                    false,
+                )
             }
+            "when this creature enters, exile a land you control" => (
+                TargetPredicate::LandYouControl,
+                LinkedExileSelection::ChosenBySourceController,
+                LinkedExileQuantity::One,
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Battlefield],
+                false,
+                "return the exiled card to the battlefield under its owner's control",
+                ObjectZone::Battlefield,
+                false,
+            ),
+            "when this creature enters, an opponent chooses a permanent you control other than this creature and exiles it" => (
+                TargetPredicate::PermanentYouControlOtherThanSource,
+                LinkedExileSelection::ChosenByOpponent,
+                LinkedExileQuantity::One,
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Battlefield],
+                false,
+                "return the exiled card to the battlefield under its owner's control",
+                ObjectZone::Battlefield,
+                false,
+            ),
+            "when this creature enters, exile up to two target cards from a single graveyard" => (
+                TargetPredicate::CardFromSingleGraveyard,
+                LinkedExileSelection::Targeted,
+                LinkedExileQuantity::UpTo(2),
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Graveyard],
+                false,
+                "return the exiled cards to their owner's graveyard",
+                ObjectZone::Graveyard,
+                false,
+            ),
+            "when this creature is turned face up, exile up to x other target creatures from the battlefield and/or creature cards from graveyards" => (
+                TargetPredicate::OtherCreatureFromBattlefieldOrGraveyard,
+                LinkedExileSelection::Targeted,
+                LinkedExileQuantity::UpToX,
+                false,
+                LifecycleEvent::SourceTurnedFaceUp,
+                vec![ObjectZone::Battlefield, ObjectZone::Graveyard],
+                false,
+                "return the exiled cards to their owners' hands",
+                ObjectZone::Hand,
+                false,
+            ),
+            "when this creature enters, target opponent reveals their hand and you choose a nonland card from it. exile that card" => (
+                TargetPredicate::NonlandCardInTargetOpponentsHand,
+                LinkedExileSelection::ChosenFromTargetOpponentsRevealedHand,
+                LinkedExileQuantity::One,
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Hand],
+                false,
+                "return the exiled card to its owner's hand",
+                ObjectZone::Hand,
+                false,
+            ),
+            "when this creature enters, exile all cards from your hand" => (
+                TargetPredicate::CardInYourHand,
+                LinkedExileSelection::AllMatching,
+                LinkedExileQuantity::All,
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Hand],
+                false,
+                "return the exiled cards to their owner's hand",
+                ObjectZone::Hand,
+                false,
+            ),
+            "when this creature enters, exile all lands" => (
+                TargetPredicate::LandPermanent,
+                LinkedExileSelection::AllMatching,
+                LinkedExileQuantity::All,
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Battlefield],
+                false,
+                "return the exiled cards to the battlefield tapped under their owners' control",
+                ObjectZone::Battlefield,
+                true,
+            ),
+            "when this creature enters, exile all other permanents you control" => (
+                TargetPredicate::OtherPermanentYouControl,
+                LinkedExileSelection::AllMatching,
+                LinkedExileQuantity::All,
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Battlefield],
+                false,
+                "return the exiled cards to the battlefield under their owners' control",
+                ObjectZone::Battlefield,
+                false,
+            ),
+            "when this creature enters, if you cast it from your hand, exile all cards from target opponent's hand" => (
+                TargetPredicate::CardInTargetOpponentsHand,
+                LinkedExileSelection::AllMatching,
+                LinkedExileQuantity::All,
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Hand],
+                true,
+                "return the exiled cards to their owner's hand",
+                ObjectZone::Hand,
+                false,
+            ),
+            "when this creature enters, exile two target lands" => (
+                TargetPredicate::Land,
+                LinkedExileSelection::Targeted,
+                LinkedExileQuantity::Exactly(2),
+                false,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Battlefield],
+                false,
+                "return the exiled cards to the battlefield under their owners' control",
+                ObjectZone::Battlefield,
+                false,
+            ),
+            "when this creature enters, you may exile up to three other target creatures from the battlefield and/or creature cards from graveyards" => (
+                TargetPredicate::OtherCreatureFromBattlefieldOrGraveyard,
+                LinkedExileSelection::Targeted,
+                LinkedExileQuantity::UpTo(3),
+                true,
+                LifecycleEvent::SourceEntersBattlefield,
+                vec![ObjectZone::Battlefield, ObjectZone::Graveyard],
+                false,
+                "return the exiled cards to their owners' hands",
+                ObjectZone::Hand,
+                false,
+            ),
             _ => return None,
         };
-        (index != return_index).then_some((index, target, optional))
+        Some((
+            index,
+            target,
+            selection,
+            quantity,
+            optional,
+            trigger,
+            exile_from,
+            requires_cast_from_hand,
+            expected_return,
+            return_to,
+            return_tapped,
+        ))
     });
-    let (entry_index, target, exile_optional) = entry_matches.next()?;
+    let (
+        entry_index,
+        target,
+        selection,
+        quantity,
+        exile_optional,
+        trigger,
+        exile_from,
+        requires_cast_from_hand,
+        expected_return,
+        return_to,
+        return_tapped,
+    ) = entry_matches.next()?;
     if entry_matches.next().is_some() {
+        return None;
+    }
+    let exact_return = format!("when this {source_word} leaves the battlefield, {expected_return}");
+    let mut return_matches = clauses
+        .iter()
+        .enumerate()
+        .filter(|(index, clause)| *index != entry_index && clause.as_str() == exact_return);
+    let (return_index, _) = return_matches.next()?;
+    if return_matches.next().is_some() {
         return None;
     }
 
@@ -442,16 +971,25 @@ fn compile_separate_linked_exile(
         },
         program: ObjectLifecycleProgram::LinkedExile(LinkedExileProgram {
             source: battlefield_source(&source_types, &[]),
-            trigger: LifecycleEvent::SourceEntersBattlefield,
+            exile_clause_index: entry_index as u16,
+            return_clause_index: return_index as u16,
+            trigger,
             target,
+            selection,
+            quantity,
             exile_optional,
-            exile_from: ObjectZone::Battlefield,
+            exile_from,
             exile_to: ObjectZone::Exile,
             identity: LinkedIdentity::CardExiledByThisSourceInstance,
             return_event: LifecycleEvent::SourceLeavesBattlefield,
             return_from: ObjectZone::Exile,
-            return_to: ObjectZone::Battlefield,
+            return_to,
             return_controller: ControllerScope::Owner,
+            return_tapped,
+            requires_cast_from_hand,
+            required_exile_subtype: None,
+            required_exile_alternative_subtype: None,
+            sacrifice_source_if_no_exile: false,
             return_mechanism: ReturnMechanism::DelayedTriggeredAbility,
         }),
     })

@@ -2,6 +2,7 @@
 // enumerated lints cover staged fail-closed contracts whose consumers remain
 // in that suite or require the next production-adapter tranche.
 #![allow(dead_code)]
+#![allow(unused_imports)]
 #![allow(
     clippy::bool_comparison,
     clippy::collapsible_if,

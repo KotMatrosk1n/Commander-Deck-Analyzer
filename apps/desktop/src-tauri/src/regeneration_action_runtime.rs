@@ -33,8 +33,8 @@ use crate::keyword_rules_runtime::{
     execute_keyword_action, remove_static_regeneration, resolve_destruction, targeting_is_legal,
 };
 
-pub const REGENERATION_ACTION_COMPILER_VERSION: &str = "regeneration-action-compiler-0.2";
-pub const REGENERATION_ACTION_RUNTIME_VERSION: &str = "regeneration-action-runtime-0.1";
+pub const REGENERATION_ACTION_COMPILER_VERSION: &str = "regeneration-action-compiler-0.3";
+pub const REGENERATION_ACTION_RUNTIME_VERSION: &str = "regeneration-action-runtime-0.2";
 pub const REGENERATION_ACTION_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:107.2,117.12,119.4,122.1,400.7,601.2b,601.2f-h,602.2b,603.3d,608.2b,608.2h,609.3,614.1,614.6,616.1,701.19,701.21";
 
 pub const fn regeneration_action_production_adapter_connected() -> bool {
@@ -377,6 +377,11 @@ pub struct StaticRegenerationProgram {
 pub struct ResolutionRegenerationProgram {
     pub recipient: RegenerationRecipient,
     pub reminder: ReminderEvidence,
+    /// Compiler-owned bounded target slot for a targeted resolution leaf.
+    ///
+    /// This is execution routing metadata rather than Oracle semantics, so it
+    /// is deliberately excluded from the stable semantic identity below.
+    recipient_target_id: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,6 +463,25 @@ impl RegenerationActionProgram {
         &self.kind
     }
 
+    pub fn recipient_target_id(&self) -> Option<u8> {
+        let RegenerationActionKind::StandaloneResolution(resolution) = &self.kind else {
+            return None;
+        };
+        matches!(resolution.recipient, RegenerationRecipient::Target { .. })
+            .then_some(resolution.recipient_target_id)
+    }
+
+    pub fn bind_recipient_target_id(&mut self, target_id: u8) -> bool {
+        let RegenerationActionKind::StandaloneResolution(resolution) = &mut self.kind else {
+            return false;
+        };
+        if !matches!(resolution.recipient, RegenerationRecipient::Target { .. }) {
+            return false;
+        }
+        resolution.recipient_target_id = target_id;
+        true
+    }
+
     pub const fn production_adapter_connected(&self) -> bool {
         matches!(
             self.kind,
@@ -499,6 +523,7 @@ pub fn compile_regeneration_resolution_leaf_program(
     let kind = RegenerationActionKind::StandaloneResolution(ResolutionRegenerationProgram {
         recipient,
         reminder,
+        recipient_target_id: 0,
     });
     let semantic_digest = regeneration_semantic_digest(exact_source, normalized_source, &kind);
     Some(RegenerationActionProgram {

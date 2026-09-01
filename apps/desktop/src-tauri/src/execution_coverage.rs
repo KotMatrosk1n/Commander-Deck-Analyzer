@@ -25,8 +25,9 @@ use crate::continuous_trigger_runtime::{ContinuousTriggerProgram, Keyword as Con
 use crate::enchant_production_runtime::ENCHANT_PRODUCTION_RUNTIME_VERSION;
 use crate::equip_production_runtime::EQUIP_PRODUCTION_RUNTIME_VERSION;
 use crate::face_layout_runtime::{
-    FACE_LAYOUT_EXECUTOR_ID, FaceLayoutFaceSource, FaceLayoutProgram, FaceLayoutRuntimeInput,
-    FaceLayoutRuntimeReceipt, FaceRulesProfile, RelatedLayoutSource, compile_face_layout_runtime,
+    FACE_LAYOUT_EXECUTOR_ID, FaceLayoutFaceSource, FaceLayoutOracleClauseSource, FaceLayoutProgram,
+    FaceLayoutRuntimeInput, FaceLayoutRuntimeReceipt, FaceRulesProfile, RelatedLayoutSource,
+    compile_face_layout_runtime,
 };
 use crate::keyword_production_bridge::{
     AFFINITY_PRODUCTION_BRIDGE_VERSION, AFTERMATH_PRODUCTION_BRIDGE_VERSION,
@@ -96,7 +97,7 @@ use crate::runtime_receipts::{
 use crate::semantics::{CompiledCard, role};
 
 pub const EXECUTION_COVERAGE_SCHEMA_VERSION: &str = "commander-execution-coverage-manifest/v8";
-pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-2.16";
+pub const EXECUTION_COVERAGE_COMPILER_VERSION: &str = "execution-coverage-2.33";
 pub const COMPACT_BLOCKER_SAMPLE_LIMIT: usize = 20;
 
 const METRICS: [ExecutionMetric; 7] = [
@@ -1266,12 +1267,38 @@ fn compile_card(
                     })
                 })
                 .collect::<Result<Vec<_>, serde_json::Error>>()?;
+            let mut next_clause_by_face = BTreeMap::<u16, u16>::new();
+            let mut layout_oracle_clauses = Vec::new();
+            for span in spans
+                .iter()
+                .filter(|span| span.kind == OracleSourceSpanKind::RulesText)
+            {
+                let face_index = span.face_index.unwrap_or_default();
+                let clause_index = next_clause_by_face.entry(face_index).or_default();
+                let current_clause_index = *clause_index;
+                *clause_index = clause_index.saturating_add(1);
+                let exact_layout_clause = span.text.trim();
+                if exact_layout_clause
+                    == "(You may cast either half. That door unlocks on the battlefield. As a sorcery, you may pay the mana cost of a locked door to unlock it.)"
+                    || (exact_layout_clause.starts_with("(Melds with ")
+                        && exact_layout_clause.ends_with(".)"))
+                    || exact_layout_clause
+                        == "(You can't cast this face unless it's been transformed by the front face.)"
+                {
+                    layout_oracle_clauses.push(FaceLayoutOracleClauseSource {
+                        face_index,
+                        clause_index: current_clause_index,
+                        source_sha256: sha256_hex(span.text.as_bytes()),
+                    });
+                }
+            }
             Ok::<_, serde_json::Error>(
                 compile_face_layout_runtime(FaceLayoutRuntimeInput {
                     layout: layout.clone(),
                     card_revision_sha256: oracle_revision_sha256.clone(),
                     faces: face_sources,
                     related_components,
+                    layout_oracle_clauses,
                 })
                 .ok(),
             )
@@ -1455,9 +1482,26 @@ fn compile_card(
                 let root_context = oracle_root_contexts
                     .get(&clause_context.face_index)
                     .expect("every Oracle clause belongs to one face root");
-                (
-                    CoverageLeafKind::OracleRulesText,
-                    CoverageLeafSubject::OracleRulesText,
+                let dispositions = if face_layout_receipt.as_ref().is_some_and(|receipt| {
+                    receipt.owns_layout_lifecycle_clause(
+                        clause_context.face_index,
+                        clause_context.clause_index,
+                        &leaf_evidence_sha256,
+                    )
+                }) {
+                    face_layout_receipt_dispositions(
+                        face_layout_receipt
+                            .as_ref()
+                            .expect("owned Room lifecycle has a face-layout receipt"),
+                        FaceLayoutCoverageSubject::RoomLifecycle {
+                            face_index: clause_context.face_index,
+                            clause_index: clause_context.clause_index,
+                        },
+                        &oracle_revision_sha256,
+                        &leaf_evidence_sha256,
+                        blocker,
+                    )
+                } else {
                     runtime_receipt_dispositions(
                         &runtime_receipts,
                         RuntimeCoverageRequirement::Clause {
@@ -1467,7 +1511,12 @@ fn compile_card(
                         &oracle_revision_sha256,
                         &leaf_evidence_sha256,
                         blocker,
-                    ),
+                    )
+                };
+                (
+                    CoverageLeafKind::OracleRulesText,
+                    CoverageLeafSubject::OracleRulesText,
+                    dispositions,
                 )
             }
         };
@@ -1840,6 +1889,22 @@ enum RetainedRuntimeReceipt {
     KeywordRules(Box<ExactKeywordRulesRuntimeReceipt>),
 }
 
+fn bargain_search_cast_or_hand_root_owns_keyword(record: &CombinedCardRecord) -> bool {
+    let normalized = record
+        .oracle_text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    normalized.starts_with(
+        "bargain (you may sacrifice an artifact, enchantment, or token as you cast this spell.)",
+    ) && normalized.contains(
+        "search your library for a card, exile it face down, then shuffle.",
+    ) && normalized.contains(
+        "if this spell was bargained, you may cast the exiled card without paying its mana cost",
+    ) && normalized.contains("put the exiled card into your hand if it wasn't cast this way")
+}
+
 fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<RetainedRuntimeReceipt> {
     let compiled = compile_retained_card(record);
     let mut receipts = Vec::with_capacity(4);
@@ -1970,62 +2035,84 @@ fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<Retaine
                 .1
                 .contains(&RuntimeCapability::CompleteOracleRoot)
     });
-    if !complete_root_claimed {
-        let claimed_clauses = receipts
-            .iter()
-            .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
-            .flat_map(|receipt| {
-                runtime_receipt_parts(receipt)
-                    .2
-                    .covered_oracle_clauses
-                    .iter()
-                    .cloned()
-            })
-            .collect::<BTreeSet<_>>();
-        let registry = production_keyword_live_bridge_registry();
-        receipts.extend(
-            retained_keyword_receipts
+    let claimed_clauses = receipts
+        .iter()
+        .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
+        .flat_map(|receipt| {
+            runtime_receipt_parts(receipt)
+                .2
+                .covered_oracle_clauses
                 .iter()
                 .cloned()
-                .filter(|receipt| {
-                    keyword_live_bridge_registry_has_registration(
-                        registry,
-                        receipt.keyword_rules.keyword,
-                        receipt.delegated_clause.required_live_bridge_capabilities(),
-                    ) && receipt
+        })
+        .collect::<BTreeSet<_>>();
+    let exact_bargain_already_claimed = receipts.iter().any(|receipt| {
+        runtime_receipt_has_exact_contract(receipt)
+            && runtime_receipt_parts(receipt)
+                .1
+                .contains(&RuntimeCapability::ExactBargainKeyword)
+    });
+    let bargain_occurrence_owned_by_atomic_root =
+        exact_bargain_already_claimed || bargain_search_cast_or_hand_root_owns_keyword(record);
+    let registry = production_keyword_live_bridge_registry();
+    receipts.extend(
+        retained_keyword_receipts
+            .iter()
+            .cloned()
+            .filter(|receipt| {
+                let is_unowned_atomic_bargain = receipt.keyword_rules.keyword
+                    == OfficialKeyword::Bargain
+                    && !bargain_occurrence_owned_by_atomic_root;
+                keyword_live_bridge_registry_has_registration(
+                    registry,
+                    receipt.keyword_rules.keyword,
+                    receipt.delegated_clause.required_live_bridge_capabilities(),
+                ) && ((!complete_root_claimed
+                    && receipt
                         .source_evidence
                         .covered_oracle_clauses
                         .iter()
-                        .all(|clause| !claimed_clauses.contains(clause))
-                })
-                .map(|receipt| RetainedRuntimeReceipt::KeywordRules(Box::new(receipt))),
-        );
-    }
-    if !complete_root_claimed {
-        let claimed_clauses = receipts
-            .iter()
-            .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
-            .flat_map(|receipt| {
-                runtime_receipt_parts(receipt)
-                    .2
+                        .all(|clause| !claimed_clauses.contains(clause)))
+                    || is_unowned_atomic_bargain)
+            })
+            .map(|receipt| RetainedRuntimeReceipt::KeywordRules(Box::new(receipt))),
+    );
+    let claimed_clauses = receipts
+        .iter()
+        .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
+        .flat_map(|receipt| {
+            runtime_receipt_parts(receipt)
+                .2
+                .covered_oracle_clauses
+                .iter()
+                .cloned()
+        })
+        .collect::<BTreeSet<_>>();
+    let complete_casting_cost_root_claimed = receipts.iter().any(|receipt| {
+        if !runtime_receipt_has_exact_contract(receipt) {
+            return false;
+        }
+        let capabilities = runtime_receipt_parts(receipt).1;
+        capabilities.contains(&RuntimeCapability::CompleteOracleRoot)
+            && capabilities.contains(&RuntimeCapability::ExactCastingCostBatch)
+    });
+    receipts.extend(
+        compile_bounded_oracle_runtime_receipts(&compiled)
+            .into_iter()
+            .filter(|receipt| {
+                let is_exact_casting_cost_batch = receipt
+                    .capabilities
+                    .contains(&RuntimeCapability::ExactCastingCostBatch);
+                receipt
+                    .source_evidence
                     .covered_oracle_clauses
                     .iter()
-                    .cloned()
+                    .all(|clause| !claimed_clauses.contains(clause))
+                    && (!is_exact_casting_cost_batch || !complete_casting_cost_root_claimed)
+                    && (is_exact_casting_cost_batch || !complete_root_claimed)
             })
-            .collect::<BTreeSet<_>>();
-        receipts.extend(
-            compile_bounded_oracle_runtime_receipts(&compiled)
-                .into_iter()
-                .filter(|receipt| {
-                    receipt
-                        .source_evidence
-                        .covered_oracle_clauses
-                        .iter()
-                        .all(|clause| !claimed_clauses.contains(clause))
-                })
-                .map(|receipt| RetainedRuntimeReceipt::BoundedOracle(Box::new(receipt))),
-        );
-    }
+            .map(|receipt| RetainedRuntimeReceipt::BoundedOracle(Box::new(receipt))),
+    );
     let claimed_clauses = receipts
         .iter()
         .filter(|receipt| runtime_receipt_has_exact_contract(receipt))
@@ -2084,14 +2171,49 @@ fn compile_retained_runtime_receipts(record: &CombinedCardRecord) -> Vec<Retaine
             .iter()
             .all(|clause| claimed_clauses.contains(clause))
         {
-            // A changed atomic root may fall through only when independent
-            // exact clause executors cover the complete root. Otherwise the
-            // recognizable sibling would authorize a partial transaction.
-            return Vec::new();
+            // A changed atomic root may expose independently owned clause
+            // contracts. Keep only exact receipts whose evidence is a strict
+            // subset of this root: they cannot claim that the incomplete
+            // atomic transaction itself is executable, while an unsupported
+            // sibling must not erase their separately proven runtime. Root
+            // claims remain fail-closed. Exact casting-cost batches and the
+            // generic Bargain transaction retain their existing independent
+            // cast-initiation exceptions.
+            receipts.retain(|receipt| {
+                runtime_receipt_has_exact_contract(receipt)
+                    && (runtime_receipt_is_strict_clause_subset(receipt, &required_clauses)
+                        || runtime_receipt_parts(receipt)
+                            .1
+                            .contains(&RuntimeCapability::ExactCastingCostBatch)
+                        || matches!(
+                            receipt,
+                            RetainedRuntimeReceipt::KeywordRules(receipt)
+                                if receipt.keyword_rules.keyword == OfficialKeyword::Bargain
+                                    && !bargain_occurrence_owned_by_atomic_root
+                        ))
+            });
+            if receipts.is_empty() {
+                return Vec::new();
+            }
         }
     }
     sort_retained_runtime_receipts(&mut receipts);
     receipts
+}
+
+fn runtime_receipt_is_strict_clause_subset(
+    receipt: &RetainedRuntimeReceipt,
+    required_clauses: &BTreeSet<RuntimeOracleClauseEvidence>,
+) -> bool {
+    let (_, capabilities, evidence) = runtime_receipt_parts(receipt);
+    capabilities.contains(&RuntimeCapability::ExactOracleClauseSet)
+        && !capabilities.contains(&RuntimeCapability::CompleteOracleRoot)
+        && !evidence.covered_oracle_clauses.is_empty()
+        && evidence.covered_oracle_clauses.len() < required_clauses.len()
+        && evidence
+            .covered_oracle_clauses
+            .iter()
+            .all(|clause| required_clauses.contains(clause))
 }
 
 fn exact_oracle_clause_evidence(
@@ -3291,8 +3413,10 @@ struct AtomicityGuardRequirement {
 
 const ORDERED_RESOLUTION_CAPABILITIES: &[RuntimeCapability] =
     &[RuntimeCapability::OrderedResolution];
-const ADDITIONAL_COST_CAPABILITIES: &[RuntimeCapability] =
-    &[RuntimeCapability::AtomicInitiationBoundary];
+const ADDITIONAL_COST_CAPABILITIES: &[RuntimeCapability] = &[
+    RuntimeCapability::AtomicInitiationBoundary,
+    RuntimeCapability::ExactCastingCostBatch,
+];
 const DELAYED_DRAWBACK_CAPABILITIES: &[RuntimeCapability] = &[
     RuntimeCapability::OrderedResolution,
     RuntimeCapability::ExactDelayedDrawbackLifecycle,
@@ -3685,6 +3809,7 @@ fn printed_cost_receipt_dispositions(
 enum FaceLayoutCoverageSubject {
     Face(usize),
     RelatedComponent,
+    RoomLifecycle { face_index: u16, clause_index: u16 },
 }
 
 fn face_layout_receipt_dispositions(
@@ -3702,6 +3827,12 @@ fn face_layout_receipt_dispositions(
             }
             FaceLayoutCoverageSubject::RelatedComponent => {
                 receipt.owns_related_component_source(leaf_evidence_sha256)
+            }
+            FaceLayoutCoverageSubject::RoomLifecycle {
+                face_index,
+                clause_index,
+            } => {
+                receipt.owns_layout_lifecycle_clause(face_index, clause_index, leaf_evidence_sha256)
             }
         };
     METRICS
@@ -4185,6 +4316,13 @@ fn runtime_receipt_has_exact_contract(receipt: &RetainedRuntimeReceipt) -> bool 
             ];
             if matches!(
                 receipt.transaction,
+                TypedAtomicTransaction::SacrificeRitual { .. }
+                    | TypedAtomicTransaction::SacrificeTutor { .. }
+            ) {
+                expected_capabilities.push(RuntimeCapability::ExactCastingCostBatch);
+            }
+            if matches!(
+                receipt.transaction,
                 TypedAtomicTransaction::BargainSearchCastOrHand { .. }
             ) {
                 expected_capabilities.push(RuntimeCapability::ExactBargainKeyword);
@@ -4369,7 +4507,7 @@ fn runtime_receipt_supports_metric(
     executor_id_supports_metric(binding.executor_id, binding.executor_version, metric)
 }
 
-pub(crate) const KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION: &str = "keyword-live-bridge-registry/v38";
+pub(crate) const KEYWORD_LIVE_BRIDGE_REGISTRY_VERSION: &str = "keyword-live-bridge-registry/v39";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct KeywordLiveBridgeRegistration {
@@ -6794,8 +6932,14 @@ fn executor_binding(
                 "simulation::tests::exact_mana_network_programs_drive_live_sources_grants_and_bounce_entry",
             ],
             ReviewedRuntimeProgram::ObjectLifecycle(_) => vec![
-                "object_lifecycle_runtime::tests::mutations_fail_closed",
-                "simulation::tests::exact_object_lifecycle_programs_preserve_identity_and_order",
+                "object_lifecycle_runtime::tests::linked_exile_leave_family_mutations_reject_before_ownership",
+                "object_lifecycle_runtime::tests::exact_linked_exile_leave_families_compile_both_lifecycle_clauses",
+                "object_lifecycle_runtime::tests::wormfang_drake_partial_and_mutated_roots_fail_closed",
+                "object_lifecycle_runtime::tests::champion_keyword_partial_unknown_and_mutated_roots_fail_closed",
+                "bounded_oracle_consumer::tests::linked_exile_returns_only_the_exact_card_for_the_source_incarnation",
+                "bounded_oracle_consumer::tests::linked_exile_plural_tapped_return_preserves_each_owner_and_skips_changed_incarnations",
+                "bounded_oracle_consumer::tests::wormfang_drake_exiles_the_exact_choice_or_sacrifices_itself_atomically",
+                "bounded_oracle_consumer::tests::champion_keyword_accepts_exact_subtype_alternatives_and_returns_by_incarnation",
             ],
             ReviewedRuntimeProgram::UtilityModal(_) => vec![
                 "utility_modal_runtime::tests::mutations_fail_closed",
@@ -6895,6 +7039,17 @@ fn executor_binding(
             "execution_coverage::tests::delegated_devoid_receipt_uses_the_registered_production_bridge",
         ],
     };
+    if matches!(
+        receipt,
+        RetainedRuntimeReceipt::KeywordRules(receipt)
+            if receipt.keyword_rules.keyword == OfficialKeyword::Bargain
+    ) {
+        evidence_tests.extend([
+            "keyword_production_bridge::tests::bargain_cast_is_one_physical_alternative_and_additional_cost_transaction",
+            "keyword_production_bridge::tests::bargain_accepts_exact_eligible_kinds_and_rolls_back_every_failed_cast",
+            "execution_coverage::tests::atomic_bargain_receipt_survives_an_unrelated_incomplete_root",
+        ]);
+    }
     if capabilities.contains(&RuntimeCapability::ExactCannotBeBlockedRestriction) {
         evidence_tests.extend([
             "bounded_oracle_runtime::tests::source_cannot_be_blocked_compiles_to_a_live_battlefield_restriction",
@@ -7361,6 +7516,24 @@ fn face_layout_executor_binding(
         } => vec!["CR 108".to_string()],
     };
     rule_dependencies.push("typed-face-layout:exact-source-envelope".into());
+    if receipt
+        .capabilities
+        .contains(&RuntimeCapability::ExactRoomLifecycle)
+    {
+        rule_dependencies.push("typed-face-layout:room-lifecycle".into());
+    }
+    if receipt
+        .capabilities
+        .contains(&RuntimeCapability::ExactMeldLifecycle)
+    {
+        rule_dependencies.push("typed-face-layout:meld-lifecycle".into());
+    }
+    if receipt
+        .capabilities
+        .contains(&RuntimeCapability::ExactBackFaceCastRestriction)
+    {
+        rule_dependencies.push("typed-face-layout:back-face-cast-restriction".into());
+    }
     rule_dependencies.sort();
     rule_dependencies.dedup();
     let mut evidence_tests = vec![
@@ -7372,6 +7545,15 @@ fn face_layout_executor_binding(
         "execution_coverage::tests::all_supported_multiface_layouts_bind_exact_face_runtime"
             .to_string(),
     ];
+    if receipt
+        .capabilities
+        .contains(&RuntimeCapability::ExactRoomLifecycle)
+    {
+        evidence_tests.push(
+            "face_layout_runtime::tests::modal_land_choice_and_room_unlocks_use_distinct_live_actions"
+                .to_string(),
+        );
+    }
     evidence_tests.sort();
     evidence_tests.dedup();
     ExecutorBinding {
@@ -8151,6 +8333,19 @@ fn face_layout_binding_matches_leaf(
                 component.trim().to_ascii_lowercase().as_str(),
                 "meld_part" | "meld_result"
             ),
+            CoverageLeafSubject::OracleRulesText => {
+                binding.rule_dependencies.iter().any(|dependency| {
+                    matches!(
+                        dependency.as_str(),
+                        "typed-face-layout:room-lifecycle"
+                            | "typed-face-layout:meld-lifecycle"
+                            | "typed-face-layout:back-face-cast-restriction"
+                    )
+                }) && binding
+                    .covered_oracle_clauses
+                    .iter()
+                    .any(|clause| clause.normalized_clause_sha256 == binding.leaf_evidence_sha256)
+            }
             _ => false,
         }
 }

@@ -11,7 +11,7 @@
 
 use regex::{Regex, RegexBuilder};
 
-pub(crate) const EXECUTABLE_ABILITY_PROGRAM_VERSION: &str = "executable-ability-program/v22";
+pub(crate) const EXECUTABLE_ABILITY_PROGRAM_VERSION: &str = "executable-ability-program/v24";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OracleCardInput<'a> {
@@ -1868,6 +1868,20 @@ pub(crate) struct ScryEffect {
 pub(crate) struct NonlandManaModifier {
     pub additional_amount: u16,
     pub kind: ManaKind,
+    pub permanent_kind: ManaModifierPermanentKind,
+    pub recipient: ManaModifierRecipient,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManaModifierPermanentKind {
+    NonlandPermanent,
+    Land,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManaModifierRecipient {
+    AbilityController,
+    TriggeringPlayer,
 }
 
 /// Compile reviewed Oracle templates without consulting a card-name table.
@@ -4193,6 +4207,81 @@ fn compile_triggered_clause(clause_index: usize, normalized_oracle: &str) -> Abi
         Ok(event) => event,
         Err(reason) => return unsupported(clause_index, normalized_oracle, reason),
     };
+    if event.kind == TriggerEventKind::PermanentTappedForMana {
+        let exact_effect = trim_terminal_period(effect_text.trim())
+            .trim()
+            .to_ascii_lowercase();
+        let modifier = match (
+            event.actor,
+            event.object_filter.card_type,
+            event.object_filter.nonland,
+            event.object_filter.controller,
+            exact_effect.as_str(),
+        ) {
+            (
+                ControllerRelation::You,
+                Some(CardType::Permanent),
+                true,
+                Some(ControllerRelation::You),
+                "add one mana of any type that permanent produced",
+            ) => NonlandManaModifier {
+                additional_amount: 1,
+                kind: ManaKind::AnyTypeProducedByTriggeringPermanent,
+                permanent_kind: ManaModifierPermanentKind::NonlandPermanent,
+                recipient: ManaModifierRecipient::AbilityController,
+            },
+            (
+                ControllerRelation::You,
+                Some(CardType::Land),
+                false,
+                Some(ControllerRelation::You),
+                "add one mana of any type that land produced",
+            ) => NonlandManaModifier {
+                additional_amount: 1,
+                kind: ManaKind::AnyTypeProducedByTriggeringPermanent,
+                permanent_kind: ManaModifierPermanentKind::Land,
+                recipient: ManaModifierRecipient::AbilityController,
+            },
+            (
+                ControllerRelation::Any,
+                Some(CardType::Land),
+                false,
+                None,
+                "that player adds one mana of any type that land produced",
+            ) => NonlandManaModifier {
+                additional_amount: 1,
+                kind: ManaKind::AnyTypeProducedByTriggeringPermanent,
+                permanent_kind: ManaModifierPermanentKind::Land,
+                recipient: ManaModifierRecipient::TriggeringPlayer,
+            },
+            _ => {
+                return unsupported(
+                    clause_index,
+                    normalized_oracle,
+                    UnsupportedReason::new(
+                        UnsupportedReasonCode::UnsupportedQualifier,
+                        "Only the reviewed plus-one, same-produced-type nonland and land mana triggers are executable.",
+                    ),
+                );
+            }
+        };
+        let mut preconditions = vec![
+            AbilityPrecondition::SourceZone(Zone::Battlefield),
+            AbilityPrecondition::EventObjectMatches(event.object_filter.clone()),
+        ];
+        preconditions.dedup();
+        return AbilityCompilation::Executable(ExecutableAbility {
+            clause_index,
+            normalized_oracle: normalized_oracle.to_string(),
+            timing: AbilityTiming::Triggered {
+                event: event.clone(),
+            },
+            costs: Vec::new(),
+            preconditions,
+            effects: vec![AbilityEffect::ModifyNonlandMana(modifier)],
+        });
+    }
+
     let effect_compilation = if event.kind == TriggerEventKind::BeginningOfUpkeep
         && event.actor == ControllerRelation::You
     {
@@ -4212,50 +4301,10 @@ fn compile_triggered_clause(clause_index: usize, normalized_oracle: &str) -> Abi
             });
         }
     };
-    let mut preconditions = vec![
+    let preconditions = vec![
         AbilityPrecondition::SourceZone(Zone::Battlefield),
         AbilityPrecondition::EventObjectMatches(event.object_filter.clone()),
     ];
-
-    if event.kind == TriggerEventKind::PermanentTappedForMana {
-        let Some(AbilityEffect::AddMana(mana)) = effects.first() else {
-            return unsupported(
-                clause_index,
-                normalized_oracle,
-                UnsupportedReason::new(
-                    UnsupportedReasonCode::UnsupportedQualifier,
-                    "The supported nonland mana trigger must add mana.",
-                ),
-            );
-        };
-        if effects.len() != 1
-            || mana.kind != ManaKind::AnyTypeProducedByTriggeringPermanent
-            || mana.amount != 1
-        {
-            return unsupported(
-                clause_index,
-                normalized_oracle,
-                UnsupportedReason::new(
-                    UnsupportedReasonCode::UnsupportedQualifier,
-                    "Only the reviewed plus-one, same-produced-type nonland mana trigger is executable.",
-                ),
-            );
-        }
-        preconditions.dedup();
-        return AbilityCompilation::Executable(ExecutableAbility {
-            clause_index,
-            normalized_oracle: normalized_oracle.to_string(),
-            timing: AbilityTiming::Triggered {
-                event: event.clone(),
-            },
-            costs: Vec::new(),
-            preconditions,
-            effects: vec![AbilityEffect::ModifyNonlandMana(NonlandManaModifier {
-                additional_amount: 1,
-                kind: ManaKind::AnyTypeProducedByTriggeringPermanent,
-            })],
-        });
-    }
 
     AbilityCompilation::Executable(ExecutableAbility {
         clause_index,
@@ -4556,13 +4605,14 @@ fn compile_static_creature_modifier_clause(
                 body,
                 "aura",
             )
-        } else {
-            let body = lower.strip_prefix("equipped creature ")?;
+        } else if let Some(body) = lower.strip_prefix("equipped creature ") {
             (
                 StaticCreatureModifierTarget::CreatureEquippedBySource,
                 body,
                 "equipment",
             )
+        } else {
+            return None;
         };
 
     if !type_line_has_card_type(type_line, required_subtype) {
@@ -5411,6 +5461,23 @@ fn parse_trigger_event(trigger: &str) -> Result<TriggerEvent, UnsupportedReason>
                 ..ObjectFilter::default()
             },
         }),
+        "whenever you tap a land for mana" => Ok(TriggerEvent {
+            kind: TriggerEventKind::PermanentTappedForMana,
+            actor: ControllerRelation::You,
+            object_filter: ObjectFilter {
+                card_type: Some(CardType::Land),
+                controller: Some(ControllerRelation::You),
+                ..ObjectFilter::default()
+            },
+        }),
+        "whenever a player taps a land for mana" => Ok(TriggerEvent {
+            kind: TriggerEventKind::PermanentTappedForMana,
+            actor: ControllerRelation::Any,
+            object_filter: ObjectFilter {
+                card_type: Some(CardType::Land),
+                ..ObjectFilter::default()
+            },
+        }),
         _ => Err(UnsupportedReason::new(
             UnsupportedReasonCode::UnrecognizedTrigger,
             format!("Unrecognized trigger event: “{}”.", trigger.trim()),
@@ -6157,9 +6224,10 @@ fn parse_mill_effect(lower: &str) -> Option<MillEffect> {
 fn parse_tap_effect(lower: &str) -> Option<(bool, TargetSelector)> {
     let (tap, target) = if let Some(target) = lower.strip_prefix("tap ") {
         (true, target)
-    } else {
-        let target = lower.strip_prefix("untap ")?;
+    } else if let Some(target) = lower.strip_prefix("untap ") {
         (false, target)
+    } else {
+        return None;
     };
     let selector = match target {
         "this permanent" => TargetSelector::SelfPermanent,

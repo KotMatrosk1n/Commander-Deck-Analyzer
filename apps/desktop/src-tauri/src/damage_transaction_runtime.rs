@@ -10,7 +10,7 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const DAMAGE_TRANSACTION_RUNTIME_VERSION: &str = "damage-transaction-runtime-0.3";
+pub const DAMAGE_TRANSACTION_RUNTIME_VERSION: &str = "damage-transaction-runtime-0.4";
 pub const DAMAGE_SEMANTIC_INPUT_VERSION: &str = "damage-semantic-input-0.1";
 
 pub type PlayerId = u8;
@@ -192,6 +192,10 @@ pub struct DamageCreatureState {
     pub blocking: bool,
     pub dealt_damage_this_turn: bool,
     pub marked_damage: u32,
+    /// Exact +1/+1 counters available to physical damage replacement
+    /// effects. Counter consumption is staged with the rest of the damage
+    /// transaction and therefore rolls back on any later failure.
+    pub plus_one_plus_one_counters: u32,
     pub minus_one_minus_one_counters: u32,
     pub has_deathtouch_damage: bool,
 }
@@ -237,6 +241,10 @@ impl DamageObjectState {
 pub struct DamageRuntimeState {
     pub players: BTreeMap<PlayerId, DamagePlayerState>,
     pub objects: BTreeMap<ObjectId, DamageObjectState>,
+    /// Current physical incarnation for every object represented in
+    /// `objects`. Identity-bound replacement effects fail closed when this
+    /// evidence is absent or stale.
+    pub object_incarnations: BTreeMap<ObjectId, u64>,
     pub modifiers: BTreeMap<DamageModifierId, DamageModifier>,
 }
 
@@ -305,6 +313,7 @@ pub enum LegalDamageTargetKind {
     Planeswalker,
     Battle,
     CreatureOrPlaneswalker,
+    CreaturePlaneswalkerOrBattle,
     PlayerOrPlaneswalker,
     AnyTarget,
 }
@@ -318,8 +327,11 @@ pub enum DefinedDamageSet {
     EachCreatureWithFlying,
     EachCreatureWithoutFlying,
     EachCreatureControlledByOpponentsOf(PlayerId),
+    EachCreatureControlledBy(PlayerId),
     EachCreatureAndEachPlayer,
     EachCreatureAndEachPlaneswalker,
+    EachCreaturePlaneswalkerAndBattle,
+    EachCreatureAndPlaneswalkerNotControlledBy(PlayerId),
     EachPlaneswalker,
     EachBattle,
 }
@@ -357,8 +369,14 @@ pub enum DamageRecipientMatcher {
     Any,
     Kind(DamageRecipientKind),
     Exact(DamageRecipient),
+    ExactObjectIncarnation {
+        recipient: DamageRecipient,
+        incarnation: u64,
+    },
     ControlledBy(PlayerId),
-    Unsupported { semantic: String },
+    Unsupported {
+        semantic: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,15 +401,36 @@ pub enum DamageReplacement {
     IncreaseBy(u32),
     SetAmount(u32),
     Redirect(DamageRecipient),
-    Unsupported { semantic: String },
+    /// Redirect at most `remaining` damage from the matched event while
+    /// leaving the rest assigned to its original recipient. The destination
+    /// is an exact physical object incarnation, not a reusable object id.
+    RedirectNext {
+        remaining: u32,
+        recipient: DamageRecipient,
+        recipient_incarnation: u64,
+    },
+    Unsupported {
+        semantic: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DamagePrevention {
     PreventAll,
     PreventAmount(u32),
-    Shield { remaining: u32 },
-    Unsupported { semantic: String },
+    Shield {
+        remaining: u32,
+    },
+    /// Prevent all damage to one exact creature incarnation, then attempt to
+    /// remove one +1/+1 counter from it. The counter removal is not a cost:
+    /// an empty counter pool still prevents the damage under rule 609.3.
+    PreventAllAndRemovePlusOneCounter {
+        object: ObjectId,
+        incarnation: u64,
+    },
+    Unsupported {
+        semantic: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,6 +513,9 @@ pub struct DamageModifierDecisionReceipt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DamageConsequenceReceipt {
     NoDamage,
+    Split {
+        consequences: Vec<DamageConsequenceReceipt>,
+    },
     PlayerLife {
         player: PlayerId,
         before: i64,
@@ -513,6 +555,13 @@ pub enum DamageConsequenceReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DamagePacketReceipt {
+    pub final_recipient: DamageRecipient,
+    pub actual_damage: u32,
+    pub consequence: DamageConsequenceReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DamageAssignmentReceipt {
     pub assignment: DamageAssignmentId,
     pub original_recipient: DamageRecipient,
@@ -522,6 +571,9 @@ pub struct DamageAssignmentReceipt {
     pub prevented_damage: u64,
     pub modifier_decisions: Vec<DamageModifierDecisionReceipt>,
     pub consequence: DamageConsequenceReceipt,
+    /// Exact post-replacement packets. This contains more than one entry when
+    /// a partial redirection splits one original damage event.
+    pub packets: Vec<DamagePacketReceipt>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -620,6 +672,14 @@ pub enum DamageTransactionError {
         modifier: DamageModifierId,
         recipient: DamageRecipient,
     },
+    MissingObjectIncarnation {
+        object: ObjectId,
+    },
+    ObjectIncarnationMismatch {
+        object: ObjectId,
+        expected: u64,
+        actual: u64,
+    },
     AssignmentOrderMismatch {
         expected: Vec<DamageAssignmentId>,
         actual: Vec<DamageAssignmentId>,
@@ -676,6 +736,12 @@ struct StagedDamagePacket {
     amount: u32,
 }
 
+#[derive(Debug, Clone)]
+struct PendingDamagePacket {
+    packet: StagedDamagePacket,
+    applied: BTreeSet<DamageModifierId>,
+}
+
 pub fn execute_damage_transaction(
     state: &mut DamageRuntimeState,
     request: &DamageTransactionRequest,
@@ -696,66 +762,101 @@ pub fn execute_damage_transaction(
             .get(assignment_id)
             .copied()
             .expect("preflight validates the complete assignment order");
-        let mut packet = StagedDamagePacket {
-            recipient: assignment.recipient,
-            amount: assignment.amount,
-        };
-        let mut applied = BTreeSet::new();
+        let mut packets = VecDeque::from([PendingDamagePacket {
+            packet: StagedDamagePacket {
+                recipient: assignment.recipient,
+                amount: assignment.amount,
+            },
+            applied: BTreeSet::new(),
+        }]);
         let mut modifier_decisions = Vec::new();
         let mut prevented_damage = 0u64;
+        let mut packet_receipts = Vec::new();
         let assignment_choices = choices
             .get_mut(assignment_id)
             .expect("preflight creates one choice queue per assignment");
 
-        loop {
-            if packet.amount == 0 {
-                break;
+        while let Some(mut pending_packet) = packets.pop_front() {
+            loop {
+                if pending_packet.packet.amount == 0 {
+                    break;
+                }
+                let applicable = applicable_modifier_ids(
+                    &staged,
+                    &request.source,
+                    request.kind,
+                    request.preventability,
+                    pending_packet.packet,
+                    &pending_packet.applied,
+                )?;
+                if applicable.is_empty() {
+                    break;
+                }
+                let chooser = affected_controller(&staged, pending_packet.packet.recipient)?;
+                let Some(choice) = assignment_choices.pop_front() else {
+                    return Err(DamageTransactionError::MissingModifierChoice {
+                        assignment: *assignment_id,
+                        chooser,
+                        applicable,
+                    });
+                };
+                if choice.chooser != chooser {
+                    return Err(DamageTransactionError::WrongModifierChooser {
+                        assignment: *assignment_id,
+                        expected: chooser,
+                        actual: choice.chooser,
+                    });
+                }
+                if !applicable.contains(&choice.modifier) {
+                    return Err(DamageTransactionError::InapplicableModifierChoice {
+                        assignment: *assignment_id,
+                        modifier: choice.modifier,
+                        applicable,
+                    });
+                }
+                let application = match choice.decision {
+                    DamageModifierDecision::Apply => apply_damage_modifier(
+                        &mut staged,
+                        pending_packet.packet,
+                        choice,
+                        &mut prevented_damage,
+                    )?,
+                    DamageModifierDecision::Decline => DamageModifierApplication {
+                        packet: pending_packet.packet,
+                        diverted: None,
+                        decision: decline_damage_modifier(&staged, pending_packet.packet, choice)?,
+                    },
+                };
+                pending_packet.applied.insert(choice.modifier);
+                if let Some(diverted) = application.diverted {
+                    packets.push_back(PendingDamagePacket {
+                        packet: diverted,
+                        applied: pending_packet.applied.clone(),
+                    });
+                }
+                pending_packet.packet = application.packet;
+                modifier_decisions.push(application.decision);
             }
-            let applicable = applicable_modifier_ids(
-                &staged,
+
+            if pending_packet.packet.amount == 0 {
+                continue;
+            }
+            let consequence = apply_damage_consequence(
+                &mut staged,
                 &request.source,
-                request.kind,
-                request.preventability,
-                packet,
-                &applied,
+                pending_packet.packet.recipient,
+                pending_packet.packet.amount,
             )?;
-            if applicable.is_empty() {
-                break;
-            }
-            let chooser = affected_controller(&staged, packet.recipient)?;
-            let Some(choice) = assignment_choices.pop_front() else {
-                return Err(DamageTransactionError::MissingModifierChoice {
-                    assignment: *assignment_id,
-                    chooser,
-                    applicable,
-                });
-            };
-            if choice.chooser != chooser {
-                return Err(DamageTransactionError::WrongModifierChooser {
-                    assignment: *assignment_id,
-                    expected: chooser,
-                    actual: choice.chooser,
-                });
-            }
-            if !applicable.contains(&choice.modifier) {
-                return Err(DamageTransactionError::InapplicableModifierChoice {
-                    assignment: *assignment_id,
-                    modifier: choice.modifier,
-                    applicable,
-                });
-            }
-            let decision = match choice.decision {
-                DamageModifierDecision::Apply => {
-                    apply_damage_modifier(&mut staged, packet, choice, &mut prevented_damage)?
-                }
-                DamageModifierDecision::Decline => {
-                    decline_damage_modifier(&staged, packet, choice)?
-                }
-            };
-            packet.recipient = decision.recipient_after;
-            packet.amount = decision.amount_after;
-            applied.insert(choice.modifier);
-            modifier_decisions.push(decision);
+            total_actual_damage = total_actual_damage
+                .checked_add(u64::from(pending_packet.packet.amount))
+                .ok_or(DamageTransactionError::ArithmeticOverflow {
+                    operation: "sum actual damage",
+                })?;
+            packet_receipts.push(DamagePacketReceipt {
+                final_recipient: pending_packet.packet.recipient,
+                actual_damage: pending_packet.packet.amount,
+                consequence,
+            });
         }
 
         if let Some(choice) = assignment_choices.front() {
@@ -765,26 +866,37 @@ pub fn execute_damage_transaction(
             });
         }
 
-        let consequence = apply_damage_consequence(
-            &mut staged,
-            &request.source,
-            packet.recipient,
-            packet.amount,
-        )?;
-        total_actual_damage = total_actual_damage
-            .checked_add(u64::from(packet.amount))
-            .ok_or(DamageTransactionError::ArithmeticOverflow {
-                operation: "sum actual damage",
-            })?;
+        let assignment_actual_damage = packet_receipts.iter().try_fold(0u32, |total, packet| {
+            total.checked_add(packet.actual_damage).ok_or(
+                DamageTransactionError::ArithmeticOverflow {
+                    operation: "sum assignment damage",
+                },
+            )
+        })?;
+        let final_recipient = packet_receipts
+            .first()
+            .map(|packet| packet.final_recipient)
+            .unwrap_or(assignment.recipient);
+        let consequence = match packet_receipts.as_slice() {
+            [] => DamageConsequenceReceipt::NoDamage,
+            [packet] => packet.consequence.clone(),
+            packets => DamageConsequenceReceipt::Split {
+                consequences: packets
+                    .iter()
+                    .map(|packet| packet.consequence.clone())
+                    .collect(),
+            },
+        };
         receipts.push(DamageAssignmentReceipt {
             assignment: *assignment_id,
             original_recipient: assignment.recipient,
-            final_recipient: packet.recipient,
+            final_recipient,
             original_amount: assignment.amount,
-            actual_damage: packet.amount,
+            actual_damage: assignment_actual_damage,
             prevented_damage,
             modifier_decisions,
             consequence,
+            packets: packet_receipts,
         });
     }
 
@@ -968,9 +1080,16 @@ fn validate_selection(
             Ok(())
         }
         DamageSelection::DefinedSet(defined) => {
+            if let DefinedDamageSet::EachCreatureControlledBy(player) = defined
+                && !state.players.contains_key(&player)
+            {
+                return Err(DamageTransactionError::MissingPlayer { player });
+            }
             let recipient_shape_matches = match defined {
                 DefinedDamageSet::EachCreatureAndEachPlayer
-                | DefinedDamageSet::EachCreatureAndEachPlaneswalker => {
+                | DefinedDamageSet::EachCreatureAndEachPlaneswalker
+                | DefinedDamageSet::EachCreaturePlaneswalkerAndBattle
+                | DefinedDamageSet::EachCreatureAndPlaneswalkerNotControlledBy(_) => {
                     matches!(recipients, DamageRecipients::Mixed { .. })
                 }
                 _ => matches!(recipients, DamageRecipients::Set { .. }),
@@ -1029,6 +1148,12 @@ fn legal_target_accepts(
         LegalDamageTargetKind::CreatureOrPlaneswalker => matches!(
             recipient,
             DamageRecipient::Creature(_) | DamageRecipient::Planeswalker(_)
+        ),
+        LegalDamageTargetKind::CreaturePlaneswalkerOrBattle => matches!(
+            recipient,
+            DamageRecipient::Creature(_)
+                | DamageRecipient::Planeswalker(_)
+                | DamageRecipient::Battle(_)
         ),
         LegalDamageTargetKind::PlayerOrPlaneswalker => matches!(
             recipient,
@@ -1097,6 +1222,16 @@ fn defined_set_recipients(
                 _ => None,
             })
             .collect(),
+        DefinedDamageSet::EachCreatureControlledBy(player) => state
+            .objects
+            .iter()
+            .filter_map(|(object, object_state)| match object_state {
+                DamageObjectState::Creature(creature) if creature.controller == player => {
+                    Some(DamageRecipient::Creature(*object))
+                }
+                _ => None,
+            })
+            .collect(),
         DefinedDamageSet::EachCreatureAndEachPlayer => state
             .players
             .keys()
@@ -1110,6 +1245,23 @@ fn defined_set_recipients(
                 .chain(objects_of_kind(state, DamageRecipientKind::Planeswalker))
                 .collect()
         }
+        DefinedDamageSet::EachCreaturePlaneswalkerAndBattle => {
+            objects_of_kind(state, DamageRecipientKind::Creature)
+                .into_iter()
+                .chain(objects_of_kind(state, DamageRecipientKind::Planeswalker))
+                .chain(objects_of_kind(state, DamageRecipientKind::Battle))
+                .collect()
+        }
+        DefinedDamageSet::EachCreatureAndPlaneswalkerNotControlledBy(player) => state
+            .objects
+            .iter()
+            .filter(|(_, object)| object.controller() != player)
+            .filter_map(|(object, object_state)| match object_state {
+                DamageObjectState::Creature(_) => Some(DamageRecipient::Creature(*object)),
+                DamageObjectState::Planeswalker(_) => Some(DamageRecipient::Planeswalker(*object)),
+                DamageObjectState::Battle(_) => None,
+            })
+            .collect(),
         DefinedDamageSet::EachPlaneswalker => {
             objects_of_kind(state, DamageRecipientKind::Planeswalker)
         }
@@ -1154,6 +1306,13 @@ fn validate_modifiers(state: &DamageRuntimeState) -> Result<(), DamageTransactio
                 semantic,
             });
         }
+        if let DamageRecipientMatcher::ExactObjectIncarnation {
+            recipient,
+            incarnation,
+        } = &modifier.matcher.recipient
+        {
+            validate_exact_object_incarnation(state, *recipient, *incarnation)?;
+        }
         match &modifier.operation {
             DamageModifierOperation::Replacement(DamageReplacement::Unsupported { semantic })
             | DamageModifierOperation::Prevention(DamagePrevention::Unsupported { semantic }) => {
@@ -1170,10 +1329,44 @@ fn validate_modifiers(state: &DamageRuntimeState) -> Result<(), DamageTransactio
                     });
                 }
             }
+            DamageModifierOperation::Replacement(DamageReplacement::RedirectNext {
+                remaining,
+                recipient,
+                recipient_incarnation,
+            }) => {
+                if *remaining == 0 {
+                    continue;
+                }
+                validate_exact_object_incarnation(state, *recipient, *recipient_incarnation)?;
+            }
             DamageModifierOperation::Prevention(DamagePrevention::PreventAmount(0)) => {
                 return Err(DamageTransactionError::ZeroPreventAmount {
                     modifier: modifier.id,
                 });
+            }
+            DamageModifierOperation::Prevention(
+                DamagePrevention::PreventAllAndRemovePlusOneCounter {
+                    object,
+                    incarnation,
+                },
+            ) => {
+                validate_exact_object_incarnation(
+                    state,
+                    DamageRecipient::Creature(*object),
+                    *incarnation,
+                )?;
+                if modifier.matcher.recipient
+                    != (DamageRecipientMatcher::ExactObjectIncarnation {
+                        recipient: DamageRecipient::Creature(*object),
+                        incarnation: *incarnation,
+                    })
+                {
+                    return Err(DamageTransactionError::UnsupportedModifierShape {
+                        modifier: modifier.id,
+                        semantic: "counter-removing prevention requires the same exact creature incarnation in its matcher"
+                            .to_owned(),
+                    });
+                }
             }
             _ => {}
         }
@@ -1268,7 +1461,7 @@ fn applicable_modifier_ids(
             continue;
         }
         if preventability == DamagePreventability::CannotBePrevented
-            && matches!(modifier.operation, DamageModifierOperation::Prevention(_))
+            && matches!(&modifier.operation, DamageModifierOperation::Prevention(_))
         {
             continue;
         }
@@ -1281,8 +1474,12 @@ fn applicable_modifier_ids(
 
 fn modifier_is_exhausted(modifier: &DamageModifier) -> bool {
     matches!(
-        modifier.operation,
+        &modifier.operation,
         DamageModifierOperation::Prevention(DamagePrevention::Shield { remaining: 0 })
+            | DamageModifierOperation::Replacement(DamageReplacement::RedirectNext {
+                remaining: 0,
+                ..
+            })
     )
 }
 
@@ -1293,37 +1490,44 @@ fn modifier_matches(
     kind: DamageKind,
     recipient: DamageRecipient,
 ) -> Result<bool, DamageTransactionError> {
-    let source_matches = match modifier.matcher.source {
+    let source_matches = match &modifier.matcher.source {
         DamageSourceMatcher::Any => true,
-        DamageSourceMatcher::Identity(identity) => source.identity == identity,
-        DamageSourceMatcher::Controller(controller) => source.controller == controller,
-        DamageSourceMatcher::HasKeyword(keyword) => source.characteristics.has_keyword(keyword),
-        DamageSourceMatcher::Unsupported { ref semantic } => {
+        DamageSourceMatcher::Identity(identity) => source.identity == *identity,
+        DamageSourceMatcher::Controller(controller) => source.controller == *controller,
+        DamageSourceMatcher::HasKeyword(keyword) => source.characteristics.has_keyword(*keyword),
+        DamageSourceMatcher::Unsupported { semantic } => {
             return Err(DamageTransactionError::UnsupportedModifierShape {
                 modifier: modifier.id,
                 semantic: semantic.clone(),
             });
         }
     };
-    let recipient_matches = match modifier.matcher.recipient {
+    let recipient_matches = match &modifier.matcher.recipient {
         DamageRecipientMatcher::Any => true,
-        DamageRecipientMatcher::Kind(expected) => recipient.kind() == expected,
-        DamageRecipientMatcher::Exact(expected) => recipient == expected,
-        DamageRecipientMatcher::ControlledBy(controller) => {
-            affected_controller(state, recipient)? == controller
+        DamageRecipientMatcher::Kind(expected) => recipient.kind() == *expected,
+        DamageRecipientMatcher::Exact(expected) => recipient == *expected,
+        DamageRecipientMatcher::ExactObjectIncarnation {
+            recipient: expected,
+            incarnation,
+        } => {
+            recipient == *expected
+                && validate_exact_object_incarnation(state, *expected, *incarnation).is_ok()
         }
-        DamageRecipientMatcher::Unsupported { ref semantic } => {
+        DamageRecipientMatcher::ControlledBy(controller) => {
+            affected_controller(state, recipient)? == *controller
+        }
+        DamageRecipientMatcher::Unsupported { semantic } => {
             return Err(DamageTransactionError::UnsupportedModifierShape {
                 modifier: modifier.id,
                 semantic: semantic.clone(),
             });
         }
     };
-    let kind_matches = match modifier.matcher.kind {
+    let kind_matches = match &modifier.matcher.kind {
         DamageKindMatcher::Any => true,
         DamageKindMatcher::Combat => kind == DamageKind::Combat,
         DamageKindMatcher::Noncombat => kind == DamageKind::Noncombat,
-        DamageKindMatcher::Unsupported { ref semantic } => {
+        DamageKindMatcher::Unsupported { semantic } => {
             return Err(DamageTransactionError::UnsupportedModifierShape {
                 modifier: modifier.id,
                 semantic: semantic.clone(),
@@ -1331,6 +1535,37 @@ fn modifier_matches(
         }
     };
     Ok(source_matches && recipient_matches && kind_matches)
+}
+
+fn validate_exact_object_incarnation(
+    state: &DamageRuntimeState,
+    recipient: DamageRecipient,
+    expected: u64,
+) -> Result<(), DamageTransactionError> {
+    let object = match recipient {
+        DamageRecipient::Creature(object)
+        | DamageRecipient::Planeswalker(object)
+        | DamageRecipient::Battle(object) => object,
+        DamageRecipient::Player(_) => {
+            return Err(DamageTransactionError::UnknownRedirectRecipient {
+                modifier: 0,
+                recipient,
+            });
+        }
+    };
+    let actual = state
+        .object_incarnations
+        .get(&object)
+        .copied()
+        .ok_or(DamageTransactionError::MissingObjectIncarnation { object })?;
+    if actual != expected {
+        return Err(DamageTransactionError::ObjectIncarnationMismatch {
+            object,
+            expected,
+            actual,
+        });
+    }
+    validate_recipient(state, recipient)
 }
 
 fn affected_controller(
@@ -1356,19 +1591,29 @@ fn affected_controller(
     }
 }
 
+#[derive(Debug, Clone)]
+struct DamageModifierApplication {
+    packet: StagedDamagePacket,
+    diverted: Option<StagedDamagePacket>,
+    decision: DamageModifierDecisionReceipt,
+}
+
 fn apply_damage_modifier(
     state: &mut DamageRuntimeState,
     packet: StagedDamagePacket,
     choice: DamageModifierChoice,
     prevented_total: &mut u64,
-) -> Result<DamageModifierDecisionReceipt, DamageTransactionError> {
+) -> Result<DamageModifierApplication, DamageTransactionError> {
     let modifier = state
         .modifiers
         .get(&choice.modifier)
         .cloned()
         .expect("preflight and applicability validate modifier identity");
     let mut after = packet;
+    let mut diverted = None;
     let mut prevented_damage = 0u32;
+    let mut receipt_recipient_after = packet.recipient;
+    let mut receipt_amount_after = packet.amount;
     let kind = match modifier.operation {
         DamageModifierOperation::Replacement(replacement) => {
             match replacement {
@@ -1396,12 +1641,45 @@ fn apply_damage_modifier(
                     validate_recipient(state, recipient)?;
                     after.recipient = recipient;
                 }
+                DamageReplacement::RedirectNext {
+                    remaining,
+                    recipient,
+                    recipient_incarnation,
+                } => {
+                    validate_exact_object_incarnation(state, recipient, recipient_incarnation)?;
+                    let redirected = remaining.min(after.amount);
+                    after.amount -= redirected;
+                    if redirected > 0 {
+                        diverted = Some(StagedDamagePacket {
+                            recipient,
+                            amount: redirected,
+                        });
+                        receipt_recipient_after = recipient;
+                        receipt_amount_after = redirected;
+                    }
+                    let active = state
+                        .modifiers
+                        .get_mut(&modifier.id)
+                        .expect("active redirection remains staged until it is consumed");
+                    let DamageModifierOperation::Replacement(DamageReplacement::RedirectNext {
+                        remaining,
+                        ..
+                    }) = &mut active.operation
+                    else {
+                        unreachable!("cloned and staged modifier operations agree")
+                    };
+                    *remaining -= redirected;
+                }
                 DamageReplacement::Unsupported { semantic } => {
                     return Err(DamageTransactionError::UnsupportedModifierShape {
                         modifier: modifier.id,
                         semantic,
                     });
                 }
+            }
+            if diverted.is_none() {
+                receipt_recipient_after = after.recipient;
+                receipt_amount_after = after.amount;
             }
             AppliedDamageModifierKind::Replacement
         }
@@ -1410,6 +1688,30 @@ fn apply_damage_modifier(
                 DamagePrevention::PreventAll => after.amount,
                 DamagePrevention::PreventAmount(amount) => amount,
                 DamagePrevention::Shield { remaining } => remaining,
+                DamagePrevention::PreventAllAndRemovePlusOneCounter {
+                    object,
+                    incarnation,
+                } => {
+                    validate_exact_object_incarnation(
+                        state,
+                        DamageRecipient::Creature(object),
+                        incarnation,
+                    )?;
+                    let creature = state
+                        .objects
+                        .get_mut(&object)
+                        .ok_or(DamageTransactionError::MissingObject { object })?;
+                    let DamageObjectState::Creature(creature) = creature else {
+                        return Err(DamageTransactionError::ObjectKindMismatch {
+                            object,
+                            expected: DamageRecipientKind::Creature,
+                            actual: creature.kind(),
+                        });
+                    };
+                    creature.plus_one_plus_one_counters =
+                        creature.plus_one_plus_one_counters.saturating_sub(1);
+                    after.amount
+                }
                 DamagePrevention::Unsupported { semantic } => {
                     return Err(DamageTransactionError::UnsupportedModifierShape {
                         modifier: modifier.id,
@@ -1436,6 +1738,8 @@ fn apply_damage_modifier(
                 .ok_or(DamageTransactionError::ArithmeticOverflow {
                     operation: "sum prevented damage",
                 })?;
+            receipt_recipient_after = after.recipient;
+            receipt_amount_after = after.amount;
             AppliedDamageModifierKind::Prevention
         }
     };
@@ -1448,16 +1752,20 @@ fn apply_damage_modifier(
         state.modifiers.remove(&modifier.id);
     }
 
-    Ok(DamageModifierDecisionReceipt {
-        modifier: modifier.id,
-        chooser: choice.chooser,
-        decision: DamageModifierDecision::Apply,
-        kind,
-        recipient_before: packet.recipient,
-        recipient_after: after.recipient,
-        amount_before: packet.amount,
-        amount_after: after.amount,
-        prevented_damage,
+    Ok(DamageModifierApplication {
+        packet: after,
+        diverted,
+        decision: DamageModifierDecisionReceipt {
+            modifier: modifier.id,
+            chooser: choice.chooser,
+            decision: DamageModifierDecision::Apply,
+            kind,
+            recipient_before: packet.recipient,
+            recipient_after: receipt_recipient_after,
+            amount_before: packet.amount,
+            amount_after: receipt_amount_after,
+            prevented_damage,
+        },
     })
 }
 
@@ -1476,7 +1784,7 @@ fn decline_damage_modifier(
             modifier: choice.modifier,
         });
     }
-    let kind = match modifier.operation {
+    let kind = match &modifier.operation {
         DamageModifierOperation::Replacement(_) => AppliedDamageModifierKind::Replacement,
         DamageModifierOperation::Prevention(_) => AppliedDamageModifierKind::Prevention,
     };

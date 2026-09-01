@@ -11,14 +11,15 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::keyword_rules_runtime::{
-    BushidoResolutionTransition, CombatKeyword, CumulativeUpkeepPayment, FuseHalfChoice,
-    KeywordAction, KeywordEvidenceEvent, KeywordExecutionError, KeywordGameState, KeywordObject,
-    KeywordPlayerState, KeywordProgram, KeywordProgramKind, KeywordReceipt, ManaColor, ManaCost,
-    ManaPayment, MillMode, ObjectCharacteristics, ObjectId, OfficialKeyword, PlayerId,
-    ProtectionInteraction, ProtectionTarget, RegenerationChoice, SourceProfile,
-    SpreeModeChoiceInput, Zone, can_activate_tap_or_untap_symbol, can_attack,
-    can_block_for_defending_player, can_cast_at_instant_timing, execute_keyword_action,
-    protection_forbids, resolve_destruction, targeting_is_legal,
+    BargainBaseManaCostChoice, BargainCommanderDestination, BushidoResolutionTransition,
+    CombatKeyword, CumulativeUpkeepPayment, FuseHalfChoice, KeywordAction, KeywordEvidenceEvent,
+    KeywordExecutionError, KeywordGameState, KeywordObject, KeywordPlayerState, KeywordProgram,
+    KeywordProgramKind, KeywordReceipt, ManaColor, ManaCost, ManaPayment, MillMode,
+    ObjectCharacteristics, ObjectId, OfficialKeyword, PlayerId, ProtectionInteraction,
+    ProtectionTarget, RegenerationChoice, SourceProfile, SpreeModeChoiceInput, Zone,
+    can_activate_tap_or_untap_symbol, can_attack, can_block_for_defending_player,
+    can_cast_at_instant_timing, execute_keyword_action, protection_forbids, resolve_destruction,
+    targeting_is_legal,
 };
 
 pub(crate) const DEVOID_PRODUCTION_BRIDGE_VERSION: &str = "devoid-production-bridge/v1";
@@ -49,7 +50,7 @@ pub(crate) const IMPROVISE_PRODUCTION_BRIDGE_VERSION: &str = "improvise-producti
 pub(crate) const EXTORT_PRODUCTION_BRIDGE_VERSION: &str = "extort-production-bridge/v1";
 pub(crate) const LIVING_WEAPON_PRODUCTION_BRIDGE_VERSION: &str =
     "living-weapon-production-bridge/v1";
-pub(crate) const BARGAIN_PRODUCTION_BRIDGE_VERSION: &str = "bargain-production-bridge/v1";
+pub(crate) const BARGAIN_PRODUCTION_BRIDGE_VERSION: &str = "bargain-production-bridge/v2";
 pub(crate) const RETRACE_PRODUCTION_BRIDGE_VERSION: &str = "retrace-production-bridge/v1";
 pub(crate) const EXPLOIT_PRODUCTION_BRIDGE_VERSION: &str = "exploit-production-bridge/v1";
 pub(crate) const SOULBOND_PRODUCTION_BRIDGE_VERSION: &str = "soulbond-production-bridge/v1";
@@ -1388,39 +1389,29 @@ fn validate_bargain_program(
     Ok(())
 }
 
-pub(crate) fn declare_bargain(
+pub(crate) fn cast_with_bargain(
     program: &KeywordProgram,
     state: &mut KeywordGameState,
     player: PlayerId,
     spell: ObjectId,
+    base_mana_cost: BargainBaseManaCostChoice,
+    sacrificed_permanent: Option<ObjectId>,
+    sacrificed_commander_destination: Option<BargainCommanderDestination>,
+    bargain_conditional_targets: Vec<ProtectionTarget>,
+    mana_payment: ManaPayment,
 ) -> Result<ConvokePaymentEvaluation, StaticKeywordProductionBridgeError> {
     validate_bargain_program(program)?;
     let receipt = execute_keyword_action(
         state,
         program,
-        KeywordAction::DeclareBargain { player, spell },
-    )?;
-    Ok(ConvokePaymentEvaluation {
-        bridge_version: BARGAIN_PRODUCTION_BRIDGE_VERSION,
-        receipt,
-    })
-}
-
-pub(crate) fn pay_bargain_cost(
-    program: &KeywordProgram,
-    state: &mut KeywordGameState,
-    player: PlayerId,
-    spell: ObjectId,
-    sacrificed_permanent: ObjectId,
-) -> Result<ConvokePaymentEvaluation, StaticKeywordProductionBridgeError> {
-    validate_bargain_program(program)?;
-    let receipt = execute_keyword_action(
-        state,
-        program,
-        KeywordAction::PayBargainCost {
+        KeywordAction::CastWithBargain {
             player,
             spell,
+            base_mana_cost,
             sacrificed_permanent,
+            sacrificed_commander_destination,
+            bargain_conditional_targets,
+            mana_payment,
         },
     )?;
     Ok(ConvokePaymentEvaluation {

@@ -13,8 +13,8 @@ use crate::ability_program::{
     SpecificCardType, TriggerEvent, TriggerEventKind, compile_executable_ability_program,
 };
 
-pub const ABILITY_CLAUSE_BRIDGE_COMPILER_VERSION: &str = "ability-clause-bridge-compiler-0.2";
-pub const ABILITY_CLAUSE_BRIDGE_RUNTIME_VERSION: &str = "ability-clause-bridge-runtime-0.2";
+pub const ABILITY_CLAUSE_BRIDGE_COMPILER_VERSION: &str = "ability-clause-bridge-compiler-0.4";
+pub const ABILITY_CLAUSE_BRIDGE_RUNTIME_VERSION: &str = "ability-clause-bridge-runtime-0.4";
 
 /// Public, content-derived timing contract for one bridged ability clause.
 ///

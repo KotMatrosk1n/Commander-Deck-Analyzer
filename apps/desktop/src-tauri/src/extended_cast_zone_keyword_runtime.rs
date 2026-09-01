@@ -1,10 +1,10 @@
 //! Content keyed cast-zone programs for Foretell, Plot, Warp, Retrace, and
 //! Jump-start.
 //!
-//! Only complete standalone Oracle clauses are accepted. Recognition and a
-//! complete transaction model do not make these programs production-live.
-//! The production simulator must explicitly connect every state boundary
-//! represented here before coverage may claim execution.
+//! Only complete standalone Oracle clauses are accepted. The bounded
+//! production consumer connects every represented timing, hidden-information,
+//! cost, stack, incarnation, and replacement boundary before coverage claims
+//! execution.
 
 #![allow(dead_code)]
 
@@ -14,7 +14,7 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const EXTENDED_CAST_ZONE_COMPILER_VERSION: &str = "extended-cast-zone-keyword-compiler-0.2";
-pub const EXTENDED_CAST_ZONE_RUNTIME_VERSION: &str = "extended-cast-zone-keyword-runtime-0.5";
+pub const EXTENDED_CAST_ZONE_RUNTIME_VERSION: &str = "extended-cast-zone-keyword-runtime-0.6";
 pub const EXTENDED_CAST_ZONE_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:108.3,116,117,400.7,601.2,603.7,609.3,614.1,616.1,702.81,702.133,702.143,702.170,702.185";
 
 const FORETELL_REMINDER: &str = "During your turn, you may pay {2} and exile this card from your hand face down. Cast it on a later turn for its foretell cost.";
@@ -27,10 +27,10 @@ const WARP_HAND_OR_GRAVEYARD_REMINDER: &str = "You may cast this card from your 
 const RETRACE_EXACT: &str = "Retrace (You may cast this card from your graveyard by discarding a land card in addition to paying its other costs.)";
 const JUMP_START_EXACT: &str = "Jump-start (You may cast this card from your graveyard by discarding a card in addition to paying its other costs. Then exile this card.)";
 
-/// This remains false until the main simulator supplies all timing, hidden
-/// information, cost, stack, object-incarnation, and replacement boundaries.
+/// The bounded production consumer supplies all timing, hidden-information,
+/// cost, stack, object-incarnation, and replacement boundaries.
 pub const fn extended_cast_zone_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

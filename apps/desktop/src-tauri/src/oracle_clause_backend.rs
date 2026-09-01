@@ -21,19 +21,24 @@ use crate::attachment_filter_runtime::{
 use crate::bounded_oracle_runtime::{
     BoundedOracleCardContext, BoundedOracleClause, ClauseAddress, CompileError, Effect,
     OracleClauseInput, OracleCompositionChildBinding, OracleCompositionChildProgram,
-    OracleFaceModalLineProgram, OracleFaceModalLineRole, StandaloneRuleProgram, Timing,
-    compile_bounded_oracle_clause_after_syntax_validation,
-    compile_bounded_oracle_clause_after_syntax_validation_with_context, normalize_oracle_clause,
-    retain_ability_clause_bridge_program, retain_alternate_zone_cast_keyword_program,
-    retain_attachment_filter_program, retain_cast_choice_keyword_program,
-    retain_cast_modifier_keyword_program, retain_combat_special_keyword_program,
-    retain_combat_trigger_keyword_program, retain_common_action_procedure_program,
-    retain_creature_counter_keyword_program, retain_delayed_counter_keyword_program,
-    retain_extended_cast_zone_keyword_program, retain_face_down_merge_keyword_program,
-    retain_graveyard_hand_library_keyword_program, retain_graveyard_transform_keyword_program,
-    retain_level_progression_program, retain_linked_cast_cost_keyword_program,
-    retain_linked_oracle_ability_envelope_program, retain_object_lifecycle_program,
-    retain_oracle_ability_envelope_program, retain_oracle_action_program,
+    OracleFaceModalLineProgram, OracleFaceModalLineRole, StandaloneRuleProgram, TargetAmount,
+    TargetFilter, Timing, compile_bounded_oracle_clause_after_syntax_validation,
+    compile_bounded_oracle_clause_after_syntax_validation_with_context,
+    compile_bounded_oracle_composition_fragment,
+    compile_bounded_oracle_composition_referential_fragment,
+    compile_bounded_oracle_modal_resolution_instruction_after_syntax_validation,
+    normalize_oracle_clause, retain_ability_clause_bridge_program,
+    retain_alternate_zone_cast_keyword_program, retain_attachment_filter_program,
+    retain_cast_choice_keyword_program, retain_cast_modifier_keyword_program,
+    retain_combat_special_keyword_program, retain_combat_trigger_keyword_program,
+    retain_common_action_procedure_program, retain_creature_counter_keyword_program,
+    retain_delayed_counter_keyword_program, retain_extended_cast_zone_keyword_program,
+    retain_face_down_merge_keyword_program, retain_graveyard_hand_library_keyword_program,
+    retain_graveyard_transform_keyword_program, retain_level_progression_program,
+    retain_linked_cast_cost_keyword_program, retain_linked_oracle_ability_envelope_program,
+    retain_modal_damage_resolution_program, retain_modal_oracle_action_program,
+    retain_object_lifecycle_program, retain_oracle_ability_envelope_program,
+    retain_oracle_action_fragment_program, retain_oracle_action_program,
     retain_oracle_cast_zone_envelope_program, retain_oracle_clause_composition_program,
     retain_oracle_face_modal_line_program, retain_oracle_static_replacement_program,
     retain_regeneration_action_program, retain_residual_cost_keyword_program,
@@ -41,6 +46,7 @@ use crate::bounded_oracle_runtime::{
     retain_retained_oracle_clause_composition_program,
     retain_retained_oracle_static_replacement_program, retain_static_special_keyword_program,
     retain_structural_oracle_ability_envelope_program,
+    standalone_rule_program_has_resolution_execution_contract,
 };
 use crate::cast_choice_keyword_runtime::{
     CastChoiceClauseClassification, classify_cast_choice_keyword_clause,
@@ -67,6 +73,7 @@ use crate::creature_counter_keyword_runtime::{
     SnapshotCandidateClass as CreatureCounterCandidateClass,
     classify_creature_counter_snapshot_candidate, compile_creature_counter_keyword_program,
 };
+use crate::damage_clause_compiler::compile_exact_damage_resolution_leaf_program;
 use crate::delayed_counter_keyword_runtime::{
     DelayedCounterClauseClassification, classify_delayed_counter_keyword_clause,
 };
@@ -89,6 +96,7 @@ use crate::graveyard_transform_keyword_runtime::{
     CardLayout as GraveyardTransformCardLayout, FaceId as GraveyardTransformFaceId,
     SnapshotCandidateClass as GraveyardTransformCandidateClass,
     SourceSemanticContext as GraveyardTransformSourceSemanticContext,
+    classify_earlier_owned_associated_clause as classify_graveyard_transform_associated_clause,
     classify_snapshot_candidate as classify_graveyard_transform_candidate,
     compile_graveyard_transform_keyword_program,
 };
@@ -133,13 +141,22 @@ use crate::linked_cast_cost_keyword_runtime::{
 };
 use crate::object_lifecycle_runtime::{ObjectLifecycleCardInput, compile_object_lifecycle_runtime};
 use crate::oracle_ability_envelope_runtime::{
-    AbilityEnvelopeCompileInput, compile_oracle_ability_envelope,
-    compile_retained_oracle_ability_envelope, compile_structural_oracle_ability_envelope,
-    reviewed_ability_envelope_normalized_source,
+    AbilityEnvelopeCompileInput, compile_oracle_ability_envelope_with_source_name,
+    compile_retained_oracle_ability_envelope_with_source_name,
+    compile_structural_oracle_ability_envelope, reviewed_ability_envelope_normalized_source,
 };
 use crate::oracle_action_algebra_runtime::{
     OracleActionClassification, OracleActionCompileInput, OracleActionSemanticContext,
-    classify_oracle_action_instruction, reviewed_oracle_action_normalized_source,
+    classify_oracle_action_fragment_instruction, classify_oracle_action_instruction,
+    compile_oracle_action_fragment_program_with_leading_label,
+    compile_oracle_action_fragment_program_with_leading_label_and_source_name,
+    compile_oracle_action_fragment_program_with_source_name,
+    compile_oracle_action_program_with_leading_label,
+    compile_oracle_action_program_with_leading_label_and_source_name,
+    compile_oracle_action_program_with_source_name, reviewed_oracle_action_normalized_source,
+    reviewed_oracle_action_normalized_source_with_leading_label,
+    reviewed_oracle_action_normalized_source_with_leading_label_and_source_name,
+    reviewed_oracle_action_normalized_source_with_source_name,
 };
 use crate::oracle_cast_zone_envelope_runtime::{
     CastZoneSemanticContext, compile_cast_zone_envelope_program,
@@ -156,8 +173,8 @@ use crate::oracle_clause_syntax::{
     recognize_oracle_clause_syntax, validate_oracle_clause_line,
 };
 use crate::oracle_face_program_assembler::{
-    ClosedModalChildCompiler, ClosedModalChildProgram, ModalChildCompilation, ModalChildSource,
-    OracleFaceProgramInput, OracleFaceProvenance,
+    ClosedModalChildCompiler, ClosedModalChildProgram, ModalChildCompilation, ModalChildRole,
+    ModalChildSource, OracleFaceProgramInput, OracleFaceProvenance,
     assemble_oracle_face_modal_program_containing_offset,
 };
 use crate::oracle_static_replacement_runtime::{
@@ -169,14 +186,13 @@ use crate::regeneration_action_runtime::{
     contains_regeneration_lexeme,
 };
 use crate::residual_cost_keyword_runtime::compile_residual_cost_keyword_program;
-
 use crate::static_special_keyword_runtime::{
     StaticSpecialClauseClassification, StaticSpecialSourceContext,
     classify_static_special_keyword_clause, reviewed_static_special_normalized_source,
 };
 
-pub const ORACLE_CLAUSE_BACKEND_COMPILER_VERSION: &str = "oracle-clause-backend-compiler-0.47";
-pub const ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION: &str = "oracle-clause-backend-runtime-0.27";
+pub const ORACLE_CLAUSE_BACKEND_COMPILER_VERSION: &str = "oracle-clause-backend-compiler-0.50";
+pub const ORACLE_CLAUSE_BACKEND_RUNTIME_VERSION: &str = "oracle-clause-backend-runtime-0.29";
 
 const DEVOID_LIVE_BRIDGE_CAPABILITIES: &[LiveBridgeCapability] = &[
     LiveBridgeCapability::StaticKeywordInstallation,
@@ -1130,6 +1146,52 @@ fn compile_live_static_replacement_clause(
     if !looks_like_static_or_replacement_clause(input.oracle_clause) {
         return Ok(None);
     }
+    let attachment_subjects = input
+        .oracle_clause
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let has_subject = |adjective: &str| {
+        attachment_subjects.windows(2).any(|tokens| {
+            tokens[0] == adjective
+                && matches!(
+                    tokens[1].as_str(),
+                    "artifact"
+                        | "battle"
+                        | "creature"
+                        | "enchantment"
+                        | "land"
+                        | "permanent"
+                        | "planeswalker"
+                )
+        })
+    };
+    let source_has_kind = |card_type: &str, subtype: &str| {
+        let lower = input.source_type_line.to_ascii_lowercase();
+        let (types, subtypes) = ['\u{2014}', '\u{2013}']
+            .into_iter()
+            .find_map(|separator| lower.split_once(separator))
+            .or_else(|| lower.split_once(" - "))
+            .unwrap_or((lower.as_str(), ""));
+        types.split_whitespace().any(|word| word == card_type)
+            && subtypes
+                .split_whitespace()
+                .map(|word| word.trim_matches(|character: char| !character.is_ascii_alphabetic()))
+                .any(|word| word == subtype)
+    };
+    if has_subject("enchanted")
+        && !source_has_kind("enchantment", "aura")
+        && !input
+            .printed_keywords
+            .iter()
+            .any(|keyword| keyword.eq_ignore_ascii_case("Bestow"))
+    {
+        return Ok(None);
+    }
+    if has_subject("equipped") && !source_has_kind("artifact", "equipment") {
+        return Ok(None);
+    }
     let Ok(mut program) = compile_oracle_static_replacement_program(
         OracleStaticReplacementCompileInput::permanent_ability(input.oracle_clause),
     ) else {
@@ -1141,6 +1203,10 @@ fn compile_live_static_replacement_clause(
             crate::oracle_static_replacement_runtime::ReplacementEffect {
                 predicate:
                     crate::oracle_static_replacement_runtime::ReplacementEventPredicate::EnterBattlefield {
+                        object,
+                        ..
+                    }
+                    | crate::oracle_static_replacement_runtime::ReplacementEventPredicate::ZoneChangeCausedByOpponentSpellOrAbility {
                         object,
                         ..
                     },
@@ -1155,7 +1221,7 @@ fn compile_live_static_replacement_clause(
             semantic_context:
                 crate::oracle_static_replacement_runtime::SourceSemanticContext::CardAbility,
         })
-        .expect("source entry replacement recompiles in card-zone context");
+        .expect("source zone replacement recompiles in card-zone context");
     }
     retain_oracle_static_replacement_program(input.bounded_input(), program).map(Some)
 }
@@ -1231,6 +1297,28 @@ fn compile_oracle_clause_program_inner(
         )
         .map(CompiledOracleClause::Bounded)
         .map_err(|error| OracleClauseBackendError::Native { error });
+    }
+
+    // The complete modal header is the sole execution owner for its following
+    // branches. Prefer the exact assembled group before the ordinary
+    // single-line grammar can retain a detached ModalHeader that knows the
+    // choice count but cannot execute the selected branch bodies atomically.
+    if allow_composition
+        && validated_input
+            .oracle_clause
+            .to_ascii_lowercase()
+            .contains("choose")
+        && let Some(face_oracle_text) = complete_face_oracle_text
+        && let Some(program) = compile_oracle_face_modal_line(
+            &validated_input,
+            card_context,
+            graveyard_transform_context,
+            level_progression_context,
+            source_mana_value,
+            face_oracle_text,
+        )
+    {
+        return Ok(CompiledOracleClause::Bounded(program));
     }
 
     // A bullet line is meaningful only as part of its complete modal group.
@@ -1540,6 +1628,127 @@ fn compile_oracle_clause_program_inner(
         });
     }
 
+    // The bounded trigger parser intentionally normalizes singular creature
+    // combat-damage triggers, but that normalization is lossy for a complete
+    // "one or more" batch. Give only that exact header to the typed ability
+    // owner before the native path can collapse its batch cardinality.
+    if allow_composition && requires_exact_combat_damage_batch_owner(validated_input.oracle_clause)
+    {
+        if let Some(clause) = compile_linked_ability_envelope(&validated_input, card_context) {
+            return Ok(CompiledOracleClause::Bounded(clause));
+        }
+        let ability_normalized =
+            reviewed_ability_envelope_normalized_source(validated_input.oracle_clause);
+        if let Ok(program) = compile_retained_oracle_ability_envelope_with_source_name(
+            AbilityEnvelopeCompileInput {
+                exact_source: validated_input.oracle_clause,
+                normalized_source: &ability_normalized,
+            },
+            validated_input.source_name,
+        ) {
+            return retain_retained_oracle_ability_envelope_program(
+                validated_input.bounded_input(),
+                program,
+            )
+            .map(CompiledOracleClause::Bounded)
+            .map_err(|error| OracleClauseBackendError::Native { error });
+        }
+        let program = compile_structural_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+            exact_source: validated_input.oracle_clause,
+            normalized_source: &ability_normalized,
+        })
+        .map_err(|_| OracleClauseBackendError::Native {
+            error: residual_program_context_error(&validated_input),
+        })?;
+        return retain_structural_oracle_ability_envelope_program(
+            validated_input.bounded_input(),
+            program,
+        )
+        .map(CompiledOracleClause::Bounded)
+        .map_err(|error| OracleClauseBackendError::Native { error });
+    }
+
+    let has_exact_printed_ward_conjunction = allow_composition
+        && exact_printed_keyword(validated_input.printed_keywords, OfficialKeyword::Ward).is_some()
+        && parse_oracle_clause_composition(OracleClauseCompositionInput::card_face(
+            validated_input.oracle_clause,
+        ))
+        .ok()
+        .is_some_and(|composition| {
+            matches!(
+                composition.root(),
+                OracleCompositionNode::Conjunction { .. }
+            ) && composition.requirements().iter().any(|requirement| {
+                requirement.capability == SemanticCapability::SemanticAtom
+                    && requirement
+                        .span
+                        .slice(validated_input.oracle_clause)
+                        .is_some_and(|atom| {
+                            exact_singleton_keyword(atom) == Some(OfficialKeyword::Ward)
+                        })
+            })
+        });
+    if has_exact_printed_ward_conjunction
+        && let Some(clause) = compile_typed_oracle_composition(
+            &validated_input,
+            card_context,
+            graveyard_transform_context,
+            level_progression_context,
+            source_mana_value,
+            complete_face_oracle_text,
+        )
+    {
+        // A comma-separated native keyword list can represent Ward as a
+        // one-time GrantKeyword effect, but Ward is an event-backed printed
+        // mechanic. Only the exact typed composition can retain its versioned
+        // mechanic owner and printed provenance alongside static siblings.
+        return Ok(CompiledOracleClause::Bounded(clause));
+    }
+
+    let exact_land_mana_tap_bridge = matches!(
+        validated_input.oracle_clause,
+        "Whenever you tap a land for mana, add one mana of any type that land produced."
+            | "Whenever a player taps a land for mana, that player adds one mana of any type that land produced."
+    );
+    if exact_land_mana_tap_bridge
+        && let Some(program) = compile_ability_clause_bridge(
+            validated_input.oracle_clause,
+            validated_input.source_name,
+            validated_input.source_type_line,
+        )
+        && let Ok(clause) =
+            retain_ability_clause_bridge_program(validated_input.bounded_input(), program)
+    {
+        // The generic structural envelope can retain these headers before the
+        // established executable ability bridge is consulted. Prefer only the
+        // two exact reviewed land-mana forms so their actor, beneficiary, and
+        // frozen mana-event evidence reach the production consumer.
+        return Ok(CompiledOracleClause::Bounded(clause));
+    }
+
+    if allow_composition
+        && source_type_has_spell_resolution(validated_input.source_type_line)
+        && requires_exact_referential_resolution_owner(validated_input.oracle_clause)
+    {
+        // The native parser can flatten both sentences into one effect list,
+        // but doing so makes a later `its controller` or `its owner` read the
+        // target after an earlier zone change. Only the exact typed sequence
+        // proves an adjacent single-object antecedent and freezes its effective
+        // characteristics before that mutation.
+        return compile_typed_oracle_composition(
+            &validated_input,
+            card_context,
+            graveyard_transform_context,
+            level_progression_context,
+            source_mana_value,
+            complete_face_oracle_text,
+        )
+        .map(CompiledOracleClause::Bounded)
+        .ok_or_else(|| OracleClauseBackendError::Native {
+            error: residual_program_context_error(&validated_input),
+        });
+    }
+
     let bounded = if try_bounded {
         match card_context {
             Some(context) => compile_bounded_oracle_clause_after_syntax_validation_with_context(
@@ -1559,8 +1768,27 @@ fn compile_oracle_clause_program_inner(
         Err(residual_program_context_error(&validated_input))
     };
     match bounded {
-        Ok(clause) => Ok(CompiledOracleClause::Bounded(clause)),
+        Ok(clause) => {
+            if allow_composition
+                && bounded_clause_is_nonlive_typed_ability_envelope(&clause)
+                && let Some(linked) =
+                    compile_linked_ability_envelope(&validated_input, card_context)
+            {
+                return Ok(CompiledOracleClause::Bounded(linked));
+            }
+            Ok(CompiledOracleClause::Bounded(clause))
+        }
         Err(bounded_error) => {
+            // The delegated official-keyword fallback accepts a few Enchant
+            // shapes that the reviewed residual attachment family also owns.
+            // Prefer the exact typed attachment program whenever the declared
+            // prior-owner table does not reserve the line, or its production
+            // lifecycle would never be reached.
+            match compile_residual_attachment_filter_clause(&validated_input, card_context) {
+                Ok(Some(clause)) => return Ok(CompiledOracleClause::Bounded(clause)),
+                Ok(None) => {}
+                Err(error) => return Err(OracleClauseBackendError::Native { error }),
+            }
             let delegated_error =
                 match compile_delegated_keyword_clause_with_context(&validated_input, card_context)
                 {
@@ -1668,10 +1896,13 @@ fn compile_oracle_clause_program_inner(
             if delegated_error.is_none() && allow_composition {
                 let ability_normalized =
                     reviewed_ability_envelope_normalized_source(validated_input.oracle_clause);
-                if let Ok(program) = compile_oracle_ability_envelope(AbilityEnvelopeCompileInput {
-                    exact_source: validated_input.oracle_clause,
-                    normalized_source: &ability_normalized,
-                }) {
+                if let Ok(program) = compile_oracle_ability_envelope_with_source_name(
+                    AbilityEnvelopeCompileInput {
+                        exact_source: validated_input.oracle_clause,
+                        normalized_source: &ability_normalized,
+                    },
+                    validated_input.source_name,
+                ) {
                     return retain_oracle_ability_envelope_program(
                         validated_input.bounded_input(),
                         program,
@@ -1679,12 +1910,13 @@ fn compile_oracle_clause_program_inner(
                     .map(CompiledOracleClause::Bounded)
                     .map_err(|error| OracleClauseBackendError::Native { error });
                 }
-                if let Ok(program) =
-                    compile_retained_oracle_ability_envelope(AbilityEnvelopeCompileInput {
+                if let Ok(program) = compile_retained_oracle_ability_envelope_with_source_name(
+                    AbilityEnvelopeCompileInput {
                         exact_source: validated_input.oracle_clause,
                         normalized_source: &ability_normalized,
-                    })
-                {
+                    },
+                    validated_input.source_name,
+                ) {
                     return retain_retained_oracle_ability_envelope_program(
                         validated_input.bounded_input(),
                         program,
@@ -1810,6 +2042,84 @@ fn source_type_has_spell_resolution(source_type_line: &str) -> bool {
         .any(|word| word.eq_ignore_ascii_case("instant") || word.eq_ignore_ascii_case("sorcery"))
 }
 
+fn requires_exact_combat_damage_batch_owner(source: &str) -> bool {
+    source
+        .strip_prefix("Whenever one or more creatures you control deal combat damage to a player, ")
+        .is_some_and(|body| !body.is_empty() && body.trim() == body)
+}
+
+fn requires_exact_referential_resolution_owner(source: &str) -> bool {
+    let Ok(composition) =
+        parse_oracle_clause_composition(OracleClauseCompositionInput::card_face(source))
+    else {
+        return false;
+    };
+    fn contains_referential_sequence(node: &OracleCompositionNode, source: &str) -> bool {
+        match node {
+            OracleCompositionNode::Sequence { parts, .. } => {
+                parts.windows(2).any(|pair| {
+                    pair[1].span().slice(source).is_some_and(|exact| {
+                        let lower = exact.to_ascii_lowercase();
+                        lower.starts_with("its controller ")
+                            || lower.starts_with("its owner ")
+                            || lower.starts_with("that creature ")
+                    })
+                }) || parts
+                    .iter()
+                    .any(|part| contains_referential_sequence(part, source))
+            }
+            OracleCompositionNode::OptionalChoice { body, .. }
+            | OracleCompositionNode::DelayedInstruction {
+                instruction: body, ..
+            } => contains_referential_sequence(body, source),
+            _ => false,
+        }
+    }
+
+    contains_referential_sequence(composition.root(), source)
+}
+
+fn target_filter_selects_only_objects(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Object(_) | TargetFilter::Spell(_) => true,
+        TargetFilter::Any(filters) => {
+            !filters.is_empty() && filters.iter().all(target_filter_selects_only_objects)
+        }
+        TargetFilter::Conditional {
+            if_true, if_false, ..
+        } => {
+            target_filter_selects_only_objects(if_true)
+                && target_filter_selects_only_objects(if_false)
+        }
+        TargetFilter::Player | TargetFilter::Opponent => false,
+    }
+}
+
+fn clause_proves_exact_single_object_antecedent(clause: &BoundedOracleClause) -> bool {
+    matches!(
+        clause.targets(),
+        [crate::bounded_oracle_runtime::Target {
+            filter,
+            amount: TargetAmount::Exactly(1),
+            ..
+        }] if target_filter_selects_only_objects(filter)
+    ) || matches!(
+        clause.effects(),
+        [Effect::MoveSelected(move_effect)]
+            if matches!(move_effect.selection.amount, TargetAmount::Exactly(1))
+    )
+}
+
+fn bounded_clause_is_nonlive_typed_ability_envelope(clause: &BoundedOracleClause) -> bool {
+    matches!(
+        clause.effects(),
+        [Effect::StandaloneRuleProgram(
+            StandaloneRuleProgram::RetainedOracleAbilityEnvelope(_)
+                | StandaloneRuleProgram::OracleAbilityEnvelope(_)
+        )]
+    ) && !crate::bounded_oracle_consumer::clause_has_executable_contract(clause)
+}
+
 fn compile_linked_ability_envelope(
     input: &OracleClauseBackendInput<'_>,
     card_context: Option<OracleClauseCardContext<'_>>,
@@ -1831,18 +2141,30 @@ fn compile_linked_ability_envelope_on_worker_stack(
     card_context: Option<OracleClauseCardContext<'_>>,
 ) -> Option<BoundedOracleClause> {
     let normalized = reviewed_ability_envelope_normalized_source(input.oracle_clause);
-    if compile_oracle_ability_envelope(AbilityEnvelopeCompileInput {
-        exact_source: input.oracle_clause,
-        normalized_source: &normalized,
-    })
-    .is_ok()
+    let exact_body_program = compile_oracle_ability_envelope_with_source_name(
+        AbilityEnvelopeCompileInput {
+            exact_source: input.oracle_clause,
+            normalized_source: &normalized,
+        },
+        input.source_name,
+    );
+    if let Ok(program) = exact_body_program
+        && program.production_adapter_connected()
     {
-        return None;
+        // The whole-clause ability owner is already exact and live. Return it
+        // here, before structural composition, so an optional body cannot be
+        // reinterpreted as a full-span choice whose actor text accidentally
+        // includes the trigger header. The linked fallback below remains for
+        // exact headers whose bodies need the bounded resolution compiler.
+        return retain_oracle_ability_envelope_program(input.bounded_input(), program).ok();
     }
-    let envelope = compile_retained_oracle_ability_envelope(AbilityEnvelopeCompileInput {
-        exact_source: input.oracle_clause,
-        normalized_source: &normalized,
-    })
+    let envelope = compile_retained_oracle_ability_envelope_with_source_name(
+        AbilityEnvelopeCompileInput {
+            exact_source: input.oracle_clause,
+            normalized_source: &normalized,
+        },
+        input.source_name,
+    )
     .ok()?;
     let body_validated = validate_oracle_clause_line(envelope.exact_body()).ok()?;
     let body_input = OracleClauseBackendInput {
@@ -1853,20 +2175,14 @@ fn compile_linked_ability_envelope_on_worker_stack(
         oracle_clause: envelope.exact_body(),
         printed_keywords: input.printed_keywords,
     };
-    let body = match card_context {
-        Some(context) => compile_bounded_oracle_clause_after_syntax_validation_with_context(
-            body_input.bounded_input(),
-            body_validated,
-            BoundedOracleCardContext {
-                layout: context.layout,
-                face_count: context.face_count,
-            },
-        ),
-        None => compile_bounded_oracle_clause_after_syntax_validation(
-            body_input.bounded_input(),
-            body_validated,
-        ),
-    }
+    let body = compile_bounded_oracle_modal_resolution_instruction_after_syntax_validation(
+        body_input.bounded_input(),
+        body_validated,
+        card_context.map(|context| BoundedOracleCardContext {
+            layout: context.layout,
+            face_count: context.face_count,
+        }),
+    )
     .ok()?;
     crate::bounded_oracle_consumer::clause_has_executable_contract(&body).then_some(())?;
     retain_linked_oracle_ability_envelope_program(input.bounded_input(), envelope, body).ok()
@@ -1882,6 +2198,16 @@ struct BackendModalChildCompiler<'a> {
     level_progression_context: Option<&'a LevelProgressionProgram>,
     source_mana_value: Option<u32>,
     complete_face_oracle_text: &'a str,
+}
+
+fn modal_branch_needs_live_fallback(
+    compiled: &Result<CompiledOracleClause, OracleClauseBackendError>,
+) -> bool {
+    !matches!(
+        compiled,
+        Ok(CompiledOracleClause::Bounded(clause))
+            if crate::bounded_oracle_consumer::clause_has_executable_contract(clause)
+    )
 }
 
 impl ClosedModalChildCompiler for BackendModalChildCompiler<'_> {
@@ -1916,8 +2242,8 @@ impl ClosedModalChildCompiler for BackendModalChildCompiler<'_> {
             oracle_clause: source.exact_source,
             printed_keywords: self.printed_keywords,
         };
-        let compiled = compile_oracle_clause_program_inner(
-            input,
+        let mut compiled = compile_oracle_clause_program_inner(
+            input.clone(),
             validated,
             self.card_context,
             self.graveyard_transform_context,
@@ -1927,6 +2253,158 @@ impl ClosedModalChildCompiler for BackendModalChildCompiler<'_> {
             false,
             true,
         );
+        let needs_exact_modal_resolution = matches!(source.role, ModalChildRole::Branch { .. })
+            && !matches!(
+                &compiled,
+                Ok(CompiledOracleClause::Bounded(clause))
+                    if crate::bounded_oracle_consumer::clause_has_executable_contract(clause)
+            )
+            && !matches!(&compiled, Ok(CompiledOracleClause::Delegated(_)));
+        if needs_exact_modal_resolution {
+            let bounded_context = self.card_context.map(|context| BoundedOracleCardContext {
+                layout: context.layout,
+                face_count: context.face_count,
+            });
+            if let Ok(clause) =
+                compile_bounded_oracle_modal_resolution_instruction_after_syntax_validation(
+                    input.bounded_input(),
+                    validated,
+                    bounded_context,
+                )
+            {
+                compiled = Ok(CompiledOracleClause::Bounded(clause));
+            }
+        }
+        if matches!(source.role, ModalChildRole::Branch { .. })
+            && matches!(
+                &compiled,
+                Ok(CompiledOracleClause::Delegated(program))
+                    if program.keyword_program().keyword() == OfficialKeyword::Regenerate
+            )
+        {
+            let bounded_context = self.card_context.map(|context| BoundedOracleCardContext {
+                layout: context.layout,
+                face_count: context.face_count,
+            });
+            if let Ok(clause) =
+                compile_bounded_oracle_modal_resolution_instruction_after_syntax_validation(
+                    input.bounded_input(),
+                    validated,
+                    bounded_context,
+                )
+            {
+                compiled = Ok(CompiledOracleClause::Bounded(clause));
+            }
+        }
+        if matches!(source.role, ModalChildRole::Branch { .. })
+            && matches!(compiled, Ok(CompiledOracleClause::Delegated(_)))
+            && let Ok(Some(clause)) = compile_residual_standalone_clause(&input, self.card_context)
+        {
+            compiled = Ok(CompiledOracleClause::Bounded(clause));
+        }
+        if matches!(source.role, ModalChildRole::Branch { .. })
+            && modal_branch_needs_live_fallback(&compiled)
+        {
+            let instruction_source =
+                reviewed_oracle_action_normalized_source_with_leading_label(source.exact_source)
+                    .unwrap_or_else(|| source.exact_source.to_owned());
+            let normalized_source = normalize_oracle_clause(
+                &instruction_source,
+                self.source_name,
+                self.source_type_line,
+            );
+            if let Some(program) = compile_exact_damage_resolution_leaf_program(
+                source.exact_source,
+                &normalized_source,
+            ) && let Ok(clause) =
+                retain_modal_damage_resolution_program(input.bounded_input(), program)
+            {
+                compiled = Ok(CompiledOracleClause::Bounded(clause));
+            }
+        }
+        if matches!(source.role, ModalChildRole::Branch { .. })
+            && modal_branch_needs_live_fallback(&compiled)
+        {
+            let normalized_source = reviewed_oracle_action_normalized_source(source.exact_source);
+            let program = match classify_oracle_action_instruction(OracleActionCompileInput {
+                exact_source: source.exact_source,
+                normalized_source: &normalized_source,
+                semantic_context: OracleActionSemanticContext::ResolvingSpellInstruction,
+            }) {
+                OracleActionClassification::Program(program) => Some(program),
+                OracleActionClassification::Rejected(_) => {
+                    reviewed_oracle_action_normalized_source_with_source_name(
+                        source.exact_source,
+                        self.source_name,
+                    )
+                    .and_then(|normalized_source| {
+                        compile_oracle_action_program_with_source_name(
+                            OracleActionCompileInput {
+                                exact_source: source.exact_source,
+                                normalized_source: &normalized_source,
+                                semantic_context:
+                                    OracleActionSemanticContext::ResolvingSpellInstruction,
+                            },
+                            self.source_name,
+                        )
+                        .ok()
+                    })
+                    .or_else(|| {
+                        reviewed_oracle_action_normalized_source_with_leading_label(
+                            source.exact_source,
+                        )
+                        .and_then(|normalized_source| {
+                            compile_oracle_action_program_with_leading_label(
+                                OracleActionCompileInput {
+                                    exact_source: source.exact_source,
+                                    normalized_source: &normalized_source,
+                                    semantic_context:
+                                        OracleActionSemanticContext::ResolvingSpellInstruction,
+                                },
+                            )
+                            .ok()
+                        })
+                    })
+                    .or_else(|| {
+                        reviewed_oracle_action_normalized_source_with_leading_label_and_source_name(
+                            source.exact_source,
+                            self.source_name,
+                        )
+                        .and_then(|normalized_source| {
+                            compile_oracle_action_program_with_leading_label_and_source_name(
+                                OracleActionCompileInput {
+                                    exact_source: source.exact_source,
+                                    normalized_source: &normalized_source,
+                                    semantic_context:
+                                        OracleActionSemanticContext::ResolvingSpellInstruction,
+                                },
+                                self.source_name,
+                            )
+                            .ok()
+                        })
+                    })
+                }
+            };
+            if let Some(program) = program
+                && let Ok(clause) =
+                    retain_modal_oracle_action_program(input.bounded_input(), program)
+            {
+                compiled = Ok(CompiledOracleClause::Bounded(clause));
+            }
+        }
+        if matches!(source.role, ModalChildRole::Branch { .. })
+            && modal_branch_needs_live_fallback(&compiled)
+            && let Some(clause) = compile_nonrecursive_live_oracle_composition_body(
+                &input,
+                self.card_context,
+                self.graveyard_transform_context,
+                self.level_progression_context,
+                self.source_mana_value,
+                Some(self.complete_face_oracle_text),
+            )
+        {
+            compiled = Ok(CompiledOracleClause::Bounded(clause));
+        }
         let (program, semantic_digest) = match compiled {
             Ok(CompiledOracleClause::Bounded(program)) => {
                 let semantic_digest = program.semantic_digest().to_owned();
@@ -1943,6 +2421,11 @@ impl ClosedModalChildCompiler for BackendModalChildCompiler<'_> {
                         semantic_digest.clone(),
                         program.normalized_clause().to_owned(),
                         program.keyword_program().clone(),
+                        exact_printed_keyword(
+                            self.printed_keywords,
+                            program.keyword_program().keyword(),
+                        )
+                        .map(str::to_owned),
                     ),
                     semantic_digest,
                 )
@@ -2094,17 +2577,8 @@ fn compile_residual_standalone_clause(
         return retain_cast_modifier_keyword_program(input.bounded_input(), program).map(Some);
     }
 
-    let source_layout = card_context.map_or("", |context| context.layout);
-    let attachment_input = AttachmentFilterCompilerInput {
-        exact_oracle_clause: input.oracle_clause,
-        source_type_line: input.source_type_line,
-        source_layout,
-    };
-    if prior_attachment_owner(attachment_input).is_none()
-        && let Some(program) = compile_attachment_filter_program(attachment_input)
-    {
-        return retain_attachment_filter_program(input.bounded_input(), source_layout, program)
-            .map(Some);
+    if let Some(clause) = compile_residual_attachment_filter_clause(input, card_context)? {
+        return Ok(Some(clause));
     }
 
     let normalized_clause = normalize_oracle_clause(
@@ -2134,6 +2608,25 @@ fn compile_residual_standalone_clause(
     }
 
     Ok(None)
+}
+
+fn compile_residual_attachment_filter_clause(
+    input: &OracleClauseBackendInput<'_>,
+    card_context: Option<OracleClauseCardContext<'_>>,
+) -> Result<Option<BoundedOracleClause>, CompileError> {
+    let source_layout = card_context.map_or("", |context| context.layout);
+    let attachment_input = AttachmentFilterCompilerInput {
+        exact_oracle_clause: input.oracle_clause,
+        source_type_line: input.source_type_line,
+        source_layout,
+    };
+    if prior_attachment_owner(attachment_input).is_some() {
+        return Ok(None);
+    }
+    let Some(program) = compile_attachment_filter_program(attachment_input) else {
+        return Ok(None);
+    };
+    retain_attachment_filter_program(input.bounded_input(), source_layout, program).map(Some)
 }
 
 fn level_progression_context_required_error(input: &OracleClauseBackendInput<'_>) -> CompileError {
@@ -2350,6 +2843,26 @@ fn compile_typed_oracle_composition(
     source_mana_value: Option<u32>,
     complete_face_oracle_text: Option<&str>,
 ) -> Option<BoundedOracleClause> {
+    compile_typed_oracle_composition_with_nested_children(
+        input,
+        card_context,
+        graveyard_transform_context,
+        level_progression_context,
+        source_mana_value,
+        complete_face_oracle_text,
+        true,
+    )
+}
+
+fn compile_typed_oracle_composition_with_nested_children(
+    input: &OracleClauseBackendInput<'_>,
+    card_context: Option<OracleClauseCardContext<'_>>,
+    graveyard_transform_context: Option<&GraveyardTransformSourceSemanticContext>,
+    level_progression_context: Option<&LevelProgressionProgram>,
+    source_mana_value: Option<u32>,
+    complete_face_oracle_text: Option<&str>,
+    allow_nested_composition: bool,
+) -> Option<BoundedOracleClause> {
     std::thread::scope(|scope| {
         let worker = std::thread::Builder::new()
             .name("oracle-composition-compiler".to_owned())
@@ -2362,11 +2875,37 @@ fn compile_typed_oracle_composition(
                     level_progression_context,
                     source_mana_value,
                     complete_face_oracle_text,
+                    allow_nested_composition,
                 )
             })
             .ok()?;
         worker.join().ok().flatten()
     })
+}
+
+/// Compile an exact compound instruction without permitting a composition or
+/// modal child to recurse back into its enclosing owner. This is the only
+/// composition entry point suitable for an already isolated face-modal branch.
+/// It returns a child only after the ordinary production consumer proves the
+/// complete typed composition live.
+pub(crate) fn compile_nonrecursive_live_oracle_composition_body(
+    input: &OracleClauseBackendInput<'_>,
+    card_context: Option<OracleClauseCardContext<'_>>,
+    graveyard_transform_context: Option<&GraveyardTransformSourceSemanticContext>,
+    level_progression_context: Option<&LevelProgressionProgram>,
+    source_mana_value: Option<u32>,
+    complete_face_oracle_text: Option<&str>,
+) -> Option<BoundedOracleClause> {
+    let clause = compile_typed_oracle_composition_with_nested_children(
+        input,
+        card_context,
+        graveyard_transform_context,
+        level_progression_context,
+        source_mana_value,
+        complete_face_oracle_text,
+        false,
+    )?;
+    crate::bounded_oracle_consumer::clause_has_executable_contract(&clause).then_some(clause)
 }
 
 fn compile_typed_oracle_composition_on_worker_stack(
@@ -2376,17 +2915,14 @@ fn compile_typed_oracle_composition_on_worker_stack(
     level_progression_context: Option<&LevelProgressionProgram>,
     source_mana_value: Option<u32>,
     complete_face_oracle_text: Option<&str>,
+    allow_nested_composition: bool,
 ) -> Option<BoundedOracleClause> {
     let lower_clause = input.oracle_clause.to_ascii_lowercase();
-    if lower_clause.contains("rather than pay")
-        || lower_clause.contains("perpetually ")
-        || input.oracle_clause.contains('"')
-    {
-        // This is one alternative-cost/perpetual rule, not independently
-        // resolvable instructions, or it contains quoted rules text that
-        // describes a granted ability rather than an outer instruction.
-        // Splitting either form loses its atomic semantic boundary and can
-        // feed contextual children back through the face.
+    if lower_clause.contains("rather than pay") || input.oracle_clause.contains('"') {
+        // This is one alternative-cost rule, or it contains quoted rules text
+        // that describes a granted ability rather than an outer instruction.
+        // Splitting either form loses its atomic semantic boundary and can feed
+        // contextual children back through the face.
         return None;
     }
     let composition = parse_oracle_clause_composition(OracleClauseCompositionInput::card_face(
@@ -2396,6 +2932,25 @@ fn compile_typed_oracle_composition_on_worker_stack(
     if !composition.exclusions().is_empty()
         || matches!(composition.root(), OracleCompositionNode::Atom(_))
     {
+        return None;
+    }
+    let strict_resolution_composition = source_type_has_spell_resolution(input.source_type_line)
+        && oracle_composition_has_resolution_execution_structure(
+            composition.root(),
+            input.oracle_clause,
+        );
+    let strict_resolution_sequence = source_type_has_spell_resolution(input.source_type_line)
+        && match composition.root() {
+            OracleCompositionNode::Sequence { .. } => true,
+            OracleCompositionNode::OptionalChoice { body, .. } => {
+                matches!(body.as_ref(), OracleCompositionNode::Sequence { .. })
+            }
+            _ => false,
+        };
+    if lower_clause.contains("perpetually ") && !strict_resolution_sequence {
+        // A perpetual rule is not independently resolvable. A spell-resolution
+        // sentence sequence may still own one as an exact live proper child;
+        // the all-children-live gate below is the only admission path.
         return None;
     }
 
@@ -2409,15 +2964,46 @@ fn compile_typed_oracle_composition_on_worker_stack(
 
     let mut children = Vec::with_capacity(spans.len());
     for span in spans {
+        let requested = composition
+            .requirements()
+            .iter()
+            .filter_map(|requirement| (requirement.span == span).then_some(requirement.capability))
+            .collect::<Vec<_>>();
         if span.start == 0 && span.end == input.oracle_clause.len() {
-            // A composition requirement must be a proper child span. Feeding
-            // the complete parent back through the child compiler is neither
-            // a decomposition nor finite, and previously exhausted the test
-            // worker stack for alternative-cost wording.
+            // Optionality is executed by the typed composition receipt itself:
+            // the full-span child is proof of the exact choice boundary and is
+            // never dispatched as an effect. Retain that proof only for an
+            // actual root OptionalChoice; every executable/cost/target demand
+            // must still descend to a strict proper child span.
+            if requested == [SemanticCapability::OptionalChoice]
+                && matches!(
+                    composition.root(),
+                    OracleCompositionNode::OptionalChoice { span: root_span, .. }
+                        if *root_span == span
+                )
+            {
+                let retained = compile_retained_oracle_clause_composition(
+                    OracleClauseCompositionInput::card_face(input.oracle_clause),
+                )
+                .ok()?;
+                let proof = retain_retained_oracle_clause_composition_program(
+                    input.bounded_input(),
+                    retained,
+                )
+                .ok()?;
+                children.push(BackendCompositionChild {
+                    span,
+                    capabilities: requested,
+                    timing: CompositionTimingClass::Resolution,
+                    compiled: CompiledOracleClause::Bounded(proof),
+                });
+                continue;
+            }
+            // An executable whole-parent child is neither decomposition nor
+            // finite recursion and previously exhausted the worker stack.
             return None;
         }
         let exact_source = span.slice(input.oracle_clause)?;
-        let validated = validate_oracle_clause_line(exact_source).ok()?;
         let child_input = OracleClauseBackendInput {
             face_index: input.face_index,
             clause_index: input.clause_index,
@@ -2426,28 +3012,173 @@ fn compile_typed_oracle_composition_on_worker_stack(
             oracle_clause: exact_source,
             printed_keywords: input.printed_keywords,
         };
-        let compiled = compile_oracle_clause_program_inner(
-            child_input,
-            validated,
-            card_context,
-            graveyard_transform_context,
-            level_progression_context,
-            source_mana_value,
-            complete_face_oracle_text,
-            false,
-            true,
+        if strict_resolution_composition && requested == [SemanticCapability::OptionalChoice] {
+            let retained = compile_retained_oracle_clause_composition(
+                OracleClauseCompositionInput::card_face(exact_source),
+            )
+            .ok()?;
+            if !matches!(
+                retained.root(),
+                OracleCompositionNode::OptionalChoice { .. }
+            ) {
+                return None;
+            }
+            let proof = retain_retained_oracle_clause_composition_program(
+                child_input.bounded_input(),
+                retained,
+            )
+            .ok()?;
+            children.push(BackendCompositionChild {
+                span,
+                capabilities: requested,
+                timing: CompositionTimingClass::Resolution,
+                compiled: CompiledOracleClause::Bounded(proof),
+            });
+            continue;
+        }
+        let printed_event_keyword = matches!(
+            composition.root(),
+            OracleCompositionNode::Conjunction { .. }
         )
-        .ok()?;
-        let requested = composition
-            .requirements()
-            .iter()
-            .filter_map(|requirement| (requirement.span == span).then_some(requirement.capability))
-            .collect::<Vec<_>>();
-        let capabilities = proven_composition_capabilities(&compiled, &requested);
-        if capabilities.is_empty() {
+        .then(|| exact_singleton_keyword(exact_source))
+        .flatten()
+        .filter(|keyword| {
+            matches!(keyword, OfficialKeyword::Prowess | OfficialKeyword::Ward)
+                && exact_printed_keyword(input.printed_keywords, *keyword).is_some()
+        });
+        // Native bounded parsing also recognizes singleton Prowess and Ward as
+        // triggered clauses. Inside an exact printed-keyword conjunction their
+        // physical card mechanic program is the persistent static owner; using
+        // the native trigger here would make a static sibling and a triggered
+        // child appear timing-incompatible before the provenance-bearing child
+        // can be retained. Prefer only the version-valid delegated owner when
+        // the addressed face proves the exact printed keyword. Without that
+        // provenance the ordinary path remains fail closed.
+        let mut compiled = printed_event_keyword
+            .and_then(|_| {
+                compile_delegated_keyword_clause_with_context(&child_input, card_context)
+                    .ok()
+                    .flatten()
+                    .map(CompiledOracleClause::Delegated)
+            })
+            .or_else(|| {
+                validate_oracle_clause_line(exact_source)
+                    .ok()
+                    .and_then(|validated| {
+                        compile_oracle_clause_program_inner(
+                            child_input.clone(),
+                            validated,
+                            card_context,
+                            graveyard_transform_context,
+                            level_progression_context,
+                            source_mana_value,
+                            complete_face_oracle_text,
+                            false,
+                            true,
+                        )
+                        .ok()
+                    })
+            });
+        let proves_every_requested_capability = |capabilities: &[SemanticCapability]| {
+            requested
+                .iter()
+                .all(|requested| capabilities.contains(requested))
+        };
+        let mut capabilities = compiled
+            .as_ref()
+            .map(|compiled| proven_composition_capabilities(compiled, &requested))
+            .unwrap_or_default();
+        if strict_resolution_composition
+            && requested.contains(&SemanticCapability::SemanticAtom)
+            && !compiled
+                .as_ref()
+                .is_some_and(compiled_clause_has_live_resolution_contract)
+            && let Some(action) = compile_exact_live_composition_spell_action(&child_input)
+        {
+            compiled = Some(CompiledOracleClause::Bounded(action));
+        }
+        if strict_resolution_composition
+            && compiled
+                .as_ref()
+                .is_some_and(compiled_clause_has_live_resolution_contract)
+        {
+            // For a supported spell-resolution composition, an exact independently
+            // executable proper child proves every capability requested for
+            // that same span. The child remains the sole owner of its targets,
+            // choices, source binding, and mutation; the composition host only
+            // orders the children and supplies the outer rollback checkpoint.
+            capabilities = requested.clone();
+            capabilities.sort();
+            capabilities.dedup();
+        }
+        if !proves_every_requested_capability(&capabilities)
+            && let Ok(fragment) =
+                compile_bounded_oracle_composition_fragment(child_input.bounded_input())
+        {
+            let fragment = CompiledOracleClause::Bounded(fragment);
+            let fragment_capabilities = proven_composition_capabilities(&fragment, &requested);
+            if proves_every_requested_capability(&fragment_capabilities) {
+                compiled = Some(fragment);
+                capabilities = fragment_capabilities;
+            }
+        }
+        let has_exact_prior_object_target = strict_resolution_sequence
+            && children.iter().rev().any(|child| {
+                child.span.end <= span.start
+                    && matches!(
+                        &child.compiled,
+                        CompiledOracleClause::Bounded(clause)
+                            if crate::bounded_oracle_consumer::clause_has_executable_contract(clause)
+                                && clause_proves_exact_single_object_antecedent(clause)
+                    )
+            });
+        if !proves_every_requested_capability(&capabilities)
+            && has_exact_prior_object_target
+            && let Ok(fragment) =
+                compile_bounded_oracle_composition_referential_fragment(child_input.bounded_input())
+        {
+            let fragment = CompiledOracleClause::Bounded(fragment);
+            let fragment_capabilities = proven_composition_capabilities(&fragment, &requested);
+            if proves_every_requested_capability(&fragment_capabilities) {
+                compiled = Some(fragment);
+                capabilities = fragment_capabilities;
+            }
+        }
+        if !proves_every_requested_capability(&capabilities)
+            && allow_nested_composition
+            && exact_source.len() < input.oracle_clause.len()
+            && let Some(nested) = compile_typed_oracle_composition_on_worker_stack(
+                &child_input,
+                card_context,
+                graveyard_transform_context,
+                level_progression_context,
+                source_mana_value,
+                complete_face_oracle_text,
+                true,
+            )
+        {
+            let nested = CompiledOracleClause::Bounded(nested);
+            let nested_capabilities = proven_composition_capabilities(&nested, &requested);
+            if proves_every_requested_capability(&nested_capabilities) {
+                compiled = Some(nested);
+                capabilities = nested_capabilities;
+            }
+        }
+        if !proves_every_requested_capability(&capabilities) {
             return None;
         }
-        let timing = composition_timing_class(&compiled);
+        let compiled = compiled?;
+        let delegated_printed_event_owner = matches!(
+            &compiled,
+            CompiledOracleClause::Delegated(program)
+                if printed_event_keyword == Some(program.keyword_program().keyword())
+                    && program.keyword_program().has_exact_contract()
+        );
+        let timing = if delegated_printed_event_owner {
+            CompositionTimingClass::Static
+        } else {
+            composition_timing_class(&compiled)
+        };
         children.push(BackendCompositionChild {
             span,
             capabilities,
@@ -2487,11 +3218,187 @@ fn compile_typed_oracle_composition_on_worker_stack(
                     program.semantic_digest().to_owned(),
                     program.normalized_clause().to_owned(),
                     program.keyword_program().clone(),
+                    exact_printed_keyword(
+                        input.printed_keywords,
+                        program.keyword_program().keyword(),
+                    )
+                    .map(str::to_owned),
                 )
             }
         })
         .collect();
     retain_oracle_clause_composition_program(input.bounded_input(), typed, concrete_children).ok()
+}
+
+/// Match the resolution structures admitted by `OracleCompositionProgram`'s
+/// production host. Keeping this predicate in lockstep with that host prevents
+/// a typed child from being credited merely because it is executable in some
+/// other timing envelope.
+fn oracle_composition_has_resolution_execution_structure(
+    node: &OracleCompositionNode,
+    source: &str,
+) -> bool {
+    match node {
+        OracleCompositionNode::Atom(_) => true,
+        OracleCompositionNode::Sequence { parts, .. }
+        | OracleCompositionNode::Conjunction { parts, .. } => {
+            !parts.is_empty()
+                && parts
+                    .iter()
+                    .all(|part| oracle_composition_has_resolution_execution_structure(part, source))
+        }
+        OracleCompositionNode::Alternative { parts, .. } => {
+            parts.len() >= 2
+                && parts
+                    .iter()
+                    .all(|part| oracle_composition_has_resolution_execution_structure(part, source))
+        }
+        OracleCompositionNode::Conditional {
+            consequence,
+            otherwise_body,
+            ..
+        }
+        | OracleCompositionNode::LinkedOptionalConditional {
+            consequence,
+            otherwise_body,
+            ..
+        } => {
+            oracle_composition_has_resolution_execution_structure(consequence, source)
+                && otherwise_body.as_deref().is_none_or(|body| {
+                    oracle_composition_has_resolution_execution_structure(body, source)
+                })
+        }
+        OracleCompositionNode::OptionalChoice {
+            actor_span, body, ..
+        } => {
+            let actor_is_you = actor_span
+                .slice(source)
+                .is_some_and(|actor| actor.trim().eq_ignore_ascii_case("you"));
+            let exact_spellshift_actor = actor_span.slice(source).is_some_and(|actor| {
+                actor.trim().eq_ignore_ascii_case("that player")
+                    && source.eq_ignore_ascii_case(
+                        "Counter target instant or sorcery spell. Its controller reveals cards from the top of their library until they reveal an instant or sorcery card. That player may cast that card without paying its mana cost. Then the player shuffles.",
+                    )
+            });
+            (actor_is_you || exact_spellshift_actor)
+                && oracle_composition_has_resolution_execution_structure(body, source)
+        }
+        OracleCompositionNode::ModalGroup {
+            selection,
+            branches,
+            ..
+        } => {
+            selection.is_some()
+                && !branches.is_empty()
+                && branches.iter().all(|branch| {
+                    oracle_composition_has_resolution_execution_structure(&branch.body, source)
+                })
+        }
+        OracleCompositionNode::ActivatedAbility { .. }
+        | OracleCompositionNode::DelayedInstruction { .. }
+        | OracleCompositionNode::DetachedModalBranch { .. }
+        | OracleCompositionNode::EmbeddedAbilities { .. } => false,
+    }
+}
+
+fn compiled_clause_has_live_resolution_contract(compiled: &CompiledOracleClause) -> bool {
+    matches!(
+        compiled,
+        CompiledOracleClause::Bounded(clause)
+            if crate::bounded_oracle_consumer::clause_has_executable_contract(clause)
+                && clause.costs().is_empty()
+                && clause.activation_restriction().is_none()
+                && (matches!(clause.timing(), Timing::SpellResolution)
+                    || matches!(
+                        clause.effects(),
+                        [Effect::StandaloneRuleProgram(program)]
+                            if standalone_rule_program_has_resolution_execution_contract(program)
+                    ))
+    )
+}
+
+/// Compile an isolated semantic atom only after its enclosing typed structure
+/// proves that it is a resolving spell instruction. The ordinary child path
+/// can legitimately return a non-live structural receipt first; this fallback
+/// gives the exact action algebra (including source-name and leading-label
+/// proofs) one opportunity to supply a real production contract instead.
+fn compile_exact_live_composition_spell_action(
+    input: &OracleClauseBackendInput<'_>,
+) -> Option<BoundedOracleClause> {
+    if !source_type_has_spell_resolution(input.source_type_line) {
+        return None;
+    }
+    let normalized_source = reviewed_oracle_action_normalized_source(input.oracle_clause);
+    let program = match classify_oracle_action_fragment_instruction(OracleActionCompileInput {
+        exact_source: input.oracle_clause,
+        normalized_source: &normalized_source,
+        semantic_context: OracleActionSemanticContext::ResolvingSpellInstruction,
+    }) {
+        OracleActionClassification::Program(program) => Some(program),
+        OracleActionClassification::Rejected(_) => {
+            reviewed_oracle_action_normalized_source_with_source_name(
+                input.oracle_clause,
+                input.source_name,
+            )
+            .and_then(|normalized_source| {
+                compile_oracle_action_fragment_program_with_source_name(
+                    OracleActionCompileInput {
+                        exact_source: input.oracle_clause,
+                        normalized_source: &normalized_source,
+                        semantic_context: OracleActionSemanticContext::ResolvingSpellInstruction,
+                    },
+                    input.source_name,
+                )
+                .ok()
+            })
+            .or_else(|| {
+                reviewed_oracle_action_normalized_source_with_leading_label(input.oracle_clause)
+                    .and_then(|normalized_source| {
+                        compile_oracle_action_fragment_program_with_leading_label(
+                            OracleActionCompileInput {
+                                exact_source: input.oracle_clause,
+                                normalized_source: &normalized_source,
+                                semantic_context:
+                                    OracleActionSemanticContext::ResolvingSpellInstruction,
+                            },
+                        )
+                        .ok()
+                    })
+            })
+            .or_else(|| {
+                reviewed_oracle_action_normalized_source_with_leading_label_and_source_name(
+                    input.oracle_clause,
+                    input.source_name,
+                )
+                .and_then(|normalized_source| {
+                    compile_oracle_action_fragment_program_with_leading_label_and_source_name(
+                        OracleActionCompileInput {
+                            exact_source: input.oracle_clause,
+                            normalized_source: &normalized_source,
+                            semantic_context:
+                                OracleActionSemanticContext::ResolvingSpellInstruction,
+                        },
+                        input.source_name,
+                    )
+                    .ok()
+                })
+            })
+        }
+    }?;
+    if !program.production_adapter_connected() {
+        return None;
+    }
+    let clause = retain_oracle_action_fragment_program(input.bounded_input(), program).ok()?;
+    (crate::bounded_oracle_consumer::clause_has_executable_contract(&clause)
+        && clause.costs().is_empty()
+        && clause.activation_restriction().is_none()
+        && (matches!(clause.timing(), Timing::SpellResolution)
+            || matches!(
+                clause.effects(),
+                [Effect::StandaloneRuleProgram(program)]
+                    if standalone_rule_program_has_resolution_execution_contract(program)
+            )))
+    .then_some(clause)
 }
 
 fn composition_timing_class(compiled: &CompiledOracleClause) -> CompositionTimingClass {
@@ -2535,6 +3442,16 @@ fn composition_timing_class(compiled: &CompiledOracleClause) -> CompositionTimin
                 [Effect::StandaloneRuleProgram(StandaloneRuleProgram::TargetingProtection(_))] => {
                     CompositionTimingClass::Static
                 }
+                [Effect::StandaloneRuleProgram(program)]
+                    if standalone_rule_program_has_resolution_execution_contract(program) =>
+                {
+                    CompositionTimingClass::Resolution
+                }
+                [
+                    Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleComposition(
+                        program,
+                    )),
+                ] if program.has_static_installation_contract() => CompositionTimingClass::Static,
                 _ => CompositionTimingClass::Unknown,
             },
         },
@@ -2613,6 +3530,17 @@ fn composition_node_timing_class(
             ..
         } => {
             composition_node_timing_class(condition, children)?;
+            let mut branch_timings = vec![composition_node_timing_class(consequence, children)?];
+            if let Some(otherwise_body) = otherwise_body {
+                branch_timings.push(composition_node_timing_class(otherwise_body, children)?);
+            }
+            merge_composition_timing_classes(branch_timings)
+        }
+        OracleCompositionNode::LinkedOptionalConditional {
+            consequence,
+            otherwise_body,
+            ..
+        } => {
             let mut branch_timings = vec![composition_node_timing_class(consequence, children)?];
             if let Some(otherwise_body) = otherwise_body {
                 branch_timings.push(composition_node_timing_class(otherwise_body, children)?);
@@ -2711,6 +3639,14 @@ fn proven_bounded_composition_capabilities(
             !program.ability().effects.is_empty()
         }
         [Effect::StandaloneRuleProgram(StandaloneRuleProgram::TargetingProtection(_))] => true,
+        [Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleComposition(program))] => {
+            program.production_adapter_connected()
+                && program.children().iter().any(|child| {
+                    child
+                        .capabilities()
+                        .contains(&SemanticCapability::SemanticAtom)
+                })
+        }
         _ => false,
     };
     if (!effects.is_empty() && !has_standalone) || standalone_semantic_atom {
@@ -2754,6 +3690,17 @@ fn proven_bounded_composition_capabilities(
         && effects.iter().any(effect_has_complete_granted_ability)
     {
         proven.push(SemanticCapability::NestedGrantedAbility);
+    }
+    if let [Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleComposition(program))] =
+        effects
+        && program.production_adapter_connected()
+    {
+        proven.extend(
+            program
+                .children()
+                .iter()
+                .flat_map(|child| child.capabilities().iter().copied()),
+        );
     }
     proven
 }

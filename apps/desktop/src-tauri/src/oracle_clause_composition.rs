@@ -11,15 +11,17 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const ORACLE_CLAUSE_COMPOSITION_COMPILER_VERSION: &str =
-    "oracle-clause-composition-compiler-0.3";
-pub const ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION: &str = "oracle-clause-composition-runtime-0.3";
+    "oracle-clause-composition-compiler-0.6";
+pub const ORACLE_CLAUSE_COMPOSITION_RUNTIME_VERSION: &str = "oracle-clause-composition-runtime-0.7";
 pub const ORACLE_CLAUSE_COMPOSITION_RULES_CONTEXT_VERSION: &str =
     "magic-comprehensive-rules-2026-06-19";
 
-/// The production adapter stays disconnected until the runtime can execute
-/// the complete typed composition atomically.
+/// The generic executor below owns one incarnation-bound checkpoint for the
+/// complete typed composition. Concrete production hosts remain responsible
+/// for proving that every child and every structural operation they admit has
+/// a live state adapter.
 pub const fn oracle_clause_composition_production_adapter_connected() -> bool {
-    false
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -242,6 +244,21 @@ pub enum OracleCompositionNode {
         otherwise_marker_span: Option<SourceSpan>,
         otherwise_body: Option<Box<OracleCompositionNode>>,
     },
+    /// A conditional whose truth is the exact decision recorded by the
+    /// immediately preceding optional choice. This is deliberately distinct
+    /// from an ordinary condition child: "if you do" has no independent
+    /// game-state predicate and must never be compiled as one.
+    LinkedOptionalConditional {
+        span: SourceSpan,
+        kind: ConditionalKind,
+        marker_span: SourceSpan,
+        condition_span: SourceSpan,
+        optional_span: SourceSpan,
+        expected_accepted: bool,
+        consequence: Box<OracleCompositionNode>,
+        otherwise_marker_span: Option<SourceSpan>,
+        otherwise_body: Option<Box<OracleCompositionNode>>,
+    },
     OptionalChoice {
         span: SourceSpan,
         actor_span: SourceSpan,
@@ -286,6 +303,7 @@ impl OracleCompositionNode {
             | Self::Conjunction { span, .. }
             | Self::Alternative { span, .. }
             | Self::Conditional { span, .. }
+            | Self::LinkedOptionalConditional { span, .. }
             | Self::OptionalChoice { span, .. }
             | Self::ActivatedAbility { span, .. }
             | Self::DelayedInstruction { span, .. }
@@ -678,6 +696,514 @@ impl TypedOracleComposition {
     pub const fn is_atomic(&self) -> bool {
         true
     }
+
+    fn child_index_for_requirement(
+        &self,
+        span: SourceSpan,
+        capability: SemanticCapability,
+    ) -> Option<usize> {
+        let ordinal = self.requirements.iter().position(|requirement| {
+            requirement.span == span && requirement.capability == capability
+        })?;
+        usize::try_from(*self.requirement_child_indices.get(ordinal)?).ok()
+    }
+
+    fn child_for_requirement(
+        &self,
+        span: SourceSpan,
+        capability: SemanticCapability,
+    ) -> Option<(usize, &TypedOracleCompositionChild)> {
+        let child_index = self.child_index_for_requirement(span, capability)?;
+        self.children
+            .get(child_index)
+            .map(|child| (child_index, child))
+    }
+}
+
+/// Exact structural decisions for one composition invocation. Every entry is
+/// keyed by the source span of the node that owns it, so choices and targets
+/// belonging to sibling instructions cannot alias one another.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OracleCompositionExecutionChoices {
+    pub optional_nodes: BTreeMap<SourceSpan, bool>,
+    pub alternative_nodes: BTreeMap<SourceSpan, Vec<u16>>,
+    pub modal_nodes: BTreeMap<SourceSpan, Vec<u16>>,
+}
+
+/// Incarnation-bound authority to invoke one already typed composition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OracleCompositionExecutionAuthority {
+    pub composition_semantic_digest: String,
+    pub source_incarnation: u64,
+}
+
+/// A successful composition receipt distinguishes immediately executed
+/// children from delayed children that were only scheduled by this action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OracleCompositionExecutionReceipt {
+    pub composition_semantic_digest: String,
+    pub source_incarnation: u64,
+    pub child_semantic_digests: Vec<String>,
+    pub executed_child_indices: Vec<u32>,
+    pub scheduled_child_indices: Vec<u32>,
+    pub optional_nodes: BTreeMap<SourceSpan, bool>,
+    pub alternative_nodes: BTreeMap<SourceSpan, Vec<u16>>,
+    pub modal_nodes: BTreeMap<SourceSpan, Vec<u16>>,
+}
+
+/// Production hosts must bind each typed child to its own exact invocation
+/// context. In particular, target group zero or a choice slot in one child may
+/// not be reused implicitly by a sibling child. The host also owns the real
+/// state checkpoint and the persistent delayed-procedure store.
+pub trait OracleCompositionExecutionHost {
+    type Checkpoint;
+    type Error;
+
+    fn checkpoint(&self) -> Self::Checkpoint;
+    fn restore(&mut self, checkpoint: Self::Checkpoint);
+    fn source_incarnation(&self) -> Option<u64>;
+
+    fn execute_child(
+        &mut self,
+        child_index: usize,
+        child: &TypedOracleCompositionChild,
+    ) -> Result<(), Self::Error>;
+
+    fn condition_holds(
+        &mut self,
+        child_index: usize,
+        child: &TypedOracleCompositionChild,
+    ) -> Result<bool, Self::Error>;
+
+    fn validate_optional_actor(
+        &mut self,
+        actor_span: SourceSpan,
+        actor_source: &str,
+    ) -> Result<(), Self::Error>;
+
+    fn schedule_delayed(
+        &mut self,
+        schedule_child_index: usize,
+        schedule_child: &TypedOracleCompositionChild,
+        instruction: &OracleCompositionNode,
+        instruction_child_indices: &[usize],
+    ) -> Result<(), Self::Error>;
+
+    fn validate_embedded_ability(
+        &mut self,
+        outer_child_index: usize,
+        outer_child: &TypedOracleCompositionChild,
+        ability_child_index: usize,
+        ability_child: &TypedOracleCompositionChild,
+        ability: &EmbeddedAbility,
+    ) -> Result<(), Self::Error>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OracleCompositionExecutionError<E> {
+    SemanticDigestMismatch,
+    SourceIncarnationMismatch {
+        expected: u64,
+        actual: Option<u64>,
+    },
+    MissingTypedRequirement {
+        span: SourceSpan,
+        capability: SemanticCapability,
+    },
+    InvalidAlternativeSelection {
+        span: SourceSpan,
+    },
+    InvalidModalSelection {
+        span: SourceSpan,
+    },
+    MissingOptionalDecision {
+        span: SourceSpan,
+    },
+    MissingLinkedOptionalDecision {
+        condition_span: SourceSpan,
+        optional_span: SourceSpan,
+    },
+    DetachedModalBranch {
+        span: SourceSpan,
+    },
+    UnexpectedStructuralChoices,
+    ChildIndexOverflow,
+    Host(E),
+}
+
+#[derive(Debug, Default)]
+struct CompositionExecutionTrace {
+    executed_child_indices: BTreeSet<usize>,
+    scheduled_child_indices: BTreeSet<usize>,
+    optional_nodes: BTreeMap<SourceSpan, bool>,
+    alternative_nodes: BTreeMap<SourceSpan, Vec<u16>>,
+    modal_nodes: BTreeMap<SourceSpan, Vec<u16>>,
+}
+
+/// Execute one complete typed composition against a host-owned state
+/// checkpoint. Structural syntax alone can never enter this path: every atom,
+/// condition, cost, modal header, delayed schedule, and embedded ability must
+/// already map to an exact typed child program.
+pub fn execute_typed_oracle_composition<H: OracleCompositionExecutionHost>(
+    composition: &TypedOracleComposition,
+    authority: &OracleCompositionExecutionAuthority,
+    choices: &OracleCompositionExecutionChoices,
+    host: &mut H,
+) -> Result<OracleCompositionExecutionReceipt, OracleCompositionExecutionError<H::Error>> {
+    if authority.composition_semantic_digest != composition.semantic_digest {
+        return Err(OracleCompositionExecutionError::SemanticDigestMismatch);
+    }
+    let actual_incarnation = host.source_incarnation();
+    if actual_incarnation != Some(authority.source_incarnation) {
+        return Err(OracleCompositionExecutionError::SourceIncarnationMismatch {
+            expected: authority.source_incarnation,
+            actual: actual_incarnation,
+        });
+    }
+
+    let checkpoint = host.checkpoint();
+    let mut trace = CompositionExecutionTrace::default();
+    let result =
+        execute_composition_node(composition, composition.root(), choices, host, &mut trace);
+    if let Err(error) = result {
+        host.restore(checkpoint);
+        return Err(error);
+    }
+    if trace.optional_nodes.len() != choices.optional_nodes.len()
+        || trace.alternative_nodes.len() != choices.alternative_nodes.len()
+        || trace.modal_nodes.len() != choices.modal_nodes.len()
+    {
+        host.restore(checkpoint);
+        return Err(OracleCompositionExecutionError::UnexpectedStructuralChoices);
+    }
+
+    let executed_child_indices = match trace
+        .executed_child_indices
+        .into_iter()
+        .map(|index| {
+            u32::try_from(index).map_err(|_| OracleCompositionExecutionError::ChildIndexOverflow)
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(indices) => indices,
+        Err(error) => {
+            host.restore(checkpoint);
+            return Err(error);
+        }
+    };
+    let scheduled_child_indices = match trace
+        .scheduled_child_indices
+        .into_iter()
+        .map(|index| {
+            u32::try_from(index).map_err(|_| OracleCompositionExecutionError::ChildIndexOverflow)
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(indices) => indices,
+        Err(error) => {
+            host.restore(checkpoint);
+            return Err(error);
+        }
+    };
+    Ok(OracleCompositionExecutionReceipt {
+        composition_semantic_digest: composition.semantic_digest.clone(),
+        source_incarnation: authority.source_incarnation,
+        child_semantic_digests: composition.child_semantic_digests.clone(),
+        executed_child_indices,
+        scheduled_child_indices,
+        optional_nodes: trace.optional_nodes,
+        alternative_nodes: trace.alternative_nodes,
+        modal_nodes: trace.modal_nodes,
+    })
+}
+
+fn execute_composition_node<H: OracleCompositionExecutionHost>(
+    composition: &TypedOracleComposition,
+    node: &OracleCompositionNode,
+    choices: &OracleCompositionExecutionChoices,
+    host: &mut H,
+    trace: &mut CompositionExecutionTrace,
+) -> Result<(), OracleCompositionExecutionError<H::Error>> {
+    match node {
+        OracleCompositionNode::Atom(atom) => {
+            let (child_index, child) = composition
+                .child_for_requirement(atom.span, SemanticCapability::SemanticAtom)
+                .ok_or(OracleCompositionExecutionError::MissingTypedRequirement {
+                    span: atom.span,
+                    capability: SemanticCapability::SemanticAtom,
+                })?;
+            host.execute_child(child_index, child)
+                .map_err(OracleCompositionExecutionError::Host)?;
+            trace.executed_child_indices.insert(child_index);
+        }
+        OracleCompositionNode::Sequence { parts, .. }
+        | OracleCompositionNode::Conjunction { parts, .. } => {
+            for part in parts {
+                execute_composition_node(composition, part, choices, host, trace)?;
+            }
+        }
+        OracleCompositionNode::Alternative {
+            span,
+            parts,
+            separators,
+        } => {
+            let selected = choices.alternative_nodes.get(span).ok_or(
+                OracleCompositionExecutionError::InvalidAlternativeSelection { span: *span },
+            )?;
+            let unique = selected.iter().copied().collect::<BTreeSet<_>>();
+            let permits_multiple = separators
+                .iter()
+                .any(|separator| separator.kind == AlternativeKind::AndOr);
+            if selected.is_empty()
+                || unique.len() != selected.len()
+                || selected
+                    .iter()
+                    .any(|index| usize::from(*index) >= parts.len())
+                || (!permits_multiple && selected.len() != 1)
+            {
+                return Err(
+                    OracleCompositionExecutionError::InvalidAlternativeSelection { span: *span },
+                );
+            }
+            let mut ordered = unique.into_iter().collect::<Vec<_>>();
+            ordered.sort_unstable();
+            for index in ordered {
+                execute_composition_node(
+                    composition,
+                    &parts[usize::from(index)],
+                    choices,
+                    host,
+                    trace,
+                )?;
+            }
+            trace.alternative_nodes.insert(*span, selected.clone());
+        }
+        OracleCompositionNode::Conditional {
+            kind,
+            condition,
+            consequence,
+            otherwise_body,
+            ..
+        } => {
+            let condition_span = condition.span();
+            let (child_index, child) = composition
+                .child_for_requirement(condition_span, SemanticCapability::Condition)
+                .ok_or(OracleCompositionExecutionError::MissingTypedRequirement {
+                    span: condition_span,
+                    capability: SemanticCapability::Condition,
+                })?;
+            let mut holds = host
+                .condition_holds(child_index, child)
+                .map_err(OracleCompositionExecutionError::Host)?;
+            trace.executed_child_indices.insert(child_index);
+            if *kind == ConditionalKind::Unless {
+                holds = !holds;
+            }
+            if holds {
+                execute_composition_node(composition, consequence, choices, host, trace)?;
+            } else if let Some(otherwise_body) = otherwise_body {
+                execute_composition_node(composition, otherwise_body, choices, host, trace)?;
+            }
+        }
+        OracleCompositionNode::LinkedOptionalConditional {
+            kind,
+            condition_span,
+            optional_span,
+            expected_accepted,
+            consequence,
+            otherwise_body,
+            ..
+        } => {
+            let accepted = *trace.optional_nodes.get(optional_span).ok_or(
+                OracleCompositionExecutionError::MissingLinkedOptionalDecision {
+                    condition_span: *condition_span,
+                    optional_span: *optional_span,
+                },
+            )?;
+            let mut holds = accepted == *expected_accepted;
+            if *kind == ConditionalKind::Unless {
+                holds = !holds;
+            }
+            if holds {
+                execute_composition_node(composition, consequence, choices, host, trace)?;
+            } else if let Some(otherwise_body) = otherwise_body {
+                execute_composition_node(composition, otherwise_body, choices, host, trace)?;
+            }
+        }
+        OracleCompositionNode::OptionalChoice {
+            span,
+            actor_span,
+            body,
+            ..
+        } => {
+            let accepted = *choices
+                .optional_nodes
+                .get(span)
+                .ok_or(OracleCompositionExecutionError::MissingOptionalDecision { span: *span })?;
+            let (_child_index, _child) = composition
+                .child_for_requirement(*span, SemanticCapability::OptionalChoice)
+                .ok_or(OracleCompositionExecutionError::MissingTypedRequirement {
+                    span: *span,
+                    capability: SemanticCapability::OptionalChoice,
+                })?;
+            let actor_source = actor_span.slice(composition.exact_oracle()).ok_or(
+                OracleCompositionExecutionError::MissingTypedRequirement {
+                    span: *actor_span,
+                    capability: SemanticCapability::OptionalChoice,
+                },
+            )?;
+            host.validate_optional_actor(*actor_span, actor_source)
+                .map_err(OracleCompositionExecutionError::Host)?;
+            trace.optional_nodes.insert(*span, accepted);
+            if accepted {
+                execute_composition_node(composition, body, choices, host, trace)?;
+            }
+        }
+        OracleCompositionNode::ActivatedAbility {
+            cost, instruction, ..
+        } => {
+            let (child_index, child) = composition
+                .child_for_requirement(cost.span, SemanticCapability::CostPayment)
+                .ok_or(OracleCompositionExecutionError::MissingTypedRequirement {
+                    span: cost.span,
+                    capability: SemanticCapability::CostPayment,
+                })?;
+            host.execute_child(child_index, child)
+                .map_err(OracleCompositionExecutionError::Host)?;
+            trace.executed_child_indices.insert(child_index);
+            execute_composition_node(composition, instruction, choices, host, trace)?;
+        }
+        OracleCompositionNode::DelayedInstruction {
+            schedule,
+            instruction,
+            ..
+        } => {
+            let (schedule_child_index, schedule_child) = composition
+                .child_for_requirement(schedule.span, SemanticCapability::DelayedTrigger)
+                .ok_or(OracleCompositionExecutionError::MissingTypedRequirement {
+                    span: schedule.span,
+                    capability: SemanticCapability::DelayedTrigger,
+                })?;
+            let instruction_child_indices =
+                composition_child_indices_within(composition, instruction.span());
+            host.schedule_delayed(
+                schedule_child_index,
+                schedule_child,
+                instruction,
+                &instruction_child_indices,
+            )
+            .map_err(OracleCompositionExecutionError::Host)?;
+            trace.executed_child_indices.insert(schedule_child_index);
+            trace
+                .scheduled_child_indices
+                .extend(instruction_child_indices);
+        }
+        OracleCompositionNode::ModalGroup {
+            span,
+            header_span,
+            selection,
+            branches,
+        } => {
+            let (_header_child_index, _header_child) = composition
+                .child_for_requirement(*header_span, SemanticCapability::ModalSelection)
+                .ok_or(OracleCompositionExecutionError::MissingTypedRequirement {
+                    span: *header_span,
+                    capability: SemanticCapability::ModalSelection,
+                })?;
+            let selected = choices
+                .modal_nodes
+                .get(span)
+                .ok_or(OracleCompositionExecutionError::InvalidModalSelection { span: *span })?;
+            let unique = selected.iter().copied().collect::<BTreeSet<_>>();
+            let selection_valid = !selected
+                .iter()
+                .any(|index| usize::from(*index) >= branches.len())
+                && unique.len() == selected.len()
+                && selection.is_some_and(|selection| {
+                    modal_selection_count_matches(selection, selected.len())
+                });
+            if !selection_valid {
+                return Err(OracleCompositionExecutionError::InvalidModalSelection { span: *span });
+            }
+            let mut ordered = unique.into_iter().collect::<Vec<_>>();
+            ordered.sort_unstable();
+            for index in ordered {
+                execute_composition_node(
+                    composition,
+                    &branches[usize::from(index)].body,
+                    choices,
+                    host,
+                    trace,
+                )?;
+            }
+            trace.modal_nodes.insert(*span, selected.clone());
+        }
+        OracleCompositionNode::DetachedModalBranch { span, .. } => {
+            return Err(OracleCompositionExecutionError::DetachedModalBranch { span: *span });
+        }
+        OracleCompositionNode::EmbeddedAbilities {
+            outer, abilities, ..
+        } => {
+            execute_composition_node(composition, outer, choices, host, trace)?;
+            let outer_span = outer.span();
+            let (outer_child_index, outer_child) = composition
+                .child_for_requirement(outer_span, SemanticCapability::SemanticAtom)
+                .ok_or(OracleCompositionExecutionError::MissingTypedRequirement {
+                    span: outer_span,
+                    capability: SemanticCapability::SemanticAtom,
+                })?;
+            for ability in abilities {
+                let (ability_child_index, ability_child) = composition
+                    .child_for_requirement(
+                        ability.content_span,
+                        SemanticCapability::NestedGrantedAbility,
+                    )
+                    .ok_or(OracleCompositionExecutionError::MissingTypedRequirement {
+                        span: ability.content_span,
+                        capability: SemanticCapability::NestedGrantedAbility,
+                    })?;
+                host.validate_embedded_ability(
+                    outer_child_index,
+                    outer_child,
+                    ability_child_index,
+                    ability_child,
+                    ability,
+                )
+                .map_err(OracleCompositionExecutionError::Host)?;
+                trace.executed_child_indices.insert(ability_child_index);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn composition_child_indices_within(
+    composition: &TypedOracleComposition,
+    span: SourceSpan,
+) -> Vec<usize> {
+    composition
+        .requirements
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, requirement)| {
+            (requirement.span.start >= span.start && requirement.span.end <= span.end)
+                .then(|| composition.requirement_child_indices.get(ordinal))
+                .flatten()
+                .and_then(|index| usize::try_from(*index).ok())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn modal_selection_count_matches(selection: ModalSelection, count: usize) -> bool {
+    match selection {
+        ModalSelection::Exactly(expected) => count == usize::from(expected),
+        ModalSelection::UpTo(maximum) => count <= usize::from(maximum),
+        ModalSelection::OneOrMore => count >= 1,
+        ModalSelection::OneOrBoth => (1..=2).contains(&count),
+        ModalSelection::AnyNumber => true,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -941,6 +1467,13 @@ impl CompositionParser<'_> {
         OracleCompositionNode::Atom(self.atom_value(span, additional))
     }
 
+    fn condition_atom(&self, span: SourceSpan) -> OracleCompositionNode {
+        OracleCompositionNode::Atom(AtomNode {
+            span,
+            required_capabilities: vec![SemanticCapability::Condition],
+        })
+    }
+
     fn atom_value(&self, span: SourceSpan, additional: &[SemanticCapability]) -> AtomNode {
         let text = span.slice(self.source).unwrap_or_default();
         let scan = scan_balanced(text).unwrap_or_else(|_| LocalScan {
@@ -989,6 +1522,45 @@ impl CompositionParser<'_> {
         sentence_spans: &[SourceSpan],
         depth: u8,
     ) -> Result<OracleCompositionNode, OracleCompositionError> {
+        const CAULDRON_DANCE_HAND_SEQUENCE: &str = "You may put a creature card from your hand onto the battlefield. That creature gains haste. Its controller sacrifices it at the beginning of the next end step.";
+        if span.slice(self.source) == Some(CAULDRON_DANCE_HAND_SEQUENCE)
+            && sentence_spans.len() == 3
+        {
+            let first = self.parse_fragment(sentence_spans[0], depth + 1)?;
+            let OracleCompositionNode::OptionalChoice {
+                actor_span,
+                may_span,
+                body,
+                ..
+            } = first
+            else {
+                unreachable!("the exact Cauldron Dance sentence begins with one optional choice")
+            };
+            let second = self.parse_fragment(sentence_spans[1], depth + 1)?;
+            let third = self.parse_fragment(sentence_spans[2], depth + 1)?;
+            let body_span = SourceSpan::new(body.span().start, sentence_spans[2].end);
+            let body = OracleCompositionNode::Sequence {
+                span: body_span,
+                parts: vec![*body, second, third],
+                separators: vec![
+                    SequenceSeparator {
+                        kind: SequenceSeparatorKind::SentenceBoundary,
+                        span: SourceSpan::new(sentence_spans[0].end, sentence_spans[1].start),
+                    },
+                    SequenceSeparator {
+                        kind: SequenceSeparatorKind::SentenceBoundary,
+                        span: SourceSpan::new(sentence_spans[1].end, sentence_spans[2].start),
+                    },
+                ],
+            };
+            return Ok(OracleCompositionNode::OptionalChoice {
+                span,
+                actor_span,
+                may_span,
+                body: Box::new(body),
+            });
+        }
+
         let mut parts = Vec::<OracleCompositionNode>::new();
         let mut separators = Vec::<SequenceSeparator>::new();
         let mut previous_end = span.start;
@@ -1001,14 +1573,25 @@ impl CompositionParser<'_> {
             if let Some((marker_local, body_local)) = otherwise_parts(sentence_text, &local_scan) {
                 let marker_span = offset_span(sentence_span.start, marker_local);
                 let body_span = offset_span(sentence_span.start, body_local);
-                if let Some(OracleCompositionNode::Conditional {
-                    span: conditional_span,
-                    otherwise_marker_span,
-                    otherwise_body,
-                    ..
-                }) = parts.last_mut()
-                {
-                    if otherwise_body.is_none() {
+                if let Some(previous) = parts.last_mut() {
+                    let linked = match previous {
+                        OracleCompositionNode::Conditional {
+                            span,
+                            otherwise_marker_span,
+                            otherwise_body,
+                            ..
+                        }
+                        | OracleCompositionNode::LinkedOptionalConditional {
+                            span,
+                            otherwise_marker_span,
+                            otherwise_body,
+                            ..
+                        } => Some((span, otherwise_marker_span, otherwise_body)),
+                        _ => None,
+                    };
+                    if let Some((conditional_span, otherwise_marker_span, otherwise_body)) = linked
+                        && otherwise_body.is_none()
+                    {
                         *conditional_span =
                             SourceSpan::new(conditional_span.start, sentence_span.end);
                         *otherwise_marker_span =
@@ -1025,13 +1608,37 @@ impl CompositionParser<'_> {
                 });
             }
 
+            if sentence_is_contextual_shuffle(sentence_text)
+                && let Some(previous) = parts.last_mut()
+                && extend_search_owned_shuffle(previous, self.source, sentence_span.end)
+            {
+                previous_end = sentence_span.end;
+                continue;
+            }
+
+            if let Some(previous) = parts.last_mut()
+                && extend_exact_referential_library_instruction(
+                    previous,
+                    self.source,
+                    *sentence_span,
+                )
+            {
+                previous_end = sentence_span.end;
+                continue;
+            }
+
             if !parts.is_empty() {
                 separators.push(SequenceSeparator {
                     kind: SequenceSeparatorKind::SentenceBoundary,
                     span: SourceSpan::new(previous_end, sentence_span.start),
                 });
             }
-            parts.push(self.parse_fragment(*sentence_span, depth + 1)?);
+            let parsed = self.parse_fragment(*sentence_span, depth + 1)?;
+            let parsed = match parts.last() {
+                Some(previous) => self.link_immediate_optional_condition(previous, parsed),
+                None => parsed,
+            };
+            parts.push(parsed);
             previous_end = sentence_span.end;
         }
 
@@ -1043,6 +1650,71 @@ impl CompositionParser<'_> {
                 parts,
                 separators,
             })
+        }
+    }
+
+    fn link_immediate_optional_condition(
+        &self,
+        previous: &OracleCompositionNode,
+        current: OracleCompositionNode,
+    ) -> OracleCompositionNode {
+        let OracleCompositionNode::Conditional {
+            span,
+            kind,
+            marker_span,
+            condition,
+            consequence,
+            otherwise_marker_span,
+            otherwise_body,
+        } = current
+        else {
+            return current;
+        };
+        let condition_span = condition.span();
+        let condition_source = condition_span
+            .slice(self.source)
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches(['.', ','])
+            .trim()
+            .to_ascii_lowercase()
+            .replace('\u{2019}', "'");
+        let expected_accepted = match condition_source.as_str() {
+            "you do" => true,
+            "you don't" => false,
+            _ => {
+                return OracleCompositionNode::Conditional {
+                    span,
+                    kind,
+                    marker_span,
+                    condition,
+                    consequence,
+                    otherwise_marker_span,
+                    otherwise_body,
+                };
+            }
+        };
+        let Some(optional_span) = immediate_you_optional_span(previous, self.source) else {
+            return OracleCompositionNode::Conditional {
+                span,
+                kind,
+                marker_span,
+                condition,
+                consequence,
+                otherwise_marker_span,
+                otherwise_body,
+            };
+        };
+        OracleCompositionNode::LinkedOptionalConditional {
+            span,
+            kind,
+            marker_span,
+            condition_span,
+            optional_span,
+            expected_accepted,
+            consequence,
+            otherwise_marker_span,
+            otherwise_body,
         }
     }
 
@@ -1083,7 +1755,7 @@ impl CompositionParser<'_> {
             span,
             kind,
             marker_span: SourceSpan::new(span.start + conditional_start, span.start + marker_end),
-            condition: Box::new(self.atom(condition_span, &[SemanticCapability::Condition])),
+            condition: Box::new(self.condition_atom(condition_span)),
             consequence: Box::new(self.parse_fragment(consequence_span, depth + 1)?),
             otherwise_marker_span: None,
             otherwise_body: None,
@@ -1109,6 +1781,18 @@ impl CompositionParser<'_> {
                 let action_local = trim_local(fragment, SourceSpan::new(0, word_span.start));
                 let condition_local =
                     trim_local(fragment, SourceSpan::new(word_span.end, fragment.len()));
+                let condition_source = condition_local
+                    .slice(fragment)
+                    .unwrap_or_default()
+                    .trim_end_matches('.')
+                    .trim();
+                if condition_source.eq_ignore_ascii_case("able") {
+                    // "if able" is part of a combat requirement, not a
+                    // separately evaluated conditional branch. Keeping the
+                    // complete restriction atomic preserves its subject,
+                    // duration, and enforcement contract.
+                    continue;
+                }
                 if !action_local.is_empty() && !condition_local.is_empty() {
                     candidate = Some((word_span, kind, action_local, condition_local));
                 }
@@ -1123,7 +1807,7 @@ impl CompositionParser<'_> {
             span,
             kind,
             marker_span: offset_span(span.start, marker_local),
-            condition: Box::new(self.atom(condition_span, &[SemanticCapability::Condition])),
+            condition: Box::new(self.condition_atom(condition_span)),
             consequence: Box::new(self.parse_fragment(consequence_span, depth + 1)?),
             otherwise_marker_span: None,
             otherwise_body: None,
@@ -1284,10 +1968,20 @@ impl CompositionParser<'_> {
         scan: &LocalScan,
         depth: u8,
     ) -> Result<Option<OracleCompositionNode>, OracleCompositionError> {
+        if search_instruction_owns_internal_commas(fragment) {
+            // The searched zones, reveal, destination, and shuffle form one
+            // typed search transaction. Treating those commas as sibling
+            // effects loses the selected cards and searched-player receipt.
+            return Ok(None);
+        }
         let comma_indices = fragment
             .char_indices()
             .filter_map(|(index, character)| {
-                (character == ',' && scan.is_top_level(index)).then_some(index)
+                (character == ','
+                    && scan.is_top_level(index)
+                    && !comma_begins_linked_amount_qualifier(fragment, index)
+                    && !comma_terminates_owned_duration_modifier(fragment, index))
+                .then_some(index)
             })
             .collect::<Vec<_>>();
         if comma_indices.is_empty() {
@@ -1556,6 +2250,113 @@ impl CompositionParser<'_> {
             })
         }
     }
+}
+
+fn comma_begins_linked_amount_qualifier(source: &str, comma: usize) -> bool {
+    source.get(comma + 1..).is_some_and(|right| {
+        right
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("where x is ")
+    })
+}
+
+fn immediate_you_optional_span(node: &OracleCompositionNode, source: &str) -> Option<SourceSpan> {
+    match node {
+        OracleCompositionNode::OptionalChoice {
+            span, actor_span, ..
+        } if actor_span
+            .slice(source)
+            .is_some_and(|actor| actor.trim().eq_ignore_ascii_case("you")) =>
+        {
+            Some(*span)
+        }
+        OracleCompositionNode::EmbeddedAbilities { outer, .. } => {
+            immediate_you_optional_span(outer, source)
+        }
+        _ => None,
+    }
+}
+
+fn sentence_is_contextual_shuffle(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "then shuffle."
+            | "then shuffle your library."
+            | "then that player shuffles."
+            | "that player shuffles."
+    )
+}
+
+fn extend_search_owned_shuffle(
+    node: &mut OracleCompositionNode,
+    source: &str,
+    new_end: usize,
+) -> bool {
+    match node {
+        OracleCompositionNode::Atom(atom) => {
+            let lower = atom
+                .span
+                .slice(source)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !lower.contains("search ") || !lower.contains(" library") {
+                return false;
+            }
+            atom.span.end = new_end;
+            true
+        }
+        OracleCompositionNode::OptionalChoice { span, body, .. } => {
+            if !extend_search_owned_shuffle(body, source, new_end) {
+                return false;
+            }
+            span.end = new_end;
+            true
+        }
+        OracleCompositionNode::EmbeddedAbilities { span, outer, .. } => {
+            if !extend_search_owned_shuffle(outer, source, new_end) {
+                return false;
+            }
+            span.end = new_end;
+            true
+        }
+        _ => false,
+    }
+}
+
+fn extend_exact_referential_library_instruction(
+    node: &mut OracleCompositionNode,
+    source: &str,
+    continuation_span: SourceSpan,
+) -> bool {
+    let OracleCompositionNode::Atom(atom) = node else {
+        return false;
+    };
+    let prior = atom
+        .span
+        .slice(source)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let continuation = continuation_span
+        .slice(source)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let exact_pair = matches!(
+        (prior.as_str(), continuation.as_str()),
+        ("destroy target creature.", "it can't be regenerated.")
+            | (
+                "its controller reveals cards from the top of their library until they reveal a creature card.",
+                "the player puts that card onto the battlefield, then shuffles all other cards revealed this way into their library."
+            )
+            | (
+                "its controller reveals cards from the top of their library until they reveal a permanent card that shares a card type with that permanent.",
+                "they put that card onto the battlefield and the rest on the bottom of their library in a random order."
+            )
+    );
+    if exact_pair {
+        atom.span.end = continuation_span.end;
+    }
+    exact_pair
 }
 
 fn scan_balanced(source: &str) -> Result<LocalScan, OracleCompositionError> {
@@ -2048,6 +2849,9 @@ fn connector_is_instruction_boundary(source: &str, connector: Connector) -> bool
     if left.is_empty() || right.is_empty() {
         return false;
     }
+    if search_instruction_owns_connector(source, connector, right) {
+        return false;
+    }
     if connector.kind == ConnectorKind::Then {
         return true;
     }
@@ -2055,6 +2859,40 @@ fn connector_is_instruction_boundary(source: &str, connector: Connector) -> bool
     let left_instruction = looks_like_instruction(left);
     let right_instruction = looks_like_instruction(right);
     comma_boundary || (left_instruction && right_instruction)
+}
+
+fn search_instruction_owns_connector(source: &str, connector: Connector, right: &str) -> bool {
+    let lower = source.trim_start().to_ascii_lowercase();
+    if !(lower.starts_with("search ") || lower.starts_with("you search "))
+        || !lower.contains(" librar")
+    {
+        return false;
+    }
+    let right = right.to_ascii_lowercase();
+    let is_search_procedure = [
+        "put ",
+        "reveal ",
+        "exile ",
+        "shuffle",
+        "that player shuffles",
+    ]
+    .iter()
+    .any(|prefix| right.starts_with(prefix));
+    if is_search_procedure {
+        return true;
+    }
+    connector.kind != ConnectorKind::Then && !looks_like_instruction(&right)
+}
+
+fn comma_terminates_owned_duration_modifier(source: &str, comma: usize) -> bool {
+    source[..comma]
+        .trim()
+        .eq_ignore_ascii_case("until end of turn")
+}
+
+fn search_instruction_owns_internal_commas(source: &str) -> bool {
+    let lower = source.trim_start().to_ascii_lowercase();
+    (lower.starts_with("search ") || lower.starts_with("you search ")) && lower.contains(" librar")
 }
 
 fn looks_like_instruction(text: &str) -> bool {
@@ -2180,6 +3018,16 @@ fn collect_requirements(node: &OracleCompositionNode, requirements: &mut Vec<Sem
             ..
         } => {
             collect_requirements(condition, requirements);
+            collect_requirements(consequence, requirements);
+            if let Some(otherwise_body) = otherwise_body {
+                collect_requirements(otherwise_body, requirements);
+            }
+        }
+        OracleCompositionNode::LinkedOptionalConditional {
+            consequence,
+            otherwise_body,
+            ..
+        } => {
             collect_requirements(consequence, requirements);
             if let Some(otherwise_body) = otherwise_body {
                 collect_requirements(otherwise_body, requirements);
@@ -2412,6 +3260,40 @@ fn encode_node(node: &OracleCompositionNode, target: &mut String) {
             ));
             encode_node(condition, target);
             target.push('|');
+            encode_node(consequence, target);
+            if let Some(otherwise_marker_span) = otherwise_marker_span {
+                target.push_str(&format!(
+                    "|otherwise:{}:{}|",
+                    otherwise_marker_span.start, otherwise_marker_span.end
+                ));
+                if let Some(otherwise_body) = otherwise_body {
+                    encode_node(otherwise_body, target);
+                }
+            }
+            target.push(']');
+        }
+        OracleCompositionNode::LinkedOptionalConditional {
+            kind,
+            marker_span,
+            condition_span,
+            optional_span,
+            expected_accepted,
+            consequence,
+            otherwise_marker_span,
+            otherwise_body,
+            ..
+        } => {
+            target.push_str(&format!(
+                "linked-optional-conditional({kind:?}:{}:{};marker:{}:{};condition:{}:{};optional:{}:{};accepted:{expected_accepted})[",
+                span.start,
+                span.end,
+                marker_span.start,
+                marker_span.end,
+                condition_span.start,
+                condition_span.end,
+                optional_span.start,
+                optional_span.end,
+            ));
             encode_node(consequence, target);
             if let Some(otherwise_marker_span) = otherwise_marker_span {
                 target.push_str(&format!(
