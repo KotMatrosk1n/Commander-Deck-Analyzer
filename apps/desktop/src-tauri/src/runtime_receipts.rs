@@ -36,15 +36,17 @@ use crate::ability_program::{
     compile_executable_ability_program, normalize_oracle_clause_for_receipt,
 };
 use crate::alternative_cast_runtime::{AlternativeCastRuntimeProgram, CompiledAlternativeCast};
-use crate::bounded_oracle_consumer::BOUNDED_ORACLE_CONSUMER_VERSION;
+use crate::bounded_oracle_consumer::{
+    BOUNDED_ORACLE_CONSUMER_VERSION, clause_has_executable_contract,
+};
 use crate::bounded_oracle_runtime::{
     BOUNDED_ORACLE_RUNTIME_VERSION, BoundedOracleClause, Effect as BoundedEffect,
     Restriction as BoundedRestriction, Timing as BoundedTiming,
     TokenSpecification as BoundedTokenSpecification, normalize_oracle_clause,
 };
 use crate::bounded_oracle_simulation::{
-    BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION, clause_has_live_bridge_contract,
-    printed_cost_has_live_bridge_contract,
+    BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION, casting_additional_cost_has_atomic_payment_contract,
+    clause_has_live_bridge_contract, printed_cost_has_live_bridge_contract,
 };
 use crate::characteristic_oracle_runtime::{
     AttractionLightsProcedure, CharacteristicOracleProgram, CompiledCharacteristicOracle,
@@ -117,7 +119,7 @@ use crate::utility_modal_runtime::{
 };
 
 pub(crate) const RUNTIME_RECEIPT_SCHEMA_VERSION: &str = "commander-runtime-capability-receipt/v5";
-pub(crate) const ATOMIC_TRANSACTION_EXECUTOR_VERSION: &str = "abstract-play-atomic-transaction/v2";
+pub(crate) const ATOMIC_TRANSACTION_EXECUTOR_VERSION: &str = "abstract-play-atomic-transaction/v3";
 pub(crate) const SPELL_RESOLUTION_MANA_EXECUTOR_VERSION: &str =
     "abstract-play-spell-resolution-mana/v1";
 pub(crate) const CONDITIONAL_MANA_SOURCE_EXECUTOR_VERSION: &str =
@@ -129,22 +131,22 @@ pub(crate) const GRAVEYARD_RECLAMATION_EXECUTOR_VERSION: &str =
 pub(crate) const CHARACTERISTIC_EXECUTOR_VERSION: &str = "abstract-play-compiled-characteristic/v5";
 pub(crate) const CHARACTERISTIC_ORACLE_EXECUTOR_VERSION: &str =
     "abstract-play-characteristic-oracle/v1";
-pub(crate) const LIVE_ABILITY_EXECUTOR_VERSION: &str = "abstract-play-live-ability/v1";
+pub(crate) const LIVE_ABILITY_EXECUTOR_VERSION: &str = "abstract-play-live-ability/v2";
 pub(crate) const LAND_RUNTIME_EXECUTOR_VERSION: &str = LAND_RUNTIME_CLASSIFIER_VERSION;
 pub(crate) const INTERACTION_RUNTIME_EXECUTOR_VERSION: &str =
     "abstract-play-interaction-runtime/v1";
 pub(crate) const TUTOR_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-tutor-runtime/v1";
 pub(crate) const RESTRICTION_PROTECTION_EXECUTOR_VERSION: &str =
     "abstract-play-restriction-protection/v1";
-pub(crate) const ALTERNATIVE_CAST_EXECUTOR_VERSION: &str = "abstract-play-alternative-cast/v1";
-pub(crate) const CONTINUOUS_TRIGGER_EXECUTOR_VERSION: &str = "abstract-play-continuous-trigger/v1";
-pub(crate) const OBJECT_LIFECYCLE_EXECUTOR_VERSION: &str = "abstract-play-object-lifecycle/v1";
+pub(crate) const ALTERNATIVE_CAST_EXECUTOR_VERSION: &str = "abstract-play-alternative-cast/v2";
+pub(crate) const CONTINUOUS_TRIGGER_EXECUTOR_VERSION: &str = "abstract-play-continuous-trigger/v2";
+pub(crate) const OBJECT_LIFECYCLE_EXECUTOR_VERSION: &str = "abstract-play-object-lifecycle/v2";
 pub(crate) const UTILITY_MODAL_EXECUTOR_VERSION: &str = "abstract-play-utility-modal/v1";
 pub(crate) const MANA_NETWORK_RUNTIME_EXECUTOR_VERSION: &str = MANA_NETWORK_RUNTIME_VERSION;
-pub(crate) const BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-bounded-oracle/v81";
-pub(crate) const FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-face-layout/v1";
+pub(crate) const BOUNDED_ORACLE_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-bounded-oracle/v98";
+pub(crate) const FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-face-layout/v2";
 pub(crate) const PRINTED_COST_RUNTIME_EXECUTOR_ID: &str = "abstract-play.printed-mana-cost";
-pub(crate) const PRINTED_COST_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-printed-mana-cost/v1";
+pub(crate) const PRINTED_COST_RUNTIME_EXECUTOR_VERSION: &str = "abstract-play-printed-mana-cost/v2";
 pub(crate) const KEYWORD_RULES_RUNTIME_EXECUTOR_ID: &str =
     "abstract-play.keyword-rules.transaction";
 pub(crate) const KEYWORD_RULES_RUNTIME_EXECUTOR_VERSION: &str =
@@ -297,6 +299,10 @@ pub(crate) enum RuntimeCapability {
     ExactOracleClauseSet,
     /// Costs and activation/cast initiation commit before resolution.
     AtomicInitiationBoundary,
+    /// The exact casting-additional-cost clause participates in one simulator
+    /// batch with the spell's reduced printed mana cost and a shared rollback
+    /// checkpoint.
+    ExactCastingCostBatch,
     /// Every resolution effect executes in the retained typed order.
     OrderedResolution,
     /// A countered spell keeps committed costs and skips every resolution step.
@@ -334,6 +340,15 @@ pub(crate) enum RuntimeCapability {
     /// The complete retained face envelope was compiled into the exact
     /// zone, casting, and live transition procedure for its layout.
     ExactFaceLayoutProgram,
+    /// The exact Room reminder occurrences are owned by the shared-permanent
+    /// split-face cast, entry-unlock, and sorcery unlock procedure.
+    ExactRoomLifecycle,
+    /// The exact meld-part reminder occurrence is owned by the stable related
+    /// component identities and the atomic meld/leave-battlefield procedure.
+    ExactMeldLifecycle,
+    /// The exact back-face casting restriction is owned by the transform
+    /// layout transition procedure and its face-selection rules.
+    ExactBackFaceCastRestriction,
     /// The complete root owns the exact printed Flashback keyword procedure.
     ExactFlashbackKeyword,
     /// The retained graveyard cast atomically discards a land and casts the
@@ -372,6 +387,11 @@ pub(crate) enum RuntimeCapability {
     /// A complete occurrence-addressed clause is represented by the generic
     /// bounded Oracle IR and consumed by its transactional state executor.
     ExactBoundedOracleProgram,
+    /// One exact assembled modal group validates its header invocation,
+    /// chooser, cardinality, repetitions, and per-branch contexts before its
+    /// header owner executes every selected branch in printed order under one
+    /// rollback checkpoint.
+    ExactAtomicModalGroup,
     /// The exact source restriction is consulted when determining whether the
     /// source can legally be blocked in combat.
     ExactCannotBeBlockedRestriction,
@@ -4683,6 +4703,13 @@ pub(crate) fn compile_atomic_runtime_receipt(card: &CompiledCard) -> Option<Atom
     match transaction.initiation() {
         AtomicInitiation::CastSpell => {
             capabilities.push(RuntimeCapability::CounteredSpellResolutionBoundary);
+            if matches!(
+                transaction,
+                TypedAtomicTransaction::SacrificeRitual { .. }
+                    | TypedAtomicTransaction::SacrificeTutor { .. }
+            ) {
+                capabilities.push(RuntimeCapability::ExactCastingCostBatch);
+            }
         }
         AtomicInitiation::HandManaAbility => {
             capabilities.push(RuntimeCapability::HandManaAbilityWithoutStack);
@@ -5547,13 +5574,24 @@ pub(crate) fn compile_bounded_oracle_runtime_receipts(
         .iter()
         .filter_map(|clause| {
             let address = clause.address();
-            let mechanic_programs = card
-                .effects
-                .mechanic_programs
-                .iter()
-                .filter(|program| program.primary_address() == address)
-                .cloned()
-                .collect::<Vec<_>>();
+            let mechanic_programs = if matches!(
+                clause.effects(),
+                [BoundedEffect::StandaloneRuleProgram(
+                    crate::bounded_oracle_runtime::StandaloneRuleProgram::LevelProgression(_)
+                )]
+            ) {
+                // The level program owns and executes its typed child abilities.
+                // A nested action keyword such as Scry is evidence about that
+                // child, not a second executable owner of the wrapper clause.
+                Vec::new()
+            } else {
+                card.effects
+                    .mechanic_programs
+                    .iter()
+                    .filter(|program| program.primary_address() == address)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
             let executor_id = bounded_oracle_executor_id(clause);
             let source_evidence = selected_bounded_oracle_clause_source_evidence(
                 card,
@@ -5738,6 +5776,9 @@ fn bounded_oracle_capabilities(
     ];
     if !clause.costs().is_empty() {
         capabilities.push(RuntimeCapability::AtomicInitiationBoundary);
+    }
+    if casting_additional_cost_has_atomic_payment_contract(clause) {
+        capabilities.push(RuntimeCapability::ExactCastingCostBatch);
     }
     if matches!(clause.timing(), BoundedTiming::SpellResolution) {
         capabilities.push(RuntimeCapability::CounteredSpellResolutionBoundary);
@@ -5974,6 +6015,14 @@ fn bounded_oracle_capabilities(
     if bounded_clause_has_exact_live_attachment_static(clause) {
         capabilities.push(RuntimeCapability::ExactAttachmentStaticEffect);
     }
+    if matches!(
+        clause.effects(),
+        [BoundedEffect::StandaloneRuleProgram(
+            crate::bounded_oracle_runtime::StandaloneRuleProgram::OracleFaceModalLine(program)
+        )] if program.production_adapter_connected()
+    ) {
+        capabilities.push(RuntimeCapability::ExactAtomicModalGroup);
+    }
     for program in mechanic_programs {
         let capability = match program.mechanic() {
             PrintedMechanic::AbilityWord => RuntimeCapability::ExactAbilityWordMarker,
@@ -6023,6 +6072,22 @@ fn bounded_clause_has_exact_live_attachment_static(clause: &BoundedOracleClause)
                     duration: crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
                 },
             ) => true,
+            BoundedEffect::GrantKeyword {
+                objects: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                keywords,
+                duration: crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+            } => !keywords.is_empty(),
+            BoundedEffect::SetCharacteristics(
+                crate::bounded_oracle_runtime::SetCharacteristics {
+                    object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                    duration: crate::bounded_oracle_runtime::Duration::WhileSourceOnBattlefield,
+                    ..
+                },
+            ) => true,
+            BoundedEffect::ChangeControl {
+                object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
+                controller: crate::bounded_oracle_runtime::PlayerRef::You,
+            } => true,
             BoundedEffect::Restriction(BoundedRestriction::DoesNotUntapDuring {
                 object: crate::bounded_oracle_runtime::ObjectRef::AttachmentTarget { .. },
                 step: crate::bounded_oracle_runtime::Step::UntapStep,

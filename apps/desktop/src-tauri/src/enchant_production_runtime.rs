@@ -428,13 +428,19 @@ fn exact_target_family(
 
 fn is_artifact_or_creature(predicates: &[ObjectPredicate]) -> bool {
     predicates.len() == 2
-        && predicates.contains(&ObjectPredicate::CardType(CardType::Artifact))
-        && predicates.contains(&ObjectPredicate::CardType(CardType::Creature))
+        && predicates
+            .iter()
+            .any(|predicate| *predicate == ObjectPredicate::CardType(CardType::Artifact))
+        && predicates
+            .iter()
+            .any(|predicate| *predicate == ObjectPredicate::CardType(CardType::Creature))
 }
 
 fn is_nonland_permanent(predicates: &[ObjectPredicate]) -> bool {
     predicates.len() == 2
-        && predicates.contains(&ObjectPredicate::Permanent)
+        && predicates
+            .iter()
+            .any(|predicate| *predicate == ObjectPredicate::Permanent)
         && predicates.iter().any(|predicate| {
             *predicate == ObjectPredicate::Not(Box::new(ObjectPredicate::CardType(CardType::Land)))
         })

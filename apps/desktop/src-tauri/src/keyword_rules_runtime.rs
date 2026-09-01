@@ -10,8 +10,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
-pub const KEYWORD_RULES_RUNTIME_VERSION: &str = "official-keyword-rules-2026-06-19/v31";
-pub const KEYWORD_RULES_EVIDENCE_VERSION: &str = "official-keyword-evidence/v18";
+pub const KEYWORD_RULES_RUNTIME_VERSION: &str = "official-keyword-rules-2026-06-19/v32";
+pub const KEYWORD_RULES_EVIDENCE_VERSION: &str = "official-keyword-evidence/v19";
 pub const KEYWORD_RULES_EFFECTIVE_DATE: &str = "2026-06-19";
 pub const KEYWORD_RULES_SOURCE_URL: &str =
     "https://media.wizards.com/2026/downloads/MagicCompRules%2020260619.txt";
@@ -1757,6 +1757,33 @@ pub enum ManaSymbol {
 pub struct ManaCost {
     pub raw: String,
     pub symbols: Vec<ManaSymbol>,
+}
+
+/// Exact cost evidence installed on one physical spell before a Bargain cast.
+///
+/// The printed cost is always present. Alternative costs are permissions, not
+/// additions, and the cast selects at most one of them. Mandatory additional
+/// mana costs are retained regardless of that selection. The Bargain-linked
+/// reduction is applied only after the controller declares the Bargain cost;
+/// Bargain itself never replaces or changes the spell's mana cost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BargainCastCostProfile {
+    pub printed_mana_cost: ManaCost,
+    pub authorized_alternative_mana_costs: Vec<ManaCost>,
+    pub mandatory_additional_mana_costs: Vec<ManaCost>,
+    pub bargained_generic_mana_reduction: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BargainBaseManaCostChoice {
+    Printed,
+    AuthorizedAlternative(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BargainCommanderDestination {
+    Graveyard,
+    CommandZone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5958,6 +5985,7 @@ pub enum ProtectionQuality {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastMethod {
     Ordinary,
+    Alternative,
     Flashback,
     Aftermath,
     Retrace,
@@ -6006,6 +6034,15 @@ pub struct KeywordObject {
     pub cast_method: Option<CastMethod>,
     /// Zone from which this spell's current cast began.
     pub cast_origin: Option<Zone>,
+    /// Exact printed, authorized alternative, and mandatory additional mana
+    /// cost evidence for the current Bargain-capable cast transaction.
+    pub bargain_cast_cost_profile: Option<BargainCastCostProfile>,
+    /// Alternative-cost permission selected for the current stack
+    /// incarnation. Bargain remains a separate additional-cost designation.
+    pub selected_bargain_alternative_cost: Option<usize>,
+    /// Mandatory additional mana costs paid for the current stack
+    /// incarnation, excluding the nonmana Bargain sacrifice itself.
+    pub paid_bargain_additional_mana_costs: Vec<ManaCost>,
     pub kicker_payments: Vec<usize>,
     pub morph_face_up_cost: Option<ManaCost>,
     pub renowned: bool,
@@ -6071,6 +6108,9 @@ impl KeywordObject {
             face_down: false,
             cast_method: None,
             cast_origin: None,
+            bargain_cast_cost_profile: None,
+            selected_bargain_alternative_cost: None,
+            paid_bargain_additional_mana_costs: Vec::new(),
             kicker_payments: Vec::new(),
             morph_face_up_cost: None,
             renowned: false,
@@ -6304,6 +6344,8 @@ impl KeywordGameState {
         moved.temporary_backup_abilities.clear();
         moved.encoded_on = None;
         moved.cast_origin = None;
+        moved.selected_bargain_alternative_cost = None;
+        moved.paid_bargain_additional_mana_costs.clear();
         moved.spree_chosen_modes.clear();
         moved.spree_mode_costs.clear();
         moved.fused_spell = false;
@@ -6742,14 +6784,14 @@ pub enum KeywordAction {
     ResolveMyriadEndOfCombat {
         delayed_trigger_id: u64,
     },
-    DeclareBargain {
+    CastWithBargain {
         player: PlayerId,
         spell: ObjectId,
-    },
-    PayBargainCost {
-        player: PlayerId,
-        spell: ObjectId,
-        sacrificed_permanent: ObjectId,
+        base_mana_cost: BargainBaseManaCostChoice,
+        sacrificed_permanent: Option<ObjectId>,
+        sacrificed_commander_destination: Option<BargainCommanderDestination>,
+        bargain_conditional_targets: Vec<ProtectionTarget>,
+        mana_payment: ManaPayment,
     },
     CastWithRetrace {
         player: PlayerId,
@@ -7209,14 +7251,22 @@ pub enum KeywordEvidenceEvent {
         delayed_trigger_id: u64,
         tokens: Vec<ObjectId>,
     },
-    BargainDeclared {
+    BargainSpellCast {
         player: PlayerId,
         spell: ObjectId,
-    },
-    BargainCostPaid {
-        player: PlayerId,
-        spell: ObjectId,
-        sacrificed_permanent: ObjectId,
+        cast_origin_incarnation: u64,
+        stack_incarnation: u64,
+        selected_alternative_cost: Option<usize>,
+        mandatory_additional_mana_costs: Vec<ManaCost>,
+        bargained_generic_mana_reduction: u32,
+        bargained: bool,
+        sacrificed_permanent: Option<ObjectId>,
+        sacrificed_permanent_incarnation: Option<u64>,
+        sacrifice_destination: Option<Zone>,
+        sacrificed_token_ceased_to_exist: bool,
+        bargain_conditional_targets: Vec<ProtectionTarget>,
+        mana_spent: Vec<ManaUnitId>,
+        life_paid: u32,
     },
     RetraceCast {
         player: PlayerId,
@@ -8090,17 +8140,28 @@ fn execute_keyword_action_inner(
             KeywordProgramKind::Myriad(myriad),
             KeywordAction::ResolveMyriadEndOfCombat { delayed_trigger_id },
         ) => execute_myriad_end_of_combat(state, delayed_trigger_id, myriad),
-        (KeywordProgramKind::Bargain(bargain), KeywordAction::DeclareBargain { player, spell }) => {
-            execute_declare_bargain(state, player, spell, bargain)
-        }
         (
             KeywordProgramKind::Bargain(bargain),
-            KeywordAction::PayBargainCost {
+            KeywordAction::CastWithBargain {
                 player,
                 spell,
+                base_mana_cost,
                 sacrificed_permanent,
+                sacrificed_commander_destination,
+                bargain_conditional_targets,
+                mana_payment,
             },
-        ) => execute_pay_bargain(state, player, spell, sacrificed_permanent, bargain),
+        ) => execute_bargain_cast(
+            state,
+            player,
+            spell,
+            base_mana_cost,
+            sacrificed_permanent,
+            sacrificed_commander_destination,
+            &bargain_conditional_targets,
+            bargain,
+            &mana_payment,
+        ),
         (
             KeywordProgramKind::Retrace(retrace),
             KeywordAction::CastWithRetrace {
@@ -11812,6 +11873,7 @@ fn validate_bargain_program(program: &BargainProgram) -> Result<(), KeywordExecu
         || !program.bargain_does_not_change_mana_cost
         || !program.bargained_status_is_set_when_intention_is_declared
         || !program.casting_must_later_pay_declared_cost_to_complete
+        || !program.linked_effects_reference_only_this_printed_bargain_ability
         || !program.conditional_targets_are_chosen_only_when_bargained
         || !program.cost_can_be_paid_at_most_once
     {
@@ -11820,61 +11882,193 @@ fn validate_bargain_program(program: &BargainProgram) -> Result<(), KeywordExecu
     Ok(())
 }
 
-fn execute_declare_bargain(
+fn bargain_mana_cost_has_exact_contract(cost: &ManaCost) -> bool {
+    !cost.symbols.is_empty()
+        && parse_mana_cost(&cost.raw).is_ok_and(|parsed| parsed.symbols == cost.symbols)
+}
+
+fn locked_bargain_mana_cost(
+    profile: &BargainCastCostProfile,
+    base_mana_cost: BargainBaseManaCostChoice,
+    bargained: bool,
+) -> Result<(ManaCost, Option<usize>, u32), KeywordExecutionError> {
+    if !bargain_mana_cost_has_exact_contract(&profile.printed_mana_cost)
+        || profile
+            .authorized_alternative_mana_costs
+            .iter()
+            .any(|cost| !bargain_mana_cost_has_exact_contract(cost))
+        || profile
+            .mandatory_additional_mana_costs
+            .iter()
+            .any(|cost| !bargain_mana_cost_has_exact_contract(cost))
+    {
+        return Err(KeywordExecutionError::InvalidBargainPayment);
+    }
+    let (base, selected_alternative) = match base_mana_cost {
+        BargainBaseManaCostChoice::Printed => (&profile.printed_mana_cost, None),
+        BargainBaseManaCostChoice::AuthorizedAlternative(index) => (
+            profile
+                .authorized_alternative_mana_costs
+                .get(index)
+                .ok_or(KeywordExecutionError::InvalidBargainPayment)?,
+            Some(index),
+        ),
+    };
+    let mut raw = base.raw.clone();
+    let mut symbols = base.symbols.clone();
+    for additional in &profile.mandatory_additional_mana_costs {
+        raw.push_str(&additional.raw);
+        symbols.extend(additional.symbols.iter().cloned());
+    }
+    let requested_reduction = if bargained {
+        profile.bargained_generic_mana_reduction
+    } else {
+        0
+    };
+    let mut remaining_reduction = requested_reduction;
+    for symbol in &mut symbols {
+        let ManaSymbol::Generic(amount) = symbol else {
+            continue;
+        };
+        let applied = (*amount).min(remaining_reduction);
+        *amount -= applied;
+        remaining_reduction -= applied;
+    }
+    Ok((
+        ManaCost { raw, symbols },
+        selected_alternative,
+        requested_reduction - remaining_reduction,
+    ))
+}
+
+fn execute_bargain_cast(
     state: &mut KeywordGameState,
     player: PlayerId,
     spell: ObjectId,
+    base_mana_cost: BargainBaseManaCostChoice,
+    sacrificed_permanent: Option<ObjectId>,
+    sacrificed_commander_destination: Option<BargainCommanderDestination>,
+    bargain_conditional_targets: &[ProtectionTarget],
     program: &BargainProgram,
+    mana_payment: &ManaPayment,
 ) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
     validate_bargain_program(program)?;
     let spell_object = state.object(spell)?;
-    if spell_object.zone != Zone::Stack
+    if spell_object.zone != Zone::Hand
+        || spell_object.owner != player
         || spell_object.controller != player
+        || spell_object.is_token
+        || spell_object.is_spell_copy
+        || spell_object
+            .effective_characteristics()
+            .card_types
+            .contains(&CardType::Land)
         || spell_object.bargained
         || spell_object.bargain_cost_paid
     {
         return Err(KeywordExecutionError::InvalidBargainPayment);
     }
-    state.object_mut(spell)?.bargained = true;
-    Ok(vec![KeywordEvidenceEvent::BargainDeclared {
-        player,
-        spell,
-    }])
-}
+    let profile = spell_object
+        .bargain_cast_cost_profile
+        .clone()
+        .ok_or(KeywordExecutionError::InvalidBargainPayment)?;
+    let cast_origin_incarnation = spell_object.incarnation;
+    let mut sacrificed_permanent_incarnation = None;
+    let mut sacrificed_permanent_is_token = false;
+    let mut sacrifice_destination = None;
+    if let Some(permanent_id) = sacrificed_permanent {
+        if permanent_id == spell {
+            return Err(KeywordExecutionError::InvalidBargainPayment);
+        }
+        let permanent = state.object(permanent_id)?;
+        let types = &permanent.effective_characteristics().card_types;
+        if permanent.zone != Zone::Battlefield
+            || permanent.controller != player
+            || (!permanent.is_token
+                && !types.contains(&CardType::Artifact)
+                && !types.contains(&CardType::Enchantment))
+        {
+            return Err(KeywordExecutionError::InvalidBargainPayment);
+        }
+        match (permanent.is_commander, sacrificed_commander_destination) {
+            (true, Some(_)) | (false, None) => {}
+            _ => return Err(KeywordExecutionError::InvalidBargainPayment),
+        }
+        if permanent.is_token && permanent.is_commander {
+            return Err(KeywordExecutionError::InvalidBargainPayment);
+        }
+        sacrificed_permanent_incarnation = Some(permanent.incarnation);
+        sacrificed_permanent_is_token = permanent.is_token;
+    } else if sacrificed_commander_destination.is_some() {
+        return Err(KeywordExecutionError::InvalidBargainPayment);
+    }
 
-fn execute_pay_bargain(
-    state: &mut KeywordGameState,
-    player: PlayerId,
-    spell: ObjectId,
-    sacrificed_permanent: ObjectId,
-    program: &BargainProgram,
-) -> Result<Vec<KeywordEvidenceEvent>, KeywordExecutionError> {
-    validate_bargain_program(program)?;
-    let spell_object = state.object(spell)?;
-    if spell_object.zone != Zone::Stack
-        || spell_object.controller != player
-        || !spell_object.bargained
-        || spell_object.bargain_cost_paid
-        || spell == sacrificed_permanent
-    {
+    let bargained = sacrificed_permanent.is_some();
+    if !bargained && !bargain_conditional_targets.is_empty() {
         return Err(KeywordExecutionError::InvalidBargainPayment);
     }
-    let permanent = state.object(sacrificed_permanent)?;
-    let types = &permanent.effective_characteristics().card_types;
-    if permanent.zone != Zone::Battlefield
-        || permanent.controller != player
-        || (!permanent.is_token
-            && !types.contains(&CardType::Artifact)
-            && !types.contains(&CardType::Enchantment))
+    let (locked_cost, selected_alternative, generic_reduction) =
+        locked_bargain_mana_cost(&profile, base_mana_cost, bargained)?;
+
+    // Moving the card first models 601.2a. The Bargain designation is then
+    // linked to this exact stack incarnation before total-cost payment. The
+    // outer transaction restores the hand, mana, and permanent if any later
+    // validation or payment fails.
+    state.move_object(spell, Zone::Stack)?;
     {
-        return Err(KeywordExecutionError::InvalidBargainPayment);
+        let spell_object = state.object_mut(spell)?;
+        spell_object.controller = player;
+        spell_object.cast_origin = Some(Zone::Hand);
+        spell_object.cast_method = Some(if selected_alternative.is_some() {
+            CastMethod::Alternative
+        } else {
+            CastMethod::Ordinary
+        });
+        spell_object.bargained = bargained;
+        spell_object.selected_bargain_alternative_cost = selected_alternative;
+        spell_object.paid_bargain_additional_mana_costs =
+            profile.mandatory_additional_mana_costs.clone();
     }
-    state.move_object(sacrificed_permanent, Zone::Graveyard)?;
-    state.object_mut(spell)?.bargain_cost_paid = true;
-    Ok(vec![KeywordEvidenceEvent::BargainCostPaid {
+    let source_profile = SourceProfile::from_object(state.object(spell)?);
+    for target in bargain_conditional_targets {
+        if !targeting_is_legal(state, *target, &source_profile)? {
+            return Err(KeywordExecutionError::InvalidBargainPayment);
+        }
+    }
+    let paid = pay_mana_cost(state, player, &locked_cost, mana_payment)?;
+    if let Some(permanent) = sacrificed_permanent {
+        state.move_object(permanent, Zone::Graveyard)?;
+        sacrifice_destination = Some(Zone::Graveyard);
+        if matches!(
+            sacrificed_commander_destination,
+            Some(BargainCommanderDestination::CommandZone)
+        ) {
+            state.move_object(permanent, Zone::Command)?;
+            sacrifice_destination = Some(Zone::Command);
+        } else if sacrificed_permanent_is_token {
+            let owner = state.object(permanent)?.owner;
+            state.remove_from_owned_zone(owner, permanent, Zone::Graveyard)?;
+            state.objects.remove(&permanent);
+        }
+        state.object_mut(spell)?.bargain_cost_paid = true;
+    }
+    let stack_incarnation = state.object(spell)?.incarnation;
+    Ok(vec![KeywordEvidenceEvent::BargainSpellCast {
         player,
         spell,
+        cast_origin_incarnation,
+        stack_incarnation,
+        selected_alternative_cost: selected_alternative,
+        mandatory_additional_mana_costs: profile.mandatory_additional_mana_costs,
+        bargained_generic_mana_reduction: generic_reduction,
+        bargained,
         sacrificed_permanent,
+        sacrificed_permanent_incarnation,
+        sacrifice_destination,
+        sacrificed_token_ceased_to_exist: sacrificed_permanent_is_token,
+        bargain_conditional_targets: bargain_conditional_targets.to_vec(),
+        mana_spent: paid.mana_spent,
+        life_paid: paid.life_paid,
     }])
 }
 

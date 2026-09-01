@@ -10,8 +10,9 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::bounded_oracle_runtime::{
-    ActivationRestriction, BoundedOracleClause, Condition, Cost, Effect, OracleClauseInput,
-    StandaloneRuleProgram, Timing, compile_bounded_oracle_clause_core, normalize_oracle_clause,
+    ActivationRestriction, BoundedOracleClause, CardType, Color, Condition, Cost, Effect, Keyword,
+    ObjectFilter, OracleClauseInput, StandaloneRuleProgram, Timing, Zone,
+    compile_bounded_oracle_clause_core, normalize_oracle_clause,
 };
 use crate::damage_transaction_runtime::{
     DamageAssignment, DamageAssignmentId, DamageChoicePlan, DamageKind, DamageModifierChoice,
@@ -46,6 +47,15 @@ impl DamageClauseEnvelope {
 pub enum DamageAmountTemplate {
     Fixed(u32),
     X,
+    TwiceX,
+    ControlledLandCount,
+    ControlledCreatureCount {
+        multiplier: u32,
+    },
+    ControlledCreatureTokenCount,
+    ControlledCreatureOrVehicleCount,
+    GreatestControlledCreaturePower,
+    OwnedInstantAndSorceryCardCountInGraveyard,
     SacrificedCreaturePower,
     BoundSacrificedCreaturePower {
         cost_clause_index: u16,
@@ -66,6 +76,21 @@ impl DamageAmountTemplate {
         match self {
             Self::Fixed(amount) => format!("fixed:{amount}"),
             Self::X => "x".to_owned(),
+            Self::TwiceX => "twice-x".to_owned(),
+            Self::ControlledLandCount => "controlled-land-count".to_owned(),
+            Self::ControlledCreatureCount { multiplier } => {
+                format!("controlled-creature-count:{multiplier}")
+            }
+            Self::ControlledCreatureTokenCount => "controlled-creature-token-count".to_owned(),
+            Self::ControlledCreatureOrVehicleCount => {
+                "controlled-creature-or-vehicle-count".to_owned()
+            }
+            Self::GreatestControlledCreaturePower => {
+                "greatest-controlled-creature-power".to_owned()
+            }
+            Self::OwnedInstantAndSorceryCardCountInGraveyard => {
+                "owned-instant-and-sorcery-card-count-in-graveyard".to_owned()
+            }
             Self::SacrificedCreaturePower => "sacrificed-creature-power:unbound".to_owned(),
             Self::BoundSacrificedCreaturePower {
                 cost_clause_index,
@@ -92,11 +117,13 @@ pub enum DamageRecipientTemplate {
     AnyTarget,
     SelectedTargets,
     SelectedCreatureOrPlaneswalkerTargets,
+    SelectedUpToTwoCreatures,
     TargetCreature,
     TargetCreatureController,
     TargetAttackingOrBlockingCreature,
     TargetCreatureDealtDamageThisTurn,
     TargetCreatureOrPlaneswalker,
+    TargetCreaturePlaneswalkerOrBattle,
     TargetPlayer,
     TargetOpponent,
     TargetPlayerOrPlaneswalker,
@@ -109,8 +136,12 @@ pub enum DamageRecipientTemplate {
     EachCreatureWithFlying,
     EachCreatureWithoutFlying,
     EachCreatureOpponentsControl,
+    EachCreatureTargetPlayerControls,
+    EachCreatureTargetOpponentControls,
     EachCreatureAndEachPlayer,
     EachCreatureAndEachPlaneswalker,
+    EachCreaturePlaneswalkerAndBattle,
+    EachCreatureAndPlaneswalkerNotControlledByYou,
     You,
     ThatPlayer,
     SourceItself,
@@ -124,11 +155,13 @@ impl DamageRecipientTemplate {
             Self::SelectedCreatureOrPlaneswalkerTargets => {
                 "selected-creature-or-planeswalker-targets"
             }
+            Self::SelectedUpToTwoCreatures => "selected-up-to-two-creatures",
             Self::TargetCreature => "target-creature",
             Self::TargetCreatureController => "target-creature-controller",
             Self::TargetAttackingOrBlockingCreature => "target-attacking-or-blocking-creature",
             Self::TargetCreatureDealtDamageThisTurn => "target-creature-dealt-damage-this-turn",
             Self::TargetCreatureOrPlaneswalker => "target-creature-or-planeswalker",
+            Self::TargetCreaturePlaneswalkerOrBattle => "target-creature-planeswalker-or-battle",
             Self::TargetPlayer => "target-player",
             Self::TargetOpponent => "target-opponent",
             Self::TargetPlayerOrPlaneswalker => "target-player-or-planeswalker",
@@ -141,8 +174,14 @@ impl DamageRecipientTemplate {
             Self::EachCreatureWithFlying => "each-creature-with-flying",
             Self::EachCreatureWithoutFlying => "each-creature-without-flying",
             Self::EachCreatureOpponentsControl => "each-creature-opponents-control",
+            Self::EachCreatureTargetPlayerControls => "each-creature-target-player-controls",
+            Self::EachCreatureTargetOpponentControls => "each-creature-target-opponent-controls",
             Self::EachCreatureAndEachPlayer => "each-creature-and-each-player",
             Self::EachCreatureAndEachPlaneswalker => "each-creature-and-each-planeswalker",
+            Self::EachCreaturePlaneswalkerAndBattle => "each-creature-planeswalker-and-battle",
+            Self::EachCreatureAndPlaneswalkerNotControlledByYou => {
+                "each-creature-and-planeswalker-not-controlled-by-you"
+            }
             Self::You => "you",
             Self::ThatPlayer => "that-player",
             Self::SourceItself => "source-itself",
@@ -159,8 +198,12 @@ impl DamageRecipientTemplate {
                 | Self::EachCreatureWithFlying
                 | Self::EachCreatureWithoutFlying
                 | Self::EachCreatureOpponentsControl
+                | Self::EachCreatureTargetPlayerControls
+                | Self::EachCreatureTargetOpponentControls
                 | Self::EachCreatureAndEachPlayer
                 | Self::EachCreatureAndEachPlaneswalker
+                | Self::EachCreaturePlaneswalkerAndBattle
+                | Self::EachCreatureAndPlaneswalkerNotControlledByYou
         )
     }
 }
@@ -249,6 +292,7 @@ pub struct DamageClauseBindings {
     pub trigger_source_state: Option<DamageTriggerSourceState>,
     pub x_value: Option<u32>,
     pub dynamic_amount: Option<u32>,
+    pub defined_set_target_player: Option<crate::damage_transaction_runtime::PlayerId>,
     pub recipients: Vec<DamageRecipientBinding>,
     pub modifier_choices: Vec<DamageModifierChoice>,
 }
@@ -263,6 +307,7 @@ pub struct CompiledDamageClause {
     source_evidence: DamageSourceEvidenceTemplate,
     amount: DamageAmountTemplate,
     recipient: DamageRecipientTemplate,
+    recipient_target_filter: Option<ObjectFilter>,
     timing: Timing,
     costs: Vec<Cost>,
     conditions: Vec<Condition>,
@@ -307,6 +352,10 @@ impl CompiledDamageClause {
 
     pub fn recipient(&self) -> DamageRecipientTemplate {
         self.recipient
+    }
+
+    pub fn recipient_target_filter(&self) -> Option<&ObjectFilter> {
+        self.recipient_target_filter.as_ref()
     }
 
     pub fn gains_life_equal_to_actual_damage(&self) -> bool {
@@ -414,9 +463,25 @@ impl CompiledDamageClause {
                     .x_value
                     .ok_or(DamageClauseBindingError::MissingXValue)?
             }
+            DamageAmountTemplate::TwiceX => {
+                if let Some(value) = bindings.dynamic_amount {
+                    return Err(DamageClauseBindingError::UnexpectedDynamicAmount { value });
+                }
+                bindings
+                    .x_value
+                    .ok_or(DamageClauseBindingError::MissingXValue)?
+                    .checked_mul(2)
+                    .ok_or(DamageClauseBindingError::DynamicAmountOverflow)?
+            }
             DamageAmountTemplate::BoundSacrificedCreaturePower { .. }
             | DamageAmountTemplate::BoundSameClauseSacrificedCreaturePower { .. }
-            | DamageAmountTemplate::BoundDiscardedCardsTotalManaValue { .. } => {
+            | DamageAmountTemplate::BoundDiscardedCardsTotalManaValue { .. }
+            | DamageAmountTemplate::ControlledLandCount
+            | DamageAmountTemplate::ControlledCreatureCount { .. }
+            | DamageAmountTemplate::ControlledCreatureTokenCount
+            | DamageAmountTemplate::ControlledCreatureOrVehicleCount
+            | DamageAmountTemplate::GreatestControlledCreaturePower
+            | DamageAmountTemplate::OwnedInstantAndSorceryCardCountInGraveyard => {
                 if let Some(value) = bindings.x_value {
                     return Err(DamageClauseBindingError::UnexpectedXValue { value });
                 }
@@ -434,6 +499,7 @@ impl CompiledDamageClause {
             self.recipient,
             &bindings.source,
             amount,
+            bindings.defined_set_target_player,
             &bindings.recipients,
         )?;
         let assignment_order = bindings
@@ -520,7 +586,15 @@ pub enum DamageClauseBindingError {
         value: u32,
     },
     MissingDynamicAmount,
+    DynamicAmountOverflow,
     UnboundDynamicAmount,
+    MissingDefinedSetTargetPlayer,
+    UnexpectedDefinedSetTargetPlayer {
+        player: crate::damage_transaction_runtime::PlayerId,
+    },
+    DefinedSetTargetMustBeOpponent {
+        player: crate::damage_transaction_runtime::PlayerId,
+    },
     DuplicateAssignment {
         assignment: DamageAssignmentId,
     },
@@ -528,6 +602,10 @@ pub enum DamageClauseBindingError {
         recipient: DamageRecipient,
     },
     ExpectedSingleRecipient {
+        actual: usize,
+    },
+    TooManyRecipients {
+        maximum: usize,
         actual: usize,
     },
     IllegalRecipient {
@@ -544,10 +622,11 @@ impl fmt::Display for DamageClauseBindingError {
 
 impl std::error::Error for DamageClauseBindingError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedDamageInstruction {
     source_syntax: DamageClauseSourceSyntax,
     shape: DamageClauseShape,
+    recipient_target_filter: Option<ObjectFilter>,
 }
 
 pub fn compile_damage_clause(
@@ -658,6 +737,10 @@ pub fn compile_damage_clause(
         "preventability=preventable".to_owned(),
         format!("amount={}", amount.contract_tag()),
         format!("recipient={}", parsed.shape.recipient.contract_tag()),
+        format!(
+            "recipient-target-filter={:?}",
+            parsed.recipient_target_filter
+        ),
         format!("wrapper-timing={:?}", wrapper.timing()),
         format!("wrapper-costs={costs:?}"),
         format!("wrapper-conditions={:?}", wrapper.conditions()),
@@ -684,6 +767,7 @@ pub fn compile_damage_clause(
         source_evidence,
         amount,
         recipient: parsed.shape.recipient,
+        recipient_target_filter: parsed.recipient_target_filter,
         timing,
         costs,
         conditions,
@@ -724,6 +808,10 @@ pub fn compile_damage_resolution_leaf_program(instruction: &str) -> Option<Compi
         "preventability=preventable".to_owned(),
         format!("amount={}", parsed.shape.amount.contract_tag()),
         format!("recipient={}", parsed.shape.recipient.contract_tag()),
+        format!(
+            "recipient-target-filter={:?}",
+            parsed.recipient_target_filter
+        ),
         format!("post-damage-life-gain={gain_life_equal_to_actual_damage}"),
         format!("recipient-optional={recipient_optional}"),
         "wrapper-timing=resolution-instruction".to_owned(),
@@ -746,6 +834,7 @@ pub fn compile_damage_resolution_leaf_program(instruction: &str) -> Option<Compi
         source_evidence: DamageSourceEvidenceTemplate::CurrentCharacteristics,
         amount: parsed.shape.amount,
         recipient: parsed.shape.recipient,
+        recipient_target_filter: parsed.recipient_target_filter,
         timing: Timing::SpellResolution,
         costs: Vec::new(),
         conditions: Vec::new(),
@@ -754,6 +843,27 @@ pub fn compile_damage_resolution_leaf_program(instruction: &str) -> Option<Compi
         recipient_target_id: 0,
         recipient_optional,
     })
+}
+
+/// Compile an exact resolving damage instruction whose printed source name
+/// has already been replaced by the bounded runtime's content-derived
+/// `This object` normalization.
+///
+/// The semantic program remains keyed by the normalized instruction so card
+/// renames and snapshot relocation do not change the contract. The exact
+/// printed instruction is retained separately for source-provenance checks.
+pub fn compile_exact_damage_resolution_leaf_program(
+    exact_instruction: &str,
+    normalized_instruction: &str,
+) -> Option<CompiledDamageClause> {
+    let exact_instruction = exact_instruction.trim();
+    let normalized_instruction = normalized_instruction.trim();
+    if exact_instruction.is_empty() || normalized_instruction.is_empty() {
+        return None;
+    }
+    let mut program = compile_damage_resolution_leaf_program(normalized_instruction)?;
+    program.source_clause = exact_instruction.to_owned();
+    Some(program)
 }
 
 fn validate_envelope_and_source_shape(
@@ -871,8 +981,29 @@ fn bind_recipients(
     template: DamageRecipientTemplate,
     source: &DamageSourceSnapshot,
     amount: u32,
+    defined_set_target_player: Option<crate::damage_transaction_runtime::PlayerId>,
     bindings: &[DamageRecipientBinding],
 ) -> Result<(DamageRecipients, DamageSelection), DamageClauseBindingError> {
+    let targets_player_defined_set = matches!(
+        template,
+        DamageRecipientTemplate::EachCreatureTargetPlayerControls
+            | DamageRecipientTemplate::EachCreatureTargetOpponentControls
+    );
+    let defined_set_target_player = match (targets_player_defined_set, defined_set_target_player) {
+        (true, Some(player)) => Some(player),
+        (true, None) => return Err(DamageClauseBindingError::MissingDefinedSetTargetPlayer),
+        (false, Some(player)) => {
+            return Err(DamageClauseBindingError::UnexpectedDefinedSetTargetPlayer { player });
+        }
+        (false, None) => None,
+    };
+    if template == DamageRecipientTemplate::EachCreatureTargetOpponentControls
+        && defined_set_target_player == Some(source.controller)
+    {
+        return Err(DamageClauseBindingError::DefinedSetTargetMustBeOpponent {
+            player: source.controller,
+        });
+    }
     if template.is_defined_set() {
         for binding in bindings {
             if !recipient_matches_template(template, source, binding.recipient) {
@@ -908,11 +1039,23 @@ fn bind_recipients(
             DamageRecipientTemplate::EachCreatureOpponentsControl => {
                 DefinedDamageSet::EachCreatureControlledByOpponentsOf(source.controller)
             }
+            DamageRecipientTemplate::EachCreatureTargetPlayerControls
+            | DamageRecipientTemplate::EachCreatureTargetOpponentControls => {
+                DefinedDamageSet::EachCreatureControlledBy(
+                    defined_set_target_player.expect("targeted defined-set player was validated"),
+                )
+            }
             DamageRecipientTemplate::EachCreatureAndEachPlayer => {
                 DefinedDamageSet::EachCreatureAndEachPlayer
             }
             DamageRecipientTemplate::EachCreatureAndEachPlaneswalker => {
                 DefinedDamageSet::EachCreatureAndEachPlaneswalker
+            }
+            DamageRecipientTemplate::EachCreaturePlaneswalkerAndBattle => {
+                DefinedDamageSet::EachCreaturePlaneswalkerAndBattle
+            }
+            DamageRecipientTemplate::EachCreatureAndPlaneswalkerNotControlledByYou => {
+                DefinedDamageSet::EachCreatureAndPlaneswalkerNotControlledBy(source.controller)
             }
             _ => unreachable!("defined set templates are handled above"),
         };
@@ -920,6 +1063,8 @@ fn bind_recipients(
             template,
             DamageRecipientTemplate::EachCreatureAndEachPlayer
                 | DamageRecipientTemplate::EachCreatureAndEachPlaneswalker
+                | DamageRecipientTemplate::EachCreaturePlaneswalkerAndBattle
+                | DamageRecipientTemplate::EachCreatureAndPlaneswalkerNotControlledByYou
         ) {
             DamageRecipients::Mixed { assignments }
         } else {
@@ -928,7 +1073,9 @@ fn bind_recipients(
                 | DamageRecipientTemplate::EachAttackingCreature
                 | DamageRecipientTemplate::EachCreatureWithFlying
                 | DamageRecipientTemplate::EachCreatureWithoutFlying
-                | DamageRecipientTemplate::EachCreatureOpponentsControl => {
+                | DamageRecipientTemplate::EachCreatureOpponentsControl
+                | DamageRecipientTemplate::EachCreatureTargetPlayerControls
+                | DamageRecipientTemplate::EachCreatureTargetOpponentControls => {
                     DamageRecipientKind::Creature
                 }
                 _ => DamageRecipientKind::Player,
@@ -941,7 +1088,22 @@ fn bind_recipients(
         template,
         DamageRecipientTemplate::SelectedTargets
             | DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets
+            | DamageRecipientTemplate::SelectedUpToTwoCreatures
     ) {
+        if template == DamageRecipientTemplate::SelectedUpToTwoCreatures && bindings.len() > 2 {
+            return Err(DamageClauseBindingError::TooManyRecipients {
+                maximum: 2,
+                actual: bindings.len(),
+            });
+        }
+        for binding in bindings {
+            if !recipient_matches_template(template, source, binding.recipient) {
+                return Err(DamageClauseBindingError::IllegalRecipient {
+                    expected: template,
+                    actual: binding.recipient,
+                });
+            }
+        }
         let assignments = bindings
             .iter()
             .map(|binding| DamageAssignment {
@@ -964,10 +1126,15 @@ fn bind_recipients(
         };
         return Ok((
             recipients,
-            DamageSelection::Targeted(if template == DamageRecipientTemplate::SelectedTargets {
-                LegalDamageTargetKind::AnyTarget
-            } else {
-                LegalDamageTargetKind::CreatureOrPlaneswalker
+            DamageSelection::Targeted(match template {
+                DamageRecipientTemplate::SelectedTargets => LegalDamageTargetKind::AnyTarget,
+                DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets => {
+                    LegalDamageTargetKind::CreatureOrPlaneswalker
+                }
+                DamageRecipientTemplate::SelectedUpToTwoCreatures => {
+                    LegalDamageTargetKind::Creature
+                }
+                _ => unreachable!("selected target sets are handled above"),
             }),
         ));
     }
@@ -997,6 +1164,9 @@ fn bind_recipients(
         DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets => {
             unreachable!("selected target sets return above")
         }
+        DamageRecipientTemplate::SelectedUpToTwoCreatures => {
+            unreachable!("selected target sets return above")
+        }
         DamageRecipientTemplate::TargetCreature => {
             DamageSelection::Targeted(LegalDamageTargetKind::Creature)
         }
@@ -1009,6 +1179,9 @@ fn bind_recipients(
         }
         DamageRecipientTemplate::TargetCreatureOrPlaneswalker => {
             DamageSelection::Targeted(LegalDamageTargetKind::CreatureOrPlaneswalker)
+        }
+        DamageRecipientTemplate::TargetCreaturePlaneswalkerOrBattle => {
+            DamageSelection::Targeted(LegalDamageTargetKind::CreaturePlaneswalkerOrBattle)
         }
         DamageRecipientTemplate::TargetPlayer => {
             DamageSelection::Targeted(LegalDamageTargetKind::Player)
@@ -1035,8 +1208,12 @@ fn bind_recipients(
         | DamageRecipientTemplate::EachCreatureWithFlying
         | DamageRecipientTemplate::EachCreatureWithoutFlying
         | DamageRecipientTemplate::EachCreatureOpponentsControl
+        | DamageRecipientTemplate::EachCreatureTargetPlayerControls
+        | DamageRecipientTemplate::EachCreatureTargetOpponentControls
         | DamageRecipientTemplate::EachCreatureAndEachPlayer
-        | DamageRecipientTemplate::EachCreatureAndEachPlaneswalker => {
+        | DamageRecipientTemplate::EachCreatureAndEachPlaneswalker
+        | DamageRecipientTemplate::EachCreaturePlaneswalkerAndBattle
+        | DamageRecipientTemplate::EachCreatureAndPlaneswalkerNotControlledByYou => {
             unreachable!("defined set templates return above")
         }
     };
@@ -1054,6 +1231,9 @@ fn recipient_matches_template(
             recipient,
             DamageRecipient::Creature(_) | DamageRecipient::Planeswalker(_)
         ),
+        DamageRecipientTemplate::SelectedUpToTwoCreatures => {
+            matches!(recipient, DamageRecipient::Creature(_))
+        }
         DamageRecipientTemplate::TargetCreature => {
             matches!(recipient, DamageRecipient::Creature(_))
         }
@@ -1069,6 +1249,12 @@ fn recipient_matches_template(
         DamageRecipientTemplate::TargetCreatureOrPlaneswalker => matches!(
             recipient,
             DamageRecipient::Creature(_) | DamageRecipient::Planeswalker(_)
+        ),
+        DamageRecipientTemplate::TargetCreaturePlaneswalkerOrBattle => matches!(
+            recipient,
+            DamageRecipient::Creature(_)
+                | DamageRecipient::Planeswalker(_)
+                | DamageRecipient::Battle(_)
         ),
         DamageRecipientTemplate::TargetPlayer => {
             matches!(recipient, DamageRecipient::Player(_))
@@ -1109,11 +1295,25 @@ fn recipient_matches_template(
         DamageRecipientTemplate::EachCreatureOpponentsControl => {
             matches!(recipient, DamageRecipient::Creature(_))
         }
+        DamageRecipientTemplate::EachCreatureTargetPlayerControls
+        | DamageRecipientTemplate::EachCreatureTargetOpponentControls => {
+            matches!(recipient, DamageRecipient::Creature(_))
+        }
         DamageRecipientTemplate::EachCreatureAndEachPlayer => matches!(
             recipient,
             DamageRecipient::Creature(_) | DamageRecipient::Player(_)
         ),
         DamageRecipientTemplate::EachCreatureAndEachPlaneswalker => matches!(
+            recipient,
+            DamageRecipient::Creature(_) | DamageRecipient::Planeswalker(_)
+        ),
+        DamageRecipientTemplate::EachCreaturePlaneswalkerAndBattle => matches!(
+            recipient,
+            DamageRecipient::Creature(_)
+                | DamageRecipient::Planeswalker(_)
+                | DamageRecipient::Battle(_)
+        ),
+        DamageRecipientTemplate::EachCreatureAndPlaneswalkerNotControlledByYou => matches!(
             recipient,
             DamageRecipient::Creature(_) | DamageRecipient::Planeswalker(_)
         ),
@@ -1240,10 +1440,25 @@ fn parse_damage_instruction(instruction: &str) -> Option<ParsedDamageInstruction
     if sentence.ends_with('.') {
         return None;
     }
-    let lower = sentence.to_ascii_lowercase();
+    let lower_full = sentence.to_ascii_lowercase();
+    let (lower, where_x_amount) = if let Some(core) = lower_full.strip_suffix(
+        ", where x is the number of permanents you control that are creatures and/or vehicles",
+    ) {
+        (
+            core,
+            Some(DamageAmountTemplate::ControlledCreatureOrVehicleCount),
+        )
+    } else {
+        (lower_full.as_str(), None)
+    };
     let (source_syntax, rest) = lower
         .strip_prefix("this object deals ")
         .map(|rest| (DamageClauseSourceSyntax::ExplicitThisObject, rest))
+        .or_else(|| {
+            lower
+                .strip_prefix("this object spell deals ")
+                .map(|rest| (DamageClauseSourceSyntax::ExplicitThisObject, rest))
+        })
         .or_else(|| {
             lower
                 .strip_prefix("it deals ")
@@ -1272,54 +1487,170 @@ fn parse_damage_instruction(instruction: &str) -> Option<ParsedDamageInstruction
     if recipient.contains(" damage to ") {
         return None;
     }
-    let amount = parse_damage_amount(amount)?;
-    let recipient = match recipient {
-        "any target" => DamageRecipientTemplate::AnyTarget,
-        "each of x targets" => DamageRecipientTemplate::SelectedTargets,
-        "each of up to x target creatures and/or planeswalkers" => {
-            DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets
+    let amount = match where_x_amount {
+        Some(template) if amount == "x" => template,
+        Some(_) => return None,
+        None => parse_damage_amount(amount)?,
+    };
+    let creature_target_filter = || ObjectFilter {
+        zones: vec![Zone::Battlefield],
+        card_types: vec![CardType::Creature],
+        ..ObjectFilter::default()
+    };
+    let (recipient, recipient_target_filter) = match recipient {
+        "any target" => (DamageRecipientTemplate::AnyTarget, None),
+        "each of x targets" => (DamageRecipientTemplate::SelectedTargets, None),
+        "each of up to x target creatures and/or planeswalkers" => (
+            DamageRecipientTemplate::SelectedCreatureOrPlaneswalkerTargets,
+            None,
+        ),
+        "each of up to two target creatures" => {
+            (DamageRecipientTemplate::SelectedUpToTwoCreatures, None)
         }
-        "target creature" => DamageRecipientTemplate::TargetCreature,
-        "that creature's controller" => DamageRecipientTemplate::TargetCreatureController,
-        "target attacking or blocking creature" => {
-            DamageRecipientTemplate::TargetAttackingOrBlockingCreature
+        "target creature" => (DamageRecipientTemplate::TargetCreature, None),
+        "target creature an opponent controls" => {
+            let mut filter = creature_target_filter();
+            filter.controller = Some(crate::bounded_oracle_runtime::PlayerRef::Opponent);
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
         }
-        "target creature that was dealt damage this turn" => {
-            DamageRecipientTemplate::TargetCreatureDealtDamageThisTurn
+        "target creature with flying" => {
+            let mut filter = creature_target_filter();
+            filter.keywords.push(Keyword::Flying);
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
         }
-        "target creature or planeswalker" => DamageRecipientTemplate::TargetCreatureOrPlaneswalker,
-        "target player" => DamageRecipientTemplate::TargetPlayer,
-        "target opponent" => DamageRecipientTemplate::TargetOpponent,
-        "target player or planeswalker" => DamageRecipientTemplate::TargetPlayerOrPlaneswalker,
-        "target opponent or planeswalker" => DamageRecipientTemplate::TargetOpponentOrPlaneswalker,
-        "target planeswalker" => DamageRecipientTemplate::TargetPlaneswalker,
-        "each opponent" => DamageRecipientTemplate::EachOpponent,
-        "each player" => DamageRecipientTemplate::EachPlayer,
-        "each creature" => DamageRecipientTemplate::EachCreature,
-        "each attacking creature" => DamageRecipientTemplate::EachAttackingCreature,
-        "each creature with flying" => DamageRecipientTemplate::EachCreatureWithFlying,
-        "each creature without flying" => DamageRecipientTemplate::EachCreatureWithoutFlying,
+        "target creature without flying" => {
+            let mut filter = creature_target_filter();
+            filter.excluded_keywords.push(Keyword::Flying);
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
+        }
+        "target tapped creature" => {
+            let mut filter = creature_target_filter();
+            filter.tapped = Some(true);
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
+        }
+        "target attacking creature" => {
+            let mut filter = creature_target_filter();
+            filter.attacking = Some(true);
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
+        }
+        "target non-elemental creature" => {
+            let mut filter = creature_target_filter();
+            filter.excluded_subtypes.push("Elemental".to_owned());
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
+        }
+        "target treefolk creature" => {
+            let mut filter = creature_target_filter();
+            filter.subtypes.push("Treefolk".to_owned());
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
+        }
+        "target wizard creature" => {
+            let mut filter = creature_target_filter();
+            filter.subtypes.push("Wizard".to_owned());
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
+        }
+        "target blue creature" => {
+            let mut filter = creature_target_filter();
+            filter.colors.push(Color::Blue);
+            (DamageRecipientTemplate::TargetCreature, Some(filter))
+        }
+        "that creature's controller" => (DamageRecipientTemplate::TargetCreatureController, None),
+        "target attacking or blocking creature" => (
+            DamageRecipientTemplate::TargetAttackingOrBlockingCreature,
+            None,
+        ),
+        "target creature that was dealt damage this turn" => (
+            DamageRecipientTemplate::TargetCreatureDealtDamageThisTurn,
+            None,
+        ),
+        "target creature or planeswalker" => {
+            (DamageRecipientTemplate::TargetCreatureOrPlaneswalker, None)
+        }
+        "target creature, planeswalker, or battle" => (
+            DamageRecipientTemplate::TargetCreaturePlaneswalkerOrBattle,
+            None,
+        ),
+        "target player" => (DamageRecipientTemplate::TargetPlayer, None),
+        "target opponent" => (DamageRecipientTemplate::TargetOpponent, None),
+        "target player or planeswalker" => {
+            (DamageRecipientTemplate::TargetPlayerOrPlaneswalker, None)
+        }
+        "target opponent or planeswalker" => {
+            (DamageRecipientTemplate::TargetOpponentOrPlaneswalker, None)
+        }
+        "target planeswalker" => (DamageRecipientTemplate::TargetPlaneswalker, None),
+        "each opponent" => (DamageRecipientTemplate::EachOpponent, None),
+        "each player" => (DamageRecipientTemplate::EachPlayer, None),
+        "each creature" => (DamageRecipientTemplate::EachCreature, None),
+        "each attacking creature" => (DamageRecipientTemplate::EachAttackingCreature, None),
+        "each creature with flying" => (DamageRecipientTemplate::EachCreatureWithFlying, None),
+        "each creature without flying" => {
+            (DamageRecipientTemplate::EachCreatureWithoutFlying, None)
+        }
         "each creature your opponents control" => {
-            DamageRecipientTemplate::EachCreatureOpponentsControl
+            (DamageRecipientTemplate::EachCreatureOpponentsControl, None)
         }
-        "each creature and each player" => DamageRecipientTemplate::EachCreatureAndEachPlayer,
-        "each creature and each planeswalker" => {
-            DamageRecipientTemplate::EachCreatureAndEachPlaneswalker
+        "each creature target player controls" => (
+            DamageRecipientTemplate::EachCreatureTargetPlayerControls,
+            None,
+        ),
+        "each creature target opponent controls" => (
+            DamageRecipientTemplate::EachCreatureTargetOpponentControls,
+            None,
+        ),
+        "each creature and each player" => {
+            (DamageRecipientTemplate::EachCreatureAndEachPlayer, None)
         }
-        "you" => DamageRecipientTemplate::You,
-        "them" | "that player" => DamageRecipientTemplate::ThatPlayer,
-        "itself" => DamageRecipientTemplate::SourceItself,
+        "each creature and each planeswalker" | "each creature and planeswalker" => (
+            DamageRecipientTemplate::EachCreatureAndEachPlaneswalker,
+            None,
+        ),
+        "each creature, planeswalker, and battle" => (
+            DamageRecipientTemplate::EachCreaturePlaneswalkerAndBattle,
+            None,
+        ),
+        "each creature and planeswalker you don't control" => (
+            DamageRecipientTemplate::EachCreatureAndPlaneswalkerNotControlledByYou,
+            None,
+        ),
+        "you" => (DamageRecipientTemplate::You, None),
+        "them" | "that player" => (DamageRecipientTemplate::ThatPlayer, None),
+        "itself" => (DamageRecipientTemplate::SourceItself, None),
         _ => return None,
     };
     Some(ParsedDamageInstruction {
         source_syntax,
         shape: DamageClauseShape { amount, recipient },
+        recipient_target_filter,
     })
 }
 
 fn parse_damage_amount(amount: &str) -> Option<DamageAmountTemplate> {
     if amount == "x" {
         return Some(DamageAmountTemplate::X);
+    }
+    if amount == "twice x" {
+        return Some(DamageAmountTemplate::TwiceX);
+    }
+    if amount == "the number of lands you control" {
+        return Some(DamageAmountTemplate::ControlledLandCount);
+    }
+    if amount == "the number of creatures you control" {
+        return Some(DamageAmountTemplate::ControlledCreatureCount { multiplier: 1 });
+    }
+    if amount == "twice the number of creatures you control" {
+        return Some(DamageAmountTemplate::ControlledCreatureCount { multiplier: 2 });
+    }
+    if amount == "the number of creature tokens you control" {
+        return Some(DamageAmountTemplate::ControlledCreatureTokenCount);
+    }
+    if amount == "the number of permanents you control that are creatures and/or vehicles" {
+        return Some(DamageAmountTemplate::ControlledCreatureOrVehicleCount);
+    }
+    if amount == "the greatest power among creatures you control" {
+        return Some(DamageAmountTemplate::GreatestControlledCreaturePower);
+    }
+    if amount == "the number of instant and sorcery cards in your graveyard" {
+        return Some(DamageAmountTemplate::OwnedInstantAndSorceryCardCountInGraveyard);
     }
     if amount == "the sacrificed creature's power" {
         return Some(DamageAmountTemplate::SacrificedCreaturePower);

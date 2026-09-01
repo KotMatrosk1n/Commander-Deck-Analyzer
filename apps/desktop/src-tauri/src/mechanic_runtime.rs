@@ -17,7 +17,7 @@ use crate::bounded_oracle_runtime::{
     Trigger, TurnPlayer, WardCost, Zone, ZoneMove, compile_bounded_oracle_clause,
 };
 
-pub const MECHANIC_RUNTIME_VERSION: &str = "mechanic-runtime-0.6";
+pub const MECHANIC_RUNTIME_VERSION: &str = "mechanic-runtime-0.7";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PrintedMechanic {
@@ -1666,7 +1666,7 @@ fn compile_evoke(
         .iter()
         .find_map(|effect| match effect {
             Effect::Restriction(Restriction::AlternativeCastPermission(permission))
-                if permission.from == Zone::Hand
+                if permission.from == Some(Zone::Hand)
                     && permission.object == ObjectRef::Source
                     && permission.cost == AlternativeCost::Mana(reminder_cost.clone()) =>
             {
@@ -1883,7 +1883,7 @@ fn compile_dash(
     };
     if !if_false.is_empty()
         || alternative_cast.object != ObjectRef::Source
-        || alternative_cast.from != Zone::Hand
+        || alternative_cast.from != Some(Zone::Hand)
         || alternative_cast.cost != AlternativeCost::Mana(reminder_cost.clone())
         || alternative_cast.timing != Trigger::SourceCast
         || alternative_cast.condition.is_some()

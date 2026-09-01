@@ -1066,7 +1066,7 @@ pub enum LegalityStatus {
     Unproven,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectCharacteristics {
     pub card_types: BTreeSet<CardType>,
     pub supertypes: BTreeSet<String>,
@@ -1077,6 +1077,22 @@ pub struct ObjectCharacteristics {
     pub has_flying: bool,
     pub is_token: bool,
     pub is_commander: bool,
+}
+
+impl Default for ObjectCharacteristics {
+    fn default() -> Self {
+        Self {
+            card_types: BTreeSet::new(),
+            supertypes: BTreeSet::new(),
+            subtypes: BTreeSet::new(),
+            colors: BTreeSet::new(),
+            mana_value: 0,
+            power: 0,
+            has_flying: false,
+            is_token: false,
+            is_commander: false,
+        }
+    }
 }
 
 impl ObjectCharacteristics {

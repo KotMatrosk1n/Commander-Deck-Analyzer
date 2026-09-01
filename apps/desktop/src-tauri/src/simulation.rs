@@ -28,7 +28,8 @@ use crate::ability_program::{
     EXECUTABLE_ABILITY_PROGRAM_VERSION, EntryLinkedCardFilter, FixedManaProfile,
     GrantedCreatureKeyword, LibraryPosition, LibraryRemainderPlacement,
     LibrarySelectionEffect as ProgramLibrarySelectionEffect, ManaCost as ProgramManaCost,
-    ManaKind as ProgramManaKind, ManaPaymentAmount, ManaRetention, NecropotenceDiscardEvent,
+    ManaKind as ProgramManaKind, ManaModifierPermanentKind, ManaModifierRecipient,
+    ManaPaymentAmount, ManaRetention, NecropotenceDiscardEvent,
     ObjectFilter as ProgramObjectFilter, OptionalManaPayment, PlayerSelector, RepetitionPolicy,
     ReplacedSpellCost, ResourceKind, SelfTransferTutorActivationWindow, SelfTransferTutorCost,
     SelfTransferTutorResolutionStep, SpecificCardType, SpellCopyCount, SpellCostReductionCondition,
@@ -161,12 +162,11 @@ use crate::utility_modal_runtime::{
     EntryScryProgram as ReviewedEntryScryProgram, SpellScryDrawStep as ReviewedSpellScryDrawStep,
     UtilityModalRuntimeProgram as ReviewedUtilityModalProgram,
 };
-
 use rules_bridge::{
     TrajectoryRulesBridge, TrajectoryRulesCatalog, TrajectorySpellResolution, TrajectorySpellStatus,
 };
 
-pub(crate) const SIMULATION_ENGINE_VERSION: &str = "abstract-play-0.54";
+pub(crate) const SIMULATION_ENGINE_VERSION: &str = "abstract-play-0.55";
 pub(crate) const TIMING_ENDPOINT_VERSION: &str = "commander-timing-endpoints/v3";
 pub(crate) const EFFECTIVE_HAND_STRENGTH_VERSION: &str = "mtg-effective-hand-strength/v4";
 pub(crate) const MAX_INTERACTION_SCENARIO_EPISODES: u32 = 1_000;
@@ -1216,6 +1216,8 @@ fn active_ability_context(deck: &CompiledDeck, zones: &KnownLineZoneState) -> Ac
                 for effect in &ability.effects {
                     if let AbilityEffect::ModifyNonlandMana(modifier) = effect
                         && modifier.kind == ProgramManaKind::AnyTypeProducedByTriggeringPermanent
+                        && modifier.permanent_kind == ManaModifierPermanentKind::NonlandPermanent
+                        && modifier.recipient == ManaModifierRecipient::AbilityController
                     {
                         context.nonland_mana_bonus = context.nonland_mana_bonus.saturating_add(
                             modifier.additional_amount.min(u16::from(u8::MAX)) as u8,
@@ -24901,7 +24903,6 @@ fn simulate_prepared_episode_condition(
                         break;
                     }
                 };
-
                 if bounded_draw_applied {
                     changes_observable_plan = true;
                 } else {
@@ -26167,6 +26168,9 @@ fn line_has_executable_infinite_mana_cycle(
                     AbilityEffect::ModifyNonlandMana(modifier)
                         if modifier.additional_amount >= 1
                             && modifier.kind == ProgramManaKind::AnyTypeProducedByTriggeringPermanent
+                            && modifier.permanent_kind
+                                == ManaModifierPermanentKind::NonlandPermanent
+                            && modifier.recipient == ManaModifierRecipient::AbilityController
                 )
             })
         })
@@ -33798,3 +33802,6 @@ fn derive_episode_seed(master: u64, scenario: u64, simulation_index: u32) -> u64
     value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
     value ^ (value >> 31)
 }
+
+// Keep simulation unit tests in simulation/tests.rs. The explicit path is part
+// of the source-layout contract and prevents the test module being redirected.

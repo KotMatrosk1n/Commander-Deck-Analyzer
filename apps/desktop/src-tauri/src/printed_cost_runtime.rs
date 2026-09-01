@@ -10,13 +10,106 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
+use crate::standalone_oracle_annotation::{
+    AnnotationManaSymbol, ManaNotationAnnotation, ManaPaymentAlternative, ManaSymbolMeaning,
+    MissingManaCostWording,
+};
 use crate::strict_engine::{
     ManaColor, ManaCost as StrictManaCost, ManaPaymentChoices as StrictManaPaymentChoices,
     ManaSymbol as StrictManaSymbol, ManaUnit, ManaUnitId, ObjectId, PhyrexianPayment,
 };
 
-pub(crate) const PRINTED_COST_RUNTIME_VERSION: &str = "printed-cost-runtime-0.1";
-pub(crate) const PRINTED_COST_PAYMENT_BRIDGE_VERSION: &str = "printed-cost-payment-bridge-0.1";
+pub(crate) const PRINTED_COST_RUNTIME_VERSION: &str = "printed-cost-runtime-0.2";
+pub(crate) const PRINTED_COST_PAYMENT_BRIDGE_VERSION: &str = "printed-cost-payment-bridge-0.2";
+
+/// Binds an exact standalone notation line to the same production payment
+/// semantics used for printed costs. This is intentionally structural and
+/// closed: a notation variant is live only when the payment engine represents
+/// that exact symbol and provenance requirement without approximation.
+pub(crate) fn standalone_mana_notation_has_exact_payment_contract(
+    notation: &ManaNotationAnnotation,
+) -> bool {
+    fn ordinary_symbol(symbol: &AnnotationManaSymbol) -> bool {
+        match symbol {
+            AnnotationManaSymbol::White
+            | AnnotationManaSymbol::Blue
+            | AnnotationManaSymbol::Black
+            | AnnotationManaSymbol::Red
+            | AnnotationManaSymbol::Green
+            | AnnotationManaSymbol::Colorless => true,
+            AnnotationManaSymbol::Hybrid(left, right) => {
+                ordinary_symbol(left) && ordinary_symbol(right)
+            }
+            AnnotationManaSymbol::GenericHybrid { generic, color } => {
+                *generic > 0 && ordinary_symbol(color)
+            }
+            AnnotationManaSymbol::Phyrexian(color) => ordinary_symbol(color),
+            AnnotationManaSymbol::Snow
+            | AnnotationManaSymbol::Legendary
+            | AnnotationManaSymbol::LandDrop => false,
+        }
+    }
+
+    match notation {
+        ManaNotationAnnotation::Represents { symbol, meaning } => matches!(
+            (symbol, meaning),
+            (
+                AnnotationManaSymbol::Colorless,
+                ManaSymbolMeaning::ColorlessMana
+            )
+        ),
+        ManaNotationAnnotation::PaymentAlternatives {
+            symbol,
+            alternatives,
+            ..
+        } => match symbol {
+            AnnotationManaSymbol::Snow => {
+                alternatives.as_slice() == [ManaPaymentAlternative::ManaFromSnowSource(1)]
+            }
+            AnnotationManaSymbol::Legendary => {
+                alternatives.as_slice() == [ManaPaymentAlternative::ManaFromLegendarySource(1)]
+            }
+            AnnotationManaSymbol::LandDrop => {
+                alternatives.as_slice() == [ManaPaymentAlternative::GiveUpLandDrops(1)]
+            }
+            _ => {
+                ordinary_symbol(symbol)
+                    && !alternatives.is_empty()
+                    && alternatives.iter().all(|alternative| match alternative {
+                        ManaPaymentAlternative::Mana(symbol) => ordinary_symbol(symbol),
+                        ManaPaymentAlternative::AnyMana(amount) => *amount > 0,
+                        ManaPaymentAlternative::Life(2) => true,
+                        ManaPaymentAlternative::Life(_)
+                        | ManaPaymentAlternative::ManaFromSnowSource(_)
+                        | ManaPaymentAlternative::ManaFromLegendarySource(_)
+                        | ManaPaymentAlternative::GiveUpLandDrops(_) => false,
+                    })
+            }
+        },
+    }
+}
+
+/// Binds both exact historical wordings for a missing mana cost to the
+/// production printed-cost representation. An empty printed cost is retained
+/// as a face with no mana cost, and the shared payment path rejects that face
+/// with `NoManaCost` before touching payment resources.
+pub(crate) fn standalone_missing_mana_cost_has_exact_payment_contract(
+    wording: MissingManaCostWording,
+) -> bool {
+    matches!(
+        wording,
+        MissingManaCostWording::CannotBePaid | MissingManaCostWording::CannotBePlayed
+    ) && parse_printed_mana_cost("").is_ok_and(|cost| {
+        matches!(
+            cost.faces.as_slice(),
+            [PrintedManaCostFace {
+                has_mana_cost: false,
+                symbols,
+                ..
+            }] if symbols.is_empty()
+        ) && printed_mana_cost_has_exact_payment_contract(&cost)
+    })
+}
 
 /// One variable letter has one declared value for the complete cost. Repeated
 /// appearances of that letter each contribute the declared value.

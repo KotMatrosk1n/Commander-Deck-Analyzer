@@ -149,6 +149,7 @@ impl CardRepository {
             alias_catalog_record_count,
         })
     }
+
     pub fn get_many(
         &self,
         names: &[String],
@@ -248,6 +249,7 @@ impl CardRepository {
 
         Ok(cards)
     }
+
     fn enrich_with_resolved_aliases(
         &self,
         records: &[(CardDefinition, Vec<String>)],

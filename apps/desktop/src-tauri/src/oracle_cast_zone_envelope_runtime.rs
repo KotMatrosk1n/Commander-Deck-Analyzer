@@ -20,8 +20,8 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 
 pub const ORACLE_CAST_ZONE_ENVELOPE_COMPILER_VERSION: &str =
-    "oracle-cast-zone-envelope-compiler-0.4";
-pub const ORACLE_CAST_ZONE_ENVELOPE_RUNTIME_VERSION: &str = "oracle-cast-zone-envelope-runtime-0.4";
+    "oracle-cast-zone-envelope-compiler-0.5";
+pub const ORACLE_CAST_ZONE_ENVELOPE_RUNTIME_VERSION: &str = "oracle-cast-zone-envelope-runtime-0.5";
 pub const ORACLE_CAST_ZONE_ENVELOPE_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101.4,104.3,107.3,108.3,117,118.9,400.7,601.2,608.2,609.3,614.1,616.1,701.4,701.6,701.14,701.17,701.19,701.21,701.50";
 
 /// Recognition is not production coverage until the host binds the complete
@@ -849,8 +849,18 @@ impl CastZoneEnvelopeProgram {
         &self.semantic_digest
     }
 
-    pub const fn production_adapter_connected(&self) -> bool {
-        oracle_cast_zone_envelope_production_adapter_connected()
+    pub fn production_adapter_connected(&self) -> bool {
+        matches!(
+            self.exact_source.as_str(),
+            "You may cast this spell as though it had flash. If you cast it any time a sorcery couldn't have been cast, the controller of the permanent it becomes sacrifices it at the beginning of the next cleanup step."
+                | "As an additional cost to cast this spell, exile a creature card from your graveyard."
+                | "As an additional cost to cast this spell, discard a card and sacrifice a creature."
+                | "As an additional cost to cast this spell, exile six cards from your graveyard."
+                | "As an additional cost to cast this spell, you may pay {2}{R}."
+                | "Commander spells you cast cost {1} less to cast."
+                | "You may cast this card from your graveyard by paying {2}{W} rather than paying its mana cost."
+                | "You may pay {1}{W} and exile a creature card from your graveyard rather than pay this spell's mana cost."
+        )
     }
 }
 

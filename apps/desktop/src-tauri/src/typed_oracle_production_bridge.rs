@@ -37,8 +37,8 @@ use crate::object_state_clause_runtime::{
     OBJECT_STATE_CLAUSE_RUNTIME_VERSION, ObjectRef, ObjectStateClauseKind,
     ObjectStateClauseProgram, ObjectStateClauseRuntime, ObjectStateRuntimeError, ObjectZone,
     PendingZoneChange, ReplacementCandidateEvidence, ReplacementEffectIdentity,
-    ReplacementOrderEvidence, ReplacementPriority, ReplacementStepResolution, UntapChoice,
-    UntapStepResolution, ZoneChangeCommit,
+    ReplacementOrderEvidence, ReplacementPriority, ReplacementStepResolution, TrackedObject,
+    UntapChoice, UntapStepResolution, ZoneChangeCommit,
 };
 
 pub(crate) const TYPED_ORACLE_PRODUCTION_BRIDGE_VERSION: &str =

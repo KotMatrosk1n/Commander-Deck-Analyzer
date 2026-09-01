@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::ability_clause_bridge::{AbilityClauseTimingEnvelope, AbilityClauseTriggerEventKind};
 use crate::bounded_oracle_consumer::{
     ActionDefinition, ActionWindow, ActivationReductionRecord, AttachmentRecord,
     CastPermissionRecord, ContinuousEffectRecord, DelayedTriggerRecord, ExecutionContext,
@@ -15,22 +16,28 @@ use crate::bounded_oracle_consumer::{
     InMemoryOracleState, ObjectCharacteristics, ObjectId, OracleStateAdapter, PaymentOrLoseRecord,
     PhysicalObject, PlayerId, PlayerState, ReplacementRecord, RestrictionRecord,
     RevealedCardRecord, ScheduledCopyRecord, SkippedStepRecord, SpellReductionRecord, TriggerEvent,
-    clause_has_executable_contract, commit_regeneration_runtime_state, effective_object,
-    execute_action, execute_active_level_trigger, execute_clause, execute_granted_ability,
-    object_can_attack, object_can_be_blocked, object_can_block, object_can_untap_during,
+    authorize_global_alternative_spell_cost, clause_has_executable_contract,
+    commit_regeneration_runtime_state, effective_object, execute_action,
+    execute_active_level_trigger, execute_clause, execute_granted_ability, object_can_attack,
+    object_can_be_blocked, object_can_block, object_can_untap_during,
     object_must_attack_each_combat, pay_reduced_spell_mana_cost, synchronized_library_access_state,
     synchronized_regeneration_runtime_state, trigger_matches,
 };
 use crate::bounded_oracle_runtime::{
     AttachmentKind, BoundedOracleClause, CardType, ClauseAddress, Color, Comparison, Condition,
-    CounterKind, Duration, Effect, Keyword, ObjectRef, Restriction, Step, Supertype, Timing, Zone,
+    CounterKind, Duration, Effect, Keyword, ObjectRef, OracleFaceModalLineProgram, Restriction,
+    StandaloneRuleProgram, Step, Supertype, Timing, Zone,
 };
 use crate::combat_restriction_runtime::{
     AttackDeclaration as RestrictionAttackDeclaration, BattlefieldPermanent, BattlefieldSnapshot,
     BlockAssignment as RestrictionBlockAssignment, CombatLegalityReport,
     ObjectRef as CombatRestrictionObjectRef, PermanentSubtype,
 };
-use crate::damage_transaction_runtime::DamageSourceKeyword;
+use crate::damage_transaction_runtime::{
+    DamageEventMatcher, DamageKindMatcher, DamageModifier, DamageModifierOperation,
+    DamageModifierPersistence, DamageModifierRequirement, DamagePrevention, DamageRecipient,
+    DamageRecipientMatcher, DamageSourceKeyword, DamageSourceMatcher,
+};
 use crate::entry_choice_keyword_runtime::{
     EntryAttemptEvidence, EntryChoiceKeywordBinding, EntryChoiceKeywordResolution,
     EntryChoiceResolutionInput, PendingRavenousDrawTrigger, RavenousTriggerId,
@@ -38,18 +45,19 @@ use crate::entry_choice_keyword_runtime::{
 };
 use crate::graveyard_transform_keyword_runtime::{
     CardLayout as GraveyardCardLayout, CraftActivationEvidence, CraftActivationReceipt,
-    CraftResolutionReceipt, DisturbCastEvidence, DisturbCastReceipt, DisturbResolutionReceipt,
-    FaceCharacteristics as GraveyardFaceCharacteristics, FaceId as GraveyardFaceId,
-    FaceSemanticContext as GraveyardFaceSemanticContext, GraveyardTransformKeywordKind,
-    GraveyardTransformKeywordProgram, GraveyardTransformKeywordRuntime,
-    ManaColor as GraveyardManaColor, ManaPaymentEvidence as GraveyardManaPaymentEvidence,
-    ManaUnit as GraveyardManaUnit, ManaUnitId as GraveyardManaUnitId,
-    ObjectId as GraveyardObjectId, ObjectRef as GraveyardObjectRef, PendingCraftAbilityId,
-    PendingSoulshiftTriggerId, PhysicalCardDefinition as GraveyardCardDefinition,
-    PlayerId as GraveyardPlayerId, PlayerState as GraveyardPlayerState,
-    PriorityWindow as GraveyardPriorityWindow, SoulshiftDeathReceipt, SoulshiftResolutionChoice,
-    SoulshiftResolutionReceipt, SoulshiftTargetDeclaration,
-    SourceSemanticContext as GraveyardSourceSemanticContext,
+    CraftResolutionReceipt, DisturbCastEvidence, DisturbCastPermissionEvidence, DisturbCastReceipt,
+    DisturbResolutionReceipt, FaceCharacteristics as GraveyardFaceCharacteristics,
+    FaceId as GraveyardFaceId, FaceSemanticContext as GraveyardFaceSemanticContext,
+    GraveyardTransformKeywordKind, GraveyardTransformKeywordProgram,
+    GraveyardTransformKeywordRuntime, ManaColor as GraveyardManaColor,
+    ManaPaymentEvidence as GraveyardManaPaymentEvidence, ManaUnit as GraveyardManaUnit,
+    ManaUnitId as GraveyardManaUnitId, ObjectId as GraveyardObjectId,
+    ObjectRef as GraveyardObjectRef, OtherCastCostEvidence as GraveyardOtherCastCostEvidence,
+    PendingCraftAbilityId, PendingSoulshiftTriggerId, Phase as GraveyardPhase,
+    PhysicalCardDefinition as GraveyardCardDefinition, PlayerId as GraveyardPlayerId,
+    PlayerState as GraveyardPlayerState, PriorityWindow as GraveyardPriorityWindow,
+    SoulshiftDeathReceipt, SoulshiftResolutionChoice, SoulshiftResolutionReceipt,
+    SoulshiftTargetDeclaration, SourceSemanticContext as GraveyardSourceSemanticContext,
     TrackedObject as GraveyardTrackedObject, Zone as GraveyardZone,
     ZoneChangeReceipt as GraveyardZoneChangeReceipt,
     ZoneChangeReplacementEvidence as GraveyardReplacementEvidence,
@@ -76,14 +84,17 @@ use crate::oracle_clause_backend::{
 };
 use crate::oracle_static_replacement_runtime::{
     CardType as StaticCardType, Color as StaticColor, CounterKind as StaticCounterKind,
-    EffectiveCharacteristics as StaticEffectiveCharacteristics,
+    DamageKind as StaticDamageKind, EffectiveCharacteristics as StaticEffectiveCharacteristics,
     IncarnationId as StaticIncarnationId, KeywordAbility as StaticKeyword,
-    ObjectRef as StaticObjectRef, ObjectState as StaticObjectState, OracleStaticReplacementRuntime,
+    ObjectRef as StaticObjectRef, ObjectState as StaticObjectState,
+    OracleStaticReplacementProgramKind, OracleStaticReplacementRuntime,
     PendingReplacementEvent as StaticPendingReplacementEvent,
     ReplacementDecision as StaticReplacementDecision,
+    ReplacementOperation as StaticReplacementOperation,
     ReplacementOrderEvidence as StaticReplacementOrderEvidence,
     ReplacementStep as StaticReplacementStep, RuntimeEvent as StaticRuntimeEvent,
-    RuntimeSnapshot as StaticRuntimeSnapshot, Zone as StaticZone,
+    RuntimeRecipient as StaticRuntimeRecipient, RuntimeSnapshot as StaticRuntimeSnapshot,
+    Supertype as StaticSupertype, Zone as StaticZone,
 };
 use crate::pregame_clause_runtime::{
     DueEffectId as PregameDueEffectId, DuePregameEffect, ObjectRef as PregameObjectRef,
@@ -112,14 +123,14 @@ use crate::residual_cost_keyword_runtime::{
     GameObject as ResidualGameObject, IncarnationId as ResidualIncarnationId,
     ManaColor as ResidualManaColor, ManaUnit as ResidualManaUnit, ManaUnitId as ResidualManaUnitId,
     ObjectCharacteristics as ResidualCharacteristics, ObjectId as ResidualObjectId,
-    ObjectRef as ResidualObjectRef, PendingWardTrigger, PlayerId as ResidualPlayerId,
-    PlayerState as ResidualPlayerState, ResidualCostGameState, ResidualCostKeywordKind,
-    StackIncarnationId as ResidualStackIncarnationId, StackObject as ResidualStackObject,
-    StackObjectId as ResidualStackObjectId, StackObjectKind as ResidualStackObjectKind,
-    StackObjectRef as ResidualStackObjectRef, StackObjectStatus as ResidualStackObjectStatus,
-    Supertype as ResidualSupertype, TargetEvent, TargetEventId, TriggerBatchId,
-    WardAbilityInstance, WardPaymentEvidence, WardResolution, WardTriggerId, WardTriggerOrder,
-    Zone as ResidualZone, resolve_ward_trigger,
+    ObjectRef as ResidualObjectRef, PaymentId as ResidualPaymentId, PendingWardTrigger,
+    PlayerId as ResidualPlayerId, PlayerState as ResidualPlayerState, ResidualCostGameState,
+    ResidualCostKeywordKind, StackIncarnationId as ResidualStackIncarnationId,
+    StackObject as ResidualStackObject, StackObjectId as ResidualStackObjectId,
+    StackObjectKind as ResidualStackObjectKind, StackObjectRef as ResidualStackObjectRef,
+    StackObjectStatus as ResidualStackObjectStatus, Supertype as ResidualSupertype, TargetEvent,
+    TargetEventId, TriggerBatchId, WardAbilityInstance, WardPaymentEvidence, WardResolution,
+    WardTriggerId, WardTriggerOrder, Zone as ResidualZone, resolve_ward_trigger,
 };
 use crate::saga_transform_runtime::{
     SagaTransformFaceRole, SagaTransformMovementReplacement, SagaTransformObject,
@@ -127,7 +138,7 @@ use crate::saga_transform_runtime::{
 };
 use crate::semantics::CompiledCard;
 
-pub const BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION: &str = "bounded-oracle-simulation-bridge-0.72";
+pub const BOUNDED_ORACLE_SIMULATION_BRIDGE_VERSION: &str = "bounded-oracle-simulation-bridge-0.75";
 pub(crate) const COMBAT_BLOCK_DECLARATION_PRODUCTION_BRIDGE_VERSION: &str =
     "bounded-combat-block-declaration-bridge/v1";
 
@@ -175,10 +186,21 @@ fn static_replacement_object(object: &PhysicalObject) -> Result<StaticObjectStat
             Color::Colorless => StaticColor::Colorless,
         })
         .collect();
+    let supertypes = characteristics
+        .supertypes
+        .iter()
+        .map(|supertype| match supertype {
+            Supertype::Basic => StaticSupertype::Basic,
+            Supertype::Legendary => StaticSupertype::Legendary,
+            Supertype::Snow => StaticSupertype::Snow,
+            Supertype::Nonbasic => StaticSupertype::Nonbasic,
+        })
+        .collect();
     let keywords = characteristics
         .keywords
         .iter()
         .filter_map(|keyword| match keyword {
+            Keyword::Changeling => None,
             Keyword::Deathtouch => Some(StaticKeyword::Deathtouch),
             Keyword::Defender => Some(StaticKeyword::Defender),
             Keyword::DoubleStrike => Some(StaticKeyword::DoubleStrike),
@@ -194,7 +216,7 @@ fn static_replacement_object(object: &PhysicalObject) -> Result<StaticObjectStat
             Keyword::Trample => Some(StaticKeyword::Trample),
             Keyword::Vigilance => Some(StaticKeyword::Vigilance),
             Keyword::Ward(_) => Some(StaticKeyword::Ward),
-            Keyword::Shadow => None,
+            Keyword::Shadow => Some(StaticKeyword::Shadow),
         })
         .collect();
     let counters = object
@@ -228,15 +250,20 @@ fn static_replacement_object(object: &PhysicalObject) -> Result<StaticObjectStat
             Zone::Command => StaticZone::Command,
             Zone::Merged => unreachable!("merged components are not independent objects"),
         },
+        names: characteristics.names.iter().cloned().collect(),
         card_types,
+        supertypes,
         colors,
         subtypes: characteristics.subtypes.iter().cloned().collect(),
+        enchanting_sources: BTreeSet::new(),
+        equipping_sources: BTreeSet::new(),
         counters,
         keywords,
         token: object.token,
         tapped: object.tapped,
         attacking: object.attacking,
         blocking: object.blocking,
+        mana_value: characteristics.mana_value,
         power: Some(
             i32::try_from(characteristics.power).map_err(|_| {
                 ExecutionError::Adapter("power exceeds static runtime range".into())
@@ -272,6 +299,27 @@ pub fn clause_has_live_bridge_contract(clause: &BoundedOracleClause) -> bool {
                 | Timing::TypedStandaloneProgram
                 | Timing::SpecialAction(_)
         )
+}
+
+fn oracle_face_modal_line_program(
+    clause: &BoundedOracleClause,
+) -> Option<&OracleFaceModalLineProgram> {
+    let [Effect::StandaloneRuleProgram(StandaloneRuleProgram::OracleFaceModalLine(program))] =
+        clause.effects()
+    else {
+        return None;
+    };
+    Some(program)
+}
+
+/// Whether this clause can participate in the simulator's complete spell-cost
+/// payment batch. The batch, rather than an individual `execute_clause` call,
+/// is the production contract that binds the printed mana cost and every
+/// retained additional-cost clause to one rollback checkpoint.
+pub fn casting_additional_cost_has_atomic_payment_contract(clause: &BoundedOracleClause) -> bool {
+    matches!(clause.timing(), Timing::CastingAdditionalCost)
+        && !clause.costs().is_empty()
+        && clause_has_executable_contract(clause)
 }
 
 fn oracle_static_replacement_clause_has_live_bridge_contract(clause: &BoundedOracleClause) -> bool {
@@ -906,6 +954,33 @@ pub struct SpellManaPaymentBatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpellCostPaymentBatch {
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub player: PlayerId,
+    pub printed_cost: crate::bounded_oracle_runtime::ManaCost,
+    pub reduced_cost: crate::bounded_oracle_runtime::ManaCost,
+    pub generic_reduction: u32,
+    pub additional_cost_receipts: Vec<(ObjectId, ClauseAddress, ExecutionReceipt)>,
+    pub delta: SimulationDelta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalAlternativeSpellCostPaymentBatch {
+    pub permission_source: ObjectId,
+    pub permission_source_incarnation: u64,
+    pub source: ObjectId,
+    pub source_incarnation: u64,
+    pub player: PlayerId,
+    pub cast_from: Zone,
+    pub alternative_cost: crate::bounded_oracle_runtime::ManaCost,
+    pub reduced_cost: crate::bounded_oracle_runtime::ManaCost,
+    pub generic_reduction: u32,
+    pub additional_cost_receipts: Vec<(ObjectId, ClauseAddress, ExecutionReceipt)>,
+    pub delta: SimulationDelta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SagaTransformBatch {
     pub source: ObjectId,
     pub clause_address: ClauseAddress,
@@ -1104,7 +1179,7 @@ impl BoundedOracleSimulation {
         perspective_player: PlayerId,
         active_player: PlayerId,
     ) -> Result<StaticRuntimeSnapshot, ExecutionError> {
-        let objects = self
+        let mut objects = self
             .state
             .object_ids()
             .into_iter()
@@ -1117,6 +1192,24 @@ impl BoundedOracleSimulation {
                 Ok((projected.object_ref, projected))
             })
             .collect::<Result<BTreeMap<_, _>, ExecutionError>>()?;
+        for source in self.state.attachments.keys().copied().collect::<Vec<_>>() {
+            let Some(attachment) = self.state.attachment(source) else {
+                continue;
+            };
+            let source_ref = self.static_replacement_reference(attachment.source);
+            let target_ref = self.static_replacement_reference(attachment.target);
+            let target = objects
+                .get_mut(&target_ref)
+                .ok_or(ExecutionError::MissingObject(attachment.target))?;
+            match attachment.kind {
+                AttachmentKind::Aura => {
+                    target.enchanting_sources.insert(source_ref);
+                }
+                AttachmentKind::Equipment => {
+                    target.equipping_sources.insert(source_ref);
+                }
+            }
+        }
         let mut life_totals = BTreeMap::new();
         let mut complete_players = BTreeSet::new();
         for player_id in self.state.player_ids() {
@@ -1705,6 +1798,7 @@ impl BoundedOracleSimulation {
             face_down: false,
             active_face: 0,
             class_level: 0,
+            crew_power_bonus: 0,
             front: ObjectCharacteristics {
                 names: vec![token.name.clone()],
                 card_types: token
@@ -3267,11 +3361,16 @@ impl BoundedOracleSimulation {
                 .put_object(physical)
                 .map_err(ExecutionError::Adapter)?;
 
+            let source_incarnation = self
+                .state
+                .object_incarnation(source)
+                .ok_or(ExecutionError::MissingObject(source))?;
             for restriction in &resolution.unleash_restrictions {
                 let order = self.state.next_order();
                 self.state.register_restriction(RestrictionRecord {
                     order,
                     source_identity: source,
+                    source_incarnation,
                     restriction: Restriction::CannotBlock {
                         object: ObjectRef::Source,
                         duration: Duration::WhileCondition(Box::new(
@@ -4072,6 +4171,39 @@ impl BoundedOracleSimulation {
         printed_cost: crate::bounded_oracle_runtime::ManaCost,
         x_value: u32,
     ) -> Result<SpellManaPaymentBatch, ExecutionError> {
+        let source_object = self
+            .state
+            .object(source)
+            .ok_or(ExecutionError::MissingObject(source))?;
+        if source_object.zone != Zone::Stack || source_object.controller != player {
+            return Err(ExecutionError::Adapter(
+                "spell-mana payment requires the caster's exact stack object".into(),
+            ));
+        }
+        let source_incarnation = self
+            .state
+            .object_incarnation(source)
+            .ok_or(ExecutionError::MissingObject(source))?;
+        if self
+            .state
+            .committed_spell_cost_payments
+            .get(&source)
+            .is_some_and(|paid_incarnation| *paid_incarnation == source_incarnation)
+        {
+            return Err(ExecutionError::Adapter(
+                "this exact stack object's casting cost has already been paid".into(),
+            ));
+        }
+        if self.programs.get(&source).is_some_and(|clauses| {
+            clauses
+                .iter()
+                .any(|clause| matches!(clause.timing(), Timing::CastingAdditionalCost))
+        }) {
+            return Err(ExecutionError::Adapter(
+                "a spell with retained additional costs requires the complete spell-cost payment batch"
+                    .into(),
+            ));
+        }
         let before = self.state.clone();
         let mut context =
             ExecutionContext::new(player, source, ActionWindow::CastingAdditionalCost);
@@ -4090,12 +4222,230 @@ impl BoundedOracleSimulation {
                 return Err(error);
             }
         };
+        self.state
+            .committed_spell_cost_payments
+            .insert(source, source_incarnation);
+        self.state.record_mutation(format!(
+            "spell_mana_batch_commit:{source}:{source_incarnation}:{player}"
+        ));
         Ok(SpellManaPaymentBatch {
             source,
             player,
             printed_cost,
             reduced_cost,
             generic_reduction,
+            delta: SimulationDelta::between(&before, &self.state),
+        })
+    }
+
+    /// Pays one spell's complete retained casting cost as a single state
+    /// transaction. Additional-cost clauses execute first so choices such as
+    /// tapping permanents for a spell reduction are present when the locked
+    /// printed mana cost is calculated. If any additional cost or the printed
+    /// mana payment fails, every tap, sacrifice, discard, reveal, counter,
+    /// life payment, mana payment, and registration is restored.
+    pub fn pay_spell_and_additional_costs<F>(
+        &mut self,
+        source: ObjectId,
+        player: PlayerId,
+        printed_cost: crate::bounded_oracle_runtime::ManaCost,
+        x_value: u32,
+        mut printed_payment_context: ExecutionContext,
+        mut context_for: F,
+    ) -> Result<SpellCostPaymentBatch, ExecutionError>
+    where
+        F: FnMut(&BoundedOracleClause) -> ExecutionContext,
+    {
+        let source_object = self
+            .state
+            .object(source)
+            .ok_or(ExecutionError::MissingObject(source))?;
+        if source_object.zone != Zone::Stack || source_object.controller != player {
+            return Err(ExecutionError::Adapter(
+                "complete spell-cost payment requires the caster's exact stack object".into(),
+            ));
+        }
+        if printed_payment_context.actor != player {
+            return Err(ExecutionError::Adapter(
+                "printed spell-cost payment actor does not match the caster".into(),
+            ));
+        }
+        let source_incarnation = self
+            .state
+            .object_incarnation(source)
+            .ok_or(ExecutionError::MissingObject(source))?;
+        if self
+            .state
+            .committed_spell_cost_payments
+            .get(&source)
+            .is_some_and(|paid_incarnation| *paid_incarnation == source_incarnation)
+        {
+            return Err(ExecutionError::Adapter(
+                "this exact stack object's casting cost has already been paid".into(),
+            ));
+        }
+        let clauses = self
+            .programs
+            .get(&source)
+            .cloned()
+            .ok_or(ExecutionError::MissingObject(source))?;
+        let before = self.state.clone();
+        let payment = (|| {
+            let mut additional_cost_receipts = Vec::new();
+            for clause in clauses {
+                if !matches!(clause.timing(), Timing::CastingAdditionalCost) {
+                    continue;
+                }
+                let mut context = context_for(&clause);
+                if context.actor != player {
+                    return Err(ExecutionError::Adapter(
+                        "additional-cost payment actor does not match the caster".into(),
+                    ));
+                }
+                context.source = source;
+                context.window = ActionWindow::CastingAdditionalCost;
+                context.x_value = x_value;
+                let receipt = execute_clause(&mut self.state, &clause, &context)?;
+                additional_cost_receipts.push((source, clause.address(), receipt));
+            }
+
+            printed_payment_context.source = source;
+            printed_payment_context.window = ActionWindow::CastingAdditionalCost;
+            printed_payment_context.x_value = x_value;
+            let (reduced_cost, generic_reduction) = pay_reduced_spell_mana_cost(
+                &mut self.state,
+                source,
+                player,
+                &printed_cost,
+                x_value,
+                &printed_payment_context,
+            )?;
+            self.state
+                .committed_spell_cost_payments
+                .insert(source, source_incarnation);
+            self.state.record_mutation(format!(
+                "spell_cost_batch_commit:{source}:{source_incarnation}:{player}"
+            ));
+            Ok((reduced_cost, generic_reduction, additional_cost_receipts))
+        })();
+        let (reduced_cost, generic_reduction, additional_cost_receipts) = match payment {
+            Ok(payment) => payment,
+            Err(error) => {
+                self.state = before;
+                return Err(error);
+            }
+        };
+        Ok(SpellCostPaymentBatch {
+            source,
+            source_incarnation,
+            player,
+            printed_cost,
+            reduced_cost,
+            generic_reduction,
+            additional_cost_receipts,
+            delta: SimulationDelta::between(&before, &self.state),
+        })
+    }
+
+    /// Pays the exact global `{W}{U}{B}{R}{G}` alternative mana cost and all
+    /// retained additional costs as one cast transaction. The registered
+    /// battlefield permission is locked before mutation, while cast origin,
+    /// timing, caster, stack incarnation, and external-cost completeness must
+    /// already be evidenced by `payment_context`.
+    pub fn pay_spell_and_additional_costs_with_global_alternative<F>(
+        &mut self,
+        source: ObjectId,
+        player: PlayerId,
+        mut payment_context: ExecutionContext,
+        mut context_for: F,
+    ) -> Result<GlobalAlternativeSpellCostPaymentBatch, ExecutionError>
+    where
+        F: FnMut(&BoundedOracleClause) -> ExecutionContext,
+    {
+        let authorization =
+            authorize_global_alternative_spell_cost(&self.state, source, player, &payment_context)?;
+        if self
+            .state
+            .committed_spell_cost_payments
+            .get(&source)
+            .is_some_and(|paid_incarnation| *paid_incarnation == authorization.spell_incarnation)
+        {
+            return Err(ExecutionError::Adapter(
+                "this exact stack object's casting cost has already been paid".into(),
+            ));
+        }
+        let clauses = self
+            .programs
+            .get(&source)
+            .cloned()
+            .ok_or(ExecutionError::MissingObject(source))?;
+        let before = self.state.clone();
+        let payment = (|| {
+            let mut additional_cost_receipts = Vec::new();
+            for clause in clauses {
+                if !matches!(clause.timing(), Timing::CastingAdditionalCost) {
+                    continue;
+                }
+                let mut context = context_for(&clause);
+                if context.actor != player {
+                    return Err(ExecutionError::Adapter(
+                        "alternative additional-cost payment actor does not match the caster"
+                            .into(),
+                    ));
+                }
+                context.source = source;
+                context.window = ActionWindow::CastingAdditionalCost;
+                context.x_value = 0;
+                context.cast_from_zone = Some(authorization.cast_from);
+                context.cast_source_incarnation = Some(authorization.spell_incarnation);
+                context.cast_origin_and_timing_legal = true;
+                context.card_was_cast_with_alternative_cost = true;
+                context.alternate_cast_other_costs_paid = true;
+                let receipt = execute_clause(&mut self.state, &clause, &context)?;
+                additional_cost_receipts.push((source, clause.address(), receipt));
+            }
+
+            payment_context.source = source;
+            payment_context.actor = player;
+            payment_context.window = ActionWindow::CastingAdditionalCost;
+            payment_context.x_value = 0;
+            let (reduced_cost, generic_reduction) = pay_reduced_spell_mana_cost(
+                &mut self.state,
+                source,
+                player,
+                &authorization.cost,
+                0,
+                &payment_context,
+            )?;
+            self.state
+                .committed_spell_cost_payments
+                .insert(source, authorization.spell_incarnation);
+            self.state.record_mutation(format!(
+                "global_alternative_spell_cost_batch_commit:{source}:{}:{player}:{}:{}",
+                authorization.spell_incarnation,
+                authorization.permission_source,
+                authorization.permission_source_incarnation
+            ));
+            Ok((reduced_cost, generic_reduction, additional_cost_receipts))
+        })();
+        let (reduced_cost, generic_reduction, additional_cost_receipts) = match payment {
+            Ok(payment) => payment,
+            Err(error) => {
+                self.state = before;
+                return Err(error);
+            }
+        };
+        Ok(GlobalAlternativeSpellCostPaymentBatch {
+            permission_source: authorization.permission_source,
+            permission_source_incarnation: authorization.permission_source_incarnation,
+            source,
+            source_incarnation: authorization.spell_incarnation,
+            player,
+            cast_from: authorization.cast_from,
+            alternative_cost: authorization.cost,
+            reduced_cost,
+            generic_reduction,
+            additional_cost_receipts,
             delta: SimulationDelta::between(&before, &self.state),
         })
     }
@@ -4114,34 +4464,15 @@ impl BoundedOracleSimulation {
     {
         self.execute_matching(
             source,
-            |timing| matches!(timing, Timing::SpellResolution),
+            |clause| {
+                matches!(clause.timing(), Timing::SpellResolution)
+                    || oracle_face_modal_line_program(clause)
+                        .is_some_and(OracleFaceModalLineProgram::is_resolution_header)
+            },
             |clause| {
                 let mut context = context_for(clause);
                 context.source = source;
                 context.window = ActionWindow::SpellResolution;
-                context
-            },
-        )
-    }
-
-    /// Pays every mandatory printed additional cost for one source spell as
-    /// one atomic casting batch. Any failed cost restores the complete state
-    /// from before the first additional-cost clause.
-    pub fn pay_cast_additional_costs<F>(
-        &mut self,
-        source: ObjectId,
-        mut context_for: F,
-    ) -> Result<SimulationBatch, ExecutionError>
-    where
-        F: FnMut(&BoundedOracleClause) -> ExecutionContext,
-    {
-        self.execute_matching(
-            source,
-            |timing| matches!(timing, Timing::CastingAdditionalCost),
-            |clause| {
-                let mut context = context_for(clause);
-                context.source = source;
-                context.window = ActionWindow::CastingAdditionalCost;
                 context
             },
         )
@@ -4163,6 +4494,14 @@ impl BoundedOracleSimulation {
         let mut receipts = Vec::new();
         let static_reference = self.static_replacement_reference(source);
         self.static_replacement.remove_source(static_reference);
+        self.state.damage_modifiers.retain(|_, modifier| {
+            !matches!(
+                &modifier.operation,
+                DamageModifierOperation::Prevention(
+                    DamagePrevention::PreventAllAndRemovePlusOneCounter { object, .. }
+                ) if *object == source
+            )
+        });
         for clause in clauses {
             let window = match clause.timing() {
                 Timing::Static => ActionWindow::Static,
@@ -4193,6 +4532,42 @@ impl BoundedOracleSimulation {
                 ) {
                     *self = before_simulation;
                     return Err(ExecutionError::Adapter(format!("{error:?}")));
+                }
+                if matches!(
+                    program.kind(),
+                    OracleStaticReplacementProgramKind::Replacement(replacement)
+                        if matches!(
+                            &replacement.operation,
+                            StaticReplacementOperation::PreventDamageAndRemovePlusOneCounter
+                        )
+                ) {
+                    let incarnation = self
+                        .state
+                        .object_incarnation(source)
+                        .ok_or(ExecutionError::MissingObject(source))?;
+                    let modifier_id = self.state.next_order();
+                    self.state.damage_modifiers.insert(
+                        modifier_id,
+                        DamageModifier {
+                            id: modifier_id,
+                            matcher: DamageEventMatcher {
+                                source: DamageSourceMatcher::Any,
+                                recipient: DamageRecipientMatcher::ExactObjectIncarnation {
+                                    recipient: DamageRecipient::Creature(source),
+                                    incarnation,
+                                },
+                                kind: DamageKindMatcher::Any,
+                            },
+                            operation: DamageModifierOperation::Prevention(
+                                DamagePrevention::PreventAllAndRemovePlusOneCounter {
+                                    object: source,
+                                    incarnation,
+                                },
+                            ),
+                            persistence: DamageModifierPersistence::Persistent,
+                            requirement: DamageModifierRequirement::Mandatory,
+                        },
+                    );
                 }
                 receipts.push((
                     source,
@@ -4287,7 +4662,11 @@ impl BoundedOracleSimulation {
     {
         self.execute_matching(
             source,
-            |timing| matches!(timing, Timing::Activated),
+            |clause| {
+                matches!(clause.timing(), Timing::Activated)
+                    || oracle_face_modal_line_program(clause)
+                        .is_some_and(OracleFaceModalLineProgram::is_activated_header)
+            },
             |clause| {
                 let mut context = context_for(clause);
                 context.source = source;
@@ -4327,6 +4706,7 @@ impl BoundedOracleSimulation {
         F: FnMut(ObjectId, &BoundedOracleClause, &TriggerEvent) -> ExecutionContext,
     {
         let before = self.state.clone();
+        validate_land_mana_trigger_event(&self.state, &event)?;
         let mut receipts = Vec::new();
         if let TriggerEvent::SpellCast { player, .. } = &event {
             self.old_transform.record_spell_cast(*player);
@@ -4541,6 +4921,46 @@ impl BoundedOracleSimulation {
                         }
                     }
                     Timing::TypedStandaloneProgram
+                        if oracle_face_modal_line_program(clause)
+                            .is_some_and(OracleFaceModalLineProgram::is_triggered_header) =>
+                    {
+                        let mut context = context_for(source, clause, &event);
+                        context.source = source;
+                        context.window = ActionWindow::Triggered(event.clone());
+                        populate_trigger_context(&mut context, &event);
+                        match execute_clause(&mut self.state, clause, &context) {
+                            Ok(receipt) => receipts.push((source, clause.address(), receipt)),
+                            Err(
+                                ExecutionError::TimingMismatch
+                                | ExecutionError::ConditionFailed { .. },
+                            ) => continue,
+                            Err(error) => {
+                                self.state = before;
+                                return Err(error);
+                            }
+                        }
+                    }
+                    Timing::TypedStandaloneProgram
+                        if triggered_ability_clause_accepts_event(clause, &event) =>
+                    {
+                        let mut context = context_for(source, clause, &event);
+                        context.source = source;
+                        context.window = ActionWindow::Triggered(event.clone());
+                        populate_trigger_context(&mut context, &event);
+                        match execute_clause(&mut self.state, clause, &context) {
+                            Ok(receipt) => receipts.push((source, clause.address(), receipt)),
+                            Err(
+                                ExecutionError::TimingMismatch
+                                | ExecutionError::ConditionFailed { .. }
+                                | ExecutionError::ActivationRestrictionFailed,
+                            ) => {}
+                            Err(error) => {
+                                self.state = before;
+                                return Err(error);
+                            }
+                        }
+                    }
+                    Timing::TypedStandaloneProgram
                         if matches!(
                             clause.effects(),
                             [Effect::StandaloneRuleProgram(
@@ -4575,7 +4995,7 @@ impl BoundedOracleSimulation {
         mut context_for: F,
     ) -> Result<SimulationBatch, ExecutionError>
     where
-        P: FnMut(&Timing) -> bool,
+        P: FnMut(&BoundedOracleClause) -> bool,
         F: FnMut(&BoundedOracleClause) -> ExecutionContext,
     {
         let clauses = self
@@ -4586,7 +5006,7 @@ impl BoundedOracleSimulation {
         let before = self.state.clone();
         let mut receipts = Vec::new();
         for clause in clauses {
-            if !predicate(clause.timing()) {
+            if !predicate(&clause) {
                 continue;
             }
             match execute_clause(&mut self.state, &clause, &context_for(&clause)) {
@@ -4865,16 +5285,87 @@ fn combat_object_characteristics(
     })
 }
 
+fn triggered_ability_clause_accepts_event(
+    clause: &BoundedOracleClause,
+    event: &TriggerEvent,
+) -> bool {
+    let [Effect::StandaloneRuleProgram(StandaloneRuleProgram::AbilityClause(program))] =
+        clause.effects()
+    else {
+        return false;
+    };
+    let AbilityClauseTimingEnvelope::Triggered { event: trigger } = program.timing() else {
+        return false;
+    };
+    match trigger.kind {
+        AbilityClauseTriggerEventKind::PermanentTappedForMana => matches!(
+            event,
+            TriggerEvent::NonlandPermanentTappedForMana { .. }
+                | TriggerEvent::LandTappedForMana { .. }
+        ),
+        AbilityClauseTriggerEventKind::OneOrMoreCreaturesDealCombatDamageToPlayer => matches!(
+            event,
+            TriggerEvent::CreatureCombatDamageBatchToPlayer { .. }
+        ),
+        _ => false,
+    }
+}
+
+fn validate_land_mana_trigger_event<S: OracleStateAdapter>(
+    state: &S,
+    event: &TriggerEvent,
+) -> Result<(), ExecutionError> {
+    let TriggerEvent::LandTappedForMana { evidence } = event else {
+        return Ok(());
+    };
+    let source = state
+        .object(evidence.source)
+        .ok_or(ExecutionError::MissingObject(evidence.source))?;
+    if evidence.source_zone != Zone::Battlefield
+        || evidence.mana_ability_occurrence == 0
+        || state.object_incarnation(evidence.source) != Some(evidence.source_incarnation)
+        || state.player(evidence.source_controller).is_none()
+        || source.zone != Zone::Battlefield
+        || source.controller != evidence.source_controller
+        || !source
+            .characteristics()
+            .card_types
+            .contains(&CardType::Land)
+        || evidence.produced_mana_types.is_empty()
+        || evidence
+            .produced_mana_types
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != evidence.produced_mana_types.len()
+    {
+        return Err(ExecutionError::Adapter(
+            "land-mana trigger event lacks exact live source, incarnation, zone, controller, occurrence, or produced-type evidence"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn event_player(event: &TriggerEvent) -> Option<PlayerId> {
     match event {
-        TriggerEvent::SpellCast { player, .. }
+        TriggerEvent::ChaosEnsued {
+            planar_controller: player,
+            ..
+        }
+        | TriggerEvent::SpellCast { player, .. }
         | TriggerEvent::CardDrawn { player, .. }
         | TriggerEvent::LifeGained { player, .. }
         | TriggerEvent::TokenCreated { player, .. }
         | TriggerEvent::PlayerAction { player, .. }
         | TriggerEvent::CombatDamageToPlayer { player, .. }
-        | TriggerEvent::DamageToPlayer { player, .. } => Some(*player),
-        TriggerEvent::BecameTarget { controller, .. } => Some(*controller),
+        | TriggerEvent::CreatureCombatDamageBatchToPlayer { player, .. }
+        | TriggerEvent::DamageToPlayer { player, .. }
+        | TriggerEvent::BattlefieldConditionChanged { player, .. } => Some(*player),
+        TriggerEvent::BecameTarget { controller, .. }
+        | TriggerEvent::NonlandPermanentTappedForMana { controller, .. } => Some(*controller),
+        TriggerEvent::LandTappedForMana { evidence } => Some(evidence.source_controller),
         TriggerEvent::BeginningOf { active_player, .. } => Some(*active_player),
         TriggerEvent::ObjectEntered { .. }
         | TriggerEvent::ObjectAttacked { .. }
@@ -4920,6 +5411,19 @@ fn entry_choice_binding_id(address: ClauseAddress) -> u64 {
 
 fn populate_trigger_context(context: &mut ExecutionContext, event: &TriggerEvent) {
     match event {
+        TriggerEvent::ChaosEnsued {
+            affected_planes,
+            planar_controller,
+            ..
+        } => {
+            if affected_planes
+                .iter()
+                .any(|evidence| evidence.object == context.source)
+            {
+                context.triggering_object = Some(context.source);
+            }
+            context.that_player = Some(*planar_controller);
+        }
         TriggerEvent::SpellCast { spell, player, .. } => {
             context.triggering_object = Some(*spell);
             context.that_player = Some(*player);
@@ -4931,8 +5435,13 @@ fn populate_trigger_context(context: &mut ExecutionContext, event: &TriggerEvent
         TriggerEvent::ObjectEntered { object }
         | TriggerEvent::ObjectAttacked { object }
         | TriggerEvent::SchemeSetInMotion { object }
-        | TriggerEvent::ObjectTappedForMana { object } => {
+        | TriggerEvent::ObjectTappedForMana { object }
+        | TriggerEvent::NonlandPermanentTappedForMana { object, .. } => {
             context.triggering_object = Some(*object);
+        }
+        TriggerEvent::LandTappedForMana { evidence } => {
+            context.triggering_object = Some(evidence.source);
+            context.that_player = Some(evidence.source_controller);
         }
         TriggerEvent::ObjectBlocked { blocked, .. } => {
             context.triggering_object = Some(*blocked);
@@ -4959,6 +5468,12 @@ fn populate_trigger_context(context: &mut ExecutionContext, event: &TriggerEvent
             context.triggering_object = Some(*source);
             context.that_player = Some(*player);
         }
+        TriggerEvent::CreatureCombatDamageBatchToPlayer {
+            sources, player, ..
+        } => {
+            context.triggering_object = sources.first().map(|source| source.object);
+            context.that_player = Some(*player);
+        }
         TriggerEvent::CombatDamageToObject { object, .. }
         | TriggerEvent::DamageToObject { object, .. } => {
             context.triggering_object = Some(*object);
@@ -4972,6 +5487,9 @@ fn populate_trigger_context(context: &mut ExecutionContext, event: &TriggerEvent
         TriggerEvent::BeginningOf { active_player, .. } => {
             context.active_player = *active_player;
             context.that_player = Some(*active_player);
+        }
+        TriggerEvent::BattlefieldConditionChanged { player, .. } => {
+            context.that_player = Some(*player);
         }
     }
 }
@@ -5031,6 +5549,7 @@ pub fn physical_object_from_compiled_card(
             .any(|subtype| subtype.eq_ignore_ascii_case("Class"))
             .then_some(1)
             .unwrap_or(0),
+        crew_power_bonus: 0,
         front: ObjectCharacteristics {
             names: vec![card.name.clone()],
             card_types,

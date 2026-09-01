@@ -55,6 +55,13 @@ pub(crate) struct FaceLayoutFaceSource {
     pub profile: FaceRulesProfile,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FaceLayoutOracleClauseSource {
+    pub face_index: u16,
+    pub clause_index: u16,
+    pub source_sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FaceRulesProfile {
     pub is_land: bool,
@@ -76,6 +83,7 @@ pub(crate) struct FaceLayoutRuntimeInput {
     pub card_revision_sha256: String,
     pub faces: Vec<FaceLayoutFaceSource>,
     pub related_components: Vec<RelatedLayoutSource>,
+    pub layout_oracle_clauses: Vec<FaceLayoutOracleClauseSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +117,7 @@ pub(crate) struct FaceLayoutRuntimeReceipt {
     pub face_source_sha256s: Vec<String>,
     pub face_functional_sha256s: Vec<String>,
     pub related_component_source_sha256s: Vec<String>,
+    pub layout_oracle_clauses: Vec<FaceLayoutOracleClauseSource>,
     pub contract_sha256: String,
 }
 
@@ -192,8 +201,48 @@ pub(crate) fn compile_face_layout_runtime(
     }) {
         return Err(FaceLayoutRuntimeError::IncompleteRelatedComponentEvidence);
     }
+    if input.layout_oracle_clauses.iter().any(|clause| {
+        usize::from(clause.face_index) >= input.faces.len() || !is_sha256_hex(&clause.source_sha256)
+    }) || input.layout_oracle_clauses.windows(2).any(|pair| {
+        (pair[0].face_index, pair[0].clause_index) >= (pair[1].face_index, pair[1].clause_index)
+    }) {
+        return Err(FaceLayoutRuntimeError::IncompleteFaceEvidence);
+    }
 
     let program = compile_program(&input)?;
+    let room_face_count = match &program {
+        FaceLayoutProgram::Split {
+            profiles,
+            shared_permanent: true,
+            ..
+        } if profiles.iter().all(|profile| profile.is_room) => profiles.len(),
+        _ => 0,
+    };
+    let meld_lifecycle = matches!(program, FaceLayoutProgram::Meld { .. });
+    let transform_back_restriction = matches!(
+        program,
+        FaceLayoutProgram::TwoFace {
+            kind: FaceLayoutKind::Transform,
+            ..
+        }
+    ) && input.layout_oracle_clauses.len() == 1;
+    if (!meld_lifecycle
+        && !transform_back_restriction
+        && room_face_count == 0
+        && !input.layout_oracle_clauses.is_empty())
+        || (meld_lifecycle && input.layout_oracle_clauses.len() != 1)
+        || (room_face_count > 0
+            && (input.layout_oracle_clauses.len() != room_face_count
+                || input
+                    .layout_oracle_clauses
+                    .iter()
+                    .map(|clause| clause.face_index)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != room_face_count))
+    {
+        return Err(FaceLayoutRuntimeError::IncompleteFaceEvidence);
+    }
     let face_source_sha256s = input
         .faces
         .iter()
@@ -204,6 +253,11 @@ pub(crate) fn compile_face_layout_runtime(
         .iter()
         .map(|component| component.source_sha256.clone())
         .collect::<Vec<_>>();
+    let layout_oracle_clause_sha256s = input
+        .layout_oracle_clauses
+        .iter()
+        .map(|clause| clause.source_sha256.clone())
+        .collect::<Vec<_>>();
     let face_functional_sha256s = input
         .faces
         .iter()
@@ -213,24 +267,44 @@ pub(crate) fn compile_face_layout_runtime(
     let source_evidence_sha256 = sha256_hex(source_payload.as_bytes());
     let mut clause_digests = face_source_sha256s.clone();
     clause_digests.extend(related_component_source_sha256s.iter().cloned());
+    clause_digests.extend(layout_oracle_clause_sha256s.iter().cloned());
     if clause_digests.is_empty() {
         return Err(FaceLayoutRuntimeError::IncompleteFaceEvidence);
     }
-    let covered_oracle_clauses = clause_digests
-        .iter()
-        .enumerate()
-        .map(|(index, digest)| RuntimeOracleClauseEvidence {
-            face_index: 0,
-            clause_index: index as u16,
-            normalized_clause_sha256: digest.clone(),
-        })
-        .collect::<Vec<_>>();
+    let covered_oracle_clauses = if input.layout_oracle_clauses.is_empty() {
+        clause_digests
+            .iter()
+            .enumerate()
+            .map(|(index, digest)| RuntimeOracleClauseEvidence {
+                face_index: 0,
+                clause_index: index as u16,
+                normalized_clause_sha256: digest.clone(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        input
+            .layout_oracle_clauses
+            .iter()
+            .map(|clause| RuntimeOracleClauseEvidence {
+                face_index: clause.face_index,
+                clause_index: clause.clause_index,
+                normalized_clause_sha256: clause.source_sha256.clone(),
+            })
+            .collect::<Vec<_>>()
+    };
     let binding = RuntimeExecutorBinding {
         receipt_schema_version: RUNTIME_RECEIPT_SCHEMA_VERSION,
         executor_id: FACE_LAYOUT_EXECUTOR_ID,
         executor_version: FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION,
     };
-    let capabilities = vec![RuntimeCapability::ExactFaceLayoutProgram];
+    let mut capabilities = vec![RuntimeCapability::ExactFaceLayoutProgram];
+    if room_face_count > 0 {
+        capabilities.push(RuntimeCapability::ExactRoomLifecycle);
+    } else if meld_lifecycle {
+        capabilities.push(RuntimeCapability::ExactMeldLifecycle);
+    } else if transform_back_restriction {
+        capabilities.push(RuntimeCapability::ExactBackFaceCastRestriction);
+    }
     let source_evidence = RuntimeSourceEvidence {
         ability_program_version: EXECUTABLE_ABILITY_PROGRAM_VERSION,
         normalized_oracle_sha256: input.card_revision_sha256.clone(),
@@ -248,6 +322,7 @@ pub(crate) fn compile_face_layout_runtime(
         &face_source_sha256s,
         &face_functional_sha256s,
         &related_component_source_sha256s,
+        &input.layout_oracle_clauses,
     );
     let receipt = FaceLayoutRuntimeReceipt {
         binding,
@@ -257,6 +332,7 @@ pub(crate) fn compile_face_layout_runtime(
         face_source_sha256s,
         face_functional_sha256s,
         related_component_source_sha256s,
+        layout_oracle_clauses: input.layout_oracle_clauses,
         contract_sha256,
     };
     receipt
@@ -386,7 +462,22 @@ impl FaceLayoutRuntimeReceipt {
         self.binding.receipt_schema_version == RUNTIME_RECEIPT_SCHEMA_VERSION
             && self.binding.executor_id == FACE_LAYOUT_EXECUTOR_ID
             && self.binding.executor_version == FACE_LAYOUT_RUNTIME_EXECUTOR_VERSION
-            && self.capabilities == [RuntimeCapability::ExactFaceLayoutProgram]
+            && (self.capabilities == [RuntimeCapability::ExactFaceLayoutProgram]
+                || self.capabilities
+                    == [
+                        RuntimeCapability::ExactFaceLayoutProgram,
+                        RuntimeCapability::ExactRoomLifecycle,
+                    ]
+                || self.capabilities
+                    == [
+                        RuntimeCapability::ExactFaceLayoutProgram,
+                        RuntimeCapability::ExactMeldLifecycle,
+                    ]
+                || self.capabilities
+                    == [
+                        RuntimeCapability::ExactFaceLayoutProgram,
+                        RuntimeCapability::ExactBackFaceCastRestriction,
+                    ])
             && is_sha256_hex(&self.source_evidence.normalized_oracle_sha256)
             && self.source_evidence.has_exact_clause_contract()
             && is_sha256_hex(&self.source_evidence.type_line_sha256)
@@ -396,12 +487,22 @@ impl FaceLayoutRuntimeReceipt {
                 .iter()
                 .chain(self.face_functional_sha256s.iter())
                 .chain(self.related_component_source_sha256s.iter())
+                .chain(
+                    self.layout_oracle_clauses
+                        .iter()
+                        .map(|clause| &clause.source_sha256),
+                )
                 .all(|digest| is_sha256_hex(digest))
             && self.source_evidence.normalized_oracle_clause_sha256s
                 == self
                     .face_source_sha256s
                     .iter()
                     .chain(self.related_component_source_sha256s.iter())
+                    .chain(
+                        self.layout_oracle_clauses
+                            .iter()
+                            .map(|clause| &clause.source_sha256),
+                    )
                     .cloned()
                     .collect::<Vec<_>>()
             && self.contract_sha256
@@ -413,6 +514,7 @@ impl FaceLayoutRuntimeReceipt {
                     &self.face_source_sha256s,
                     &self.face_functional_sha256s,
                     &self.related_component_source_sha256s,
+                    &self.layout_oracle_clauses,
                 )
     }
 
@@ -427,6 +529,29 @@ impl FaceLayoutRuntimeReceipt {
                 .related_component_source_sha256s
                 .iter()
                 .any(|digest| digest == source_sha256)
+    }
+
+    pub(crate) fn owns_layout_lifecycle_clause(
+        &self,
+        face_index: u16,
+        clause_index: u16,
+        source_sha256: &str,
+    ) -> bool {
+        self.has_exact_contract()
+            && (self
+                .capabilities
+                .contains(&RuntimeCapability::ExactRoomLifecycle)
+                || self
+                    .capabilities
+                    .contains(&RuntimeCapability::ExactMeldLifecycle)
+                || self
+                    .capabilities
+                    .contains(&RuntimeCapability::ExactBackFaceCastRestriction))
+            && self.layout_oracle_clauses.iter().any(|clause| {
+                clause.face_index == face_index
+                    && clause.clause_index == clause_index
+                    && clause.source_sha256 == source_sha256
+            })
     }
 }
 
@@ -835,8 +960,19 @@ fn evidence_payload(input: &FaceLayoutRuntimeInput, program: &FaceLayoutProgram)
         })
         .collect::<Vec<_>>()
         .join(",");
+    let layout_oracle_clauses = input
+        .layout_oracle_clauses
+        .iter()
+        .map(|clause| {
+            format!(
+                "{}:{}:{}",
+                clause.face_index, clause.clause_index, clause.source_sha256
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "layout={};revision={};faces={faces};related={related};program={program:?}",
+        "layout={};revision={};faces={faces};related={related};layout_oracle_clauses={layout_oracle_clauses};program={program:?}",
         input.layout, input.card_revision_sha256
     )
 }
@@ -849,6 +985,7 @@ fn receipt_contract_sha256(
     faces: &[String],
     functional_faces: &[String],
     related: &[String],
+    layout_oracle_clauses: &[FaceLayoutOracleClauseSource],
 ) -> String {
     let mut hasher = Sha256::new();
     for part in [
@@ -863,6 +1000,7 @@ fn receipt_contract_sha256(
         faces.join(",").as_bytes(),
         functional_faces.join(",").as_bytes(),
         related.join(",").as_bytes(),
+        format!("{layout_oracle_clauses:?}").as_bytes(),
     ] {
         hash_framed(&mut hasher, part);
     }

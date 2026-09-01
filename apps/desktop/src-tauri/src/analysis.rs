@@ -136,6 +136,7 @@ fn with_objective_production_policy(
             "Opening-hand and paired-game trial counts must match.".into(),
         ));
     }
+    #[cfg(not(test))]
     let local_diagnostic_count_allowed = false;
     if !ALLOWED_PRODUCTION_SIMULATION_COUNTS.contains(&opening_hand_simulations)
         && !local_diagnostic_count_allowed

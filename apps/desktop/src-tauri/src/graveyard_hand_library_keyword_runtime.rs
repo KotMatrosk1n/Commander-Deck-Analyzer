@@ -12,8 +12,8 @@ use std::fmt;
 
 use sha2::{Digest, Sha256};
 
-pub const ZONE_KEYWORD_COMPILER_VERSION: &str = "graveyard-hand-library-keyword-compiler-0.1";
-pub const ZONE_KEYWORD_RUNTIME_VERSION: &str = "graveyard-hand-library-keyword-runtime-0.5";
+pub const ZONE_KEYWORD_COMPILER_VERSION: &str = "graveyard-hand-library-keyword-compiler-0.2";
+pub const ZONE_KEYWORD_RUNTIME_VERSION: &str = "graveyard-hand-library-keyword-runtime-0.7";
 pub const ZONE_KEYWORD_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:108.3,111,113.6,115,118,119,400.2,400.7,401,602,608,609.3,614,616,701.7,701.8,701.16,701.20,702.52,702.53,702.57,702.59,702.77,702.97,702.128,702.129,704,707";
 
 const PRIOR_CHANNEL_BOSS: &str = "Channel \u{2014} {1}{G}, Discard this card: Destroy target artifact, enchantment, or nonbasic land an opponent controls. That player may search their library for a land card with a basic land type, put it onto the battlefield, then shuffle. This ability costs {1} less to activate for each legendary creature you control.";
@@ -470,6 +470,7 @@ impl ZoneKeywordProgram {
                 ),
                 ChannelEffect::DrawOne
                 | ChannelEffect::CreateGreenHumanMonk
+                | ChannelEffect::CreateTwoPilotTokens
                 | ChannelEffect::GainLife(_)
                 | ChannelEffect::TargetCreatureCantBlockThisTurn
                 | ChannelEffect::ReturnTargetToHand(_)
@@ -503,6 +504,7 @@ impl ZoneKeywordProgram {
                     | ForecastEffect::GrantTargetCreatureKeywordUntilEndOfTurn(
                         GrantedKeyword::Shadow,
                     )
+                    | ForecastEffect::GainLifeWhenTargetCreatureDealsDamageThisTurn
             ),
             ZoneKeywordKind::Recover { .. } => true,
             ZoneKeywordKind::Dredge { .. } => true,

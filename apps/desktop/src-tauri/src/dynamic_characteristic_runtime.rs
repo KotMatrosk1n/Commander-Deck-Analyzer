@@ -324,7 +324,9 @@ pub(crate) fn compile_dynamic_printed_stat_procedure(
             oracle_definition: format!("augment:{}", layout.trim().to_ascii_lowercase()),
         });
     }
-    printed.required_variable()?;
+    if printed.required_variable().is_none() {
+        return None;
+    }
 
     let normalized = normalize_oracle(oracle_text);
     let expression = compile_special_printed_stat(&normalized, subject)
@@ -758,9 +760,10 @@ fn compile_count_or_aggregate_phrase(
             (DynamicQueryAggregate::GreatestManaValue, rest)
         } else if let Some(rest) = phrase.strip_prefix("the total power of ") {
             (DynamicQueryAggregate::SumPower, rest)
-        } else {
-            let rest = phrase.strip_prefix("the total toughness of ")?;
+        } else if let Some(rest) = phrase.strip_prefix("the total toughness of ") {
             (DynamicQueryAggregate::SumToughness, rest)
+        } else {
+            return None;
         };
     let (zone, predicate) = classify_query_zone(noun_phrase)?;
     Some(DynamicOracleQuery {

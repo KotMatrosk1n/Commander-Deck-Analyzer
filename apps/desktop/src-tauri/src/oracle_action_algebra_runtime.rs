@@ -27,8 +27,8 @@ use std::sync::OnceLock;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-pub const ORACLE_ACTION_ALGEBRA_COMPILER_VERSION: &str = "oracle-action-algebra-compiler-0.8";
-pub const ORACLE_ACTION_ALGEBRA_RUNTIME_VERSION: &str = "oracle-action-algebra-runtime-0.9";
+pub const ORACLE_ACTION_ALGEBRA_COMPILER_VERSION: &str = "oracle-action-algebra-compiler-0.9";
+pub const ORACLE_ACTION_ALGEBRA_RUNTIME_VERSION: &str = "oracle-action-algebra-runtime-0.10";
 pub const ORACLE_ACTION_ALGEBRA_RULES_CONTEXT_VERSION: &str = "magic-comprehensive-rules-2026-06-19:101-102,104,107,109,111,119-122,400-406,608.2c-d,609-611,613,615,701.3,701.6-9,701.13-15,701.17-20,701.25,701.32,701.35,701.45,707";
 
 /// Recognition here cannot become production execution coverage until the
@@ -473,6 +473,12 @@ pub enum ActionKind {
         amount: Amount,
         duration: Duration,
     },
+    CreateDamageRedirectionShield {
+        protected: ObjectOperand,
+        recipient: ObjectOperand,
+        amount: Amount,
+        duration: Duration,
+    },
     Fight {
         first: ObjectOperand,
         second: ObjectOperand,
@@ -572,7 +578,8 @@ impl ActionKind {
             Self::Sacrifice { .. } => OracleActionFamily::Sacrifice,
             Self::GainLife { .. } | Self::LoseLife { .. } => OracleActionFamily::Life,
             Self::DealDamage { .. } => OracleActionFamily::Damage,
-            Self::CreateDamagePreventionShield { .. } => OracleActionFamily::Prevention,
+            Self::CreateDamagePreventionShield { .. }
+            | Self::CreateDamageRedirectionShield { .. } => OracleActionFamily::Prevention,
             Self::Fight { .. } => OracleActionFamily::Fight,
             Self::Tap { .. } | Self::Untap { .. } => OracleActionFamily::TapUntap,
             Self::ChangeCounters { .. } => OracleActionFamily::Counters,
@@ -629,9 +636,45 @@ pub struct ActionNode {
 pub struct OracleActionProgram {
     exact_source: String,
     normalized_source: String,
+    source_name_binding: Option<OracleActionSourceNameBindingProof>,
+    leading_label_binding: Option<OracleActionLeadingLabelBindingProof>,
     semantic_context: OracleActionSemanticContext,
     semantic_digest: String,
     root: ActionNode,
+}
+
+/// Compile-time evidence that a printed proper-name action subject is an
+/// exact alias of the source card or face. Runtime execution binds that
+/// subject to the source object incarnation, never to a mutable name lookup.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OracleActionSourceNameBindingProof {
+    exact_source_name: String,
+    matched_alias: String,
+}
+
+/// Compile-time evidence that a printed, rules-meaningless label preceding an
+/// em dash was removed before parsing the resolving instruction. The exact
+/// label remains part of the program and semantic digest, while execution is
+/// derived solely from the complete suffix after the dash.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OracleActionLeadingLabelBindingProof {
+    exact_label: String,
+}
+
+impl OracleActionLeadingLabelBindingProof {
+    pub fn exact_label(&self) -> &str {
+        &self.exact_label
+    }
+}
+
+impl OracleActionSourceNameBindingProof {
+    pub fn exact_source_name(&self) -> &str {
+        &self.exact_source_name
+    }
+
+    pub fn matched_alias(&self) -> &str {
+        &self.matched_alias
+    }
 }
 
 impl OracleActionProgram {
@@ -641,6 +684,14 @@ impl OracleActionProgram {
 
     pub fn normalized_source(&self) -> &str {
         &self.normalized_source
+    }
+
+    pub fn source_name_binding(&self) -> Option<&OracleActionSourceNameBindingProof> {
+        self.source_name_binding.as_ref()
+    }
+
+    pub fn leading_label_binding(&self) -> Option<&OracleActionLeadingLabelBindingProof> {
+        self.leading_label_binding.as_ref()
     }
 
     pub const fn semantic_context(&self) -> OracleActionSemanticContext {
@@ -756,6 +807,92 @@ pub fn reviewed_oracle_action_normalized_source(exact_source: &str) -> String {
     collapse_whitespace(exact_source)
 }
 
+/// Derive the only source-name normalization accepted by the action algebra:
+/// an exact full card/face name, its rebalanced `A-`-free form, its front-face
+/// name, or an official comma-shortened alias, in subject position at the
+/// start of the instruction.
+pub fn reviewed_oracle_action_normalized_source_with_source_name(
+    exact_source: &str,
+    exact_source_name: &str,
+) -> Option<String> {
+    reviewed_oracle_action_source_name_binding(exact_source, exact_source_name)
+        .map(|(normalized_source, _)| normalized_source)
+}
+
+/// Remove one exact leading label of the Oracle form `Label \u{2014} instruction`.
+/// This is deliberately not a general dash splitter: both sides must be
+/// complete single-line text and the label may not itself contain an em dash.
+pub fn reviewed_oracle_action_normalized_source_with_leading_label(
+    exact_source: &str,
+) -> Option<String> {
+    reviewed_oracle_action_leading_label_binding(exact_source)
+        .map(|(normalized_source, _)| normalized_source)
+}
+
+pub fn reviewed_oracle_action_normalized_source_with_leading_label_and_source_name(
+    exact_source: &str,
+    exact_source_name: &str,
+) -> Option<String> {
+    let (instruction, _) = reviewed_oracle_action_leading_label_binding(exact_source)?;
+    reviewed_oracle_action_source_name_binding(&instruction, exact_source_name)
+        .map(|(normalized_source, _)| normalized_source)
+}
+
+fn reviewed_oracle_action_leading_label_binding(exact_source: &str) -> Option<(String, String)> {
+    let collapsed = collapse_whitespace(exact_source);
+    let (label, instruction) = collapsed.split_once(" \u{2014} ")?;
+    let label = label.trim();
+    let instruction = instruction.trim();
+    if label.is_empty()
+        || instruction.is_empty()
+        || label.len() > 160
+        || label.contains('\u{2014}')
+        || !is_complete_single_line(label)
+        || !is_complete_single_line(instruction)
+    {
+        return None;
+    }
+    Some((instruction.to_owned(), label.to_owned()))
+}
+
+fn reviewed_oracle_action_source_name_binding(
+    exact_source: &str,
+    exact_source_name: &str,
+) -> Option<(String, String)> {
+    let exact_source_name = exact_source_name.trim();
+    if exact_source_name.is_empty()
+        || exact_source_name.len() > 300
+        || exact_source_name.contains("//")
+    {
+        return None;
+    }
+    let collapsed = collapse_whitespace(exact_source);
+    let mut aliases = vec![exact_source_name];
+    if let Some(rebalanced) = exact_source_name.strip_prefix("A-")
+        && !rebalanced.trim().is_empty()
+    {
+        aliases.push(rebalanced.trim());
+    }
+    if let Some((front, back)) = exact_source_name.split_once(" // ")
+        && !front.trim().is_empty()
+        && !back.trim().is_empty()
+    {
+        aliases.push(front.trim());
+    }
+    let base_aliases = aliases.clone();
+    aliases.extend(base_aliases.into_iter().filter_map(|alias| {
+        let (short, remainder) = alias.split_once(',')?;
+        (!short.trim().is_empty() && !remainder.trim().is_empty()).then_some(short.trim())
+    }));
+    aliases.sort_by_key(|alias| std::cmp::Reverse(alias.len()));
+    aliases.dedup();
+    aliases.into_iter().find_map(|alias| {
+        let remainder = collapsed.strip_prefix(alias)?;
+        (remainder.starts_with(' ') || remainder.starts_with("'s "))
+            .then(|| (format!("This object{remainder}"), alias.to_owned()))
+    })
+}
+
 pub fn compile_oracle_action_program(
     input: OracleActionCompileInput<'_>,
 ) -> Result<OracleActionProgram, OracleActionRejection> {
@@ -763,6 +900,164 @@ pub fn compile_oracle_action_program(
         OracleActionClassification::Program(program) => Ok(program),
         OracleActionClassification::Rejected(reason) => Err(reason),
     }
+}
+
+/// Compile an exact action atom whose enclosing typed composition owns the
+/// sentence boundary. Fragment compilation remains separate from the normal
+/// complete-instruction entry point so punctuationless text cannot be
+/// promoted without structural evidence from its caller.
+pub fn compile_oracle_action_fragment_program(
+    input: OracleActionCompileInput<'_>,
+) -> Result<OracleActionProgram, OracleActionRejection> {
+    match classify_oracle_action_fragment_instruction(input) {
+        OracleActionClassification::Program(program) => Ok(program),
+        OracleActionClassification::Rejected(reason) => Err(reason),
+    }
+}
+
+pub fn compile_oracle_action_program_with_source_name(
+    input: OracleActionCompileInput<'_>,
+    exact_source_name: &str,
+) -> Result<OracleActionProgram, OracleActionRejection> {
+    let exact_source_name = exact_source_name.trim();
+    let Some((normalized_source, matched_alias)) =
+        reviewed_oracle_action_source_name_binding(input.exact_source, exact_source_name)
+    else {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    };
+    if normalized_source != input.normalized_source {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    }
+    match classify_verified_oracle_action_instruction(
+        input,
+        Some(OracleActionSourceNameBindingProof {
+            exact_source_name: exact_source_name.to_owned(),
+            matched_alias,
+        }),
+        None,
+    ) {
+        OracleActionClassification::Program(program) => Ok(program),
+        OracleActionClassification::Rejected(reason) => Err(reason),
+    }
+}
+
+pub fn compile_oracle_action_fragment_program_with_source_name(
+    input: OracleActionCompileInput<'_>,
+    exact_source_name: &str,
+) -> Result<OracleActionProgram, OracleActionRejection> {
+    let exact_source_name = exact_source_name.trim();
+    let Some((normalized_source, matched_alias)) =
+        reviewed_oracle_action_source_name_binding(input.exact_source, exact_source_name)
+    else {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    };
+    if normalized_source != input.normalized_source {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    }
+    classify_verified_oracle_action_fragment(
+        input,
+        Some(OracleActionSourceNameBindingProof {
+            exact_source_name: exact_source_name.to_owned(),
+            matched_alias,
+        }),
+        None,
+    )
+}
+
+pub fn compile_oracle_action_program_with_leading_label(
+    input: OracleActionCompileInput<'_>,
+) -> Result<OracleActionProgram, OracleActionRejection> {
+    let Some((normalized_source, exact_label)) =
+        reviewed_oracle_action_leading_label_binding(input.exact_source)
+    else {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    };
+    if normalized_source != input.normalized_source {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    }
+    match classify_verified_oracle_action_instruction(
+        input,
+        None,
+        Some(OracleActionLeadingLabelBindingProof { exact_label }),
+    ) {
+        OracleActionClassification::Program(program) => Ok(program),
+        OracleActionClassification::Rejected(reason) => Err(reason),
+    }
+}
+
+pub fn compile_oracle_action_fragment_program_with_leading_label(
+    input: OracleActionCompileInput<'_>,
+) -> Result<OracleActionProgram, OracleActionRejection> {
+    let Some((normalized_source, exact_label)) =
+        reviewed_oracle_action_leading_label_binding(input.exact_source)
+    else {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    };
+    if normalized_source != input.normalized_source {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    }
+    classify_verified_oracle_action_fragment(
+        input,
+        None,
+        Some(OracleActionLeadingLabelBindingProof { exact_label }),
+    )
+}
+
+pub fn compile_oracle_action_program_with_leading_label_and_source_name(
+    input: OracleActionCompileInput<'_>,
+    exact_source_name: &str,
+) -> Result<OracleActionProgram, OracleActionRejection> {
+    let Some((instruction, exact_label)) =
+        reviewed_oracle_action_leading_label_binding(input.exact_source)
+    else {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    };
+    let Some((normalized_source, matched_alias)) =
+        reviewed_oracle_action_source_name_binding(&instruction, exact_source_name)
+    else {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    };
+    if normalized_source != input.normalized_source {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    }
+    match classify_verified_oracle_action_instruction(
+        input,
+        Some(OracleActionSourceNameBindingProof {
+            exact_source_name: exact_source_name.trim().to_owned(),
+            matched_alias,
+        }),
+        Some(OracleActionLeadingLabelBindingProof { exact_label }),
+    ) {
+        OracleActionClassification::Program(program) => Ok(program),
+        OracleActionClassification::Rejected(reason) => Err(reason),
+    }
+}
+
+pub fn compile_oracle_action_fragment_program_with_leading_label_and_source_name(
+    input: OracleActionCompileInput<'_>,
+    exact_source_name: &str,
+) -> Result<OracleActionProgram, OracleActionRejection> {
+    let Some((instruction, exact_label)) =
+        reviewed_oracle_action_leading_label_binding(input.exact_source)
+    else {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    };
+    let Some((normalized_source, matched_alias)) =
+        reviewed_oracle_action_source_name_binding(&instruction, exact_source_name)
+    else {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    };
+    if normalized_source != input.normalized_source {
+        return Err(OracleActionRejection::NormalizationMismatch);
+    }
+    classify_verified_oracle_action_fragment(
+        input,
+        Some(OracleActionSourceNameBindingProof {
+            exact_source_name: exact_source_name.trim().to_owned(),
+            matched_alias,
+        }),
+        Some(OracleActionLeadingLabelBindingProof { exact_label }),
+    )
 }
 
 pub fn classify_oracle_action_instruction(
@@ -777,8 +1072,77 @@ pub fn classify_oracle_action_instruction(
         return OracleActionClassification::Rejected(OracleActionRejection::NormalizationMismatch);
     }
 
-    let parse_source = validated_action_source_without_reminder(input.normalized_source)
-        .unwrap_or(input.normalized_source);
+    classify_verified_oracle_action_instruction(input, None, None)
+}
+
+pub fn classify_oracle_action_fragment_instruction(
+    input: OracleActionCompileInput<'_>,
+) -> OracleActionClassification {
+    if !is_complete_single_line(input.exact_source)
+        || !is_complete_single_line(input.normalized_source)
+    {
+        return OracleActionClassification::Rejected(OracleActionRejection::EmptyOrMalformedSource);
+    }
+    if reviewed_oracle_action_normalized_source(input.exact_source) != input.normalized_source {
+        return OracleActionClassification::Rejected(OracleActionRejection::NormalizationMismatch);
+    }
+
+    match classify_verified_oracle_action_fragment(input, None, None) {
+        Ok(program) => OracleActionClassification::Program(program),
+        Err(reason) => OracleActionClassification::Rejected(reason),
+    }
+}
+
+fn classify_verified_oracle_action_fragment(
+    input: OracleActionCompileInput<'_>,
+    source_name_binding: Option<OracleActionSourceNameBindingProof>,
+    leading_label_binding: Option<OracleActionLeadingLabelBindingProof>,
+) -> Result<OracleActionProgram, OracleActionRejection> {
+    if input.exact_source.ends_with('.') || input.normalized_source.ends_with('.') {
+        return Err(OracleActionRejection::EmptyOrMalformedSource);
+    }
+    let parse_source = format!("{}.", input.normalized_source);
+    match classify_verified_oracle_action_instruction_with_parse_source(
+        input,
+        source_name_binding,
+        leading_label_binding,
+        &parse_source,
+        true,
+    ) {
+        OracleActionClassification::Program(program) => Ok(program),
+        OracleActionClassification::Rejected(reason) => Err(reason),
+    }
+}
+
+fn classify_verified_oracle_action_instruction(
+    input: OracleActionCompileInput<'_>,
+    source_name_binding: Option<OracleActionSourceNameBindingProof>,
+    leading_label_binding: Option<OracleActionLeadingLabelBindingProof>,
+) -> OracleActionClassification {
+    classify_verified_oracle_action_instruction_with_parse_source(
+        input,
+        source_name_binding,
+        leading_label_binding,
+        input.normalized_source,
+        false,
+    )
+}
+
+fn classify_verified_oracle_action_instruction_with_parse_source(
+    input: OracleActionCompileInput<'_>,
+    source_name_binding: Option<OracleActionSourceNameBindingProof>,
+    leading_label_binding: Option<OracleActionLeadingLabelBindingProof>,
+    parse_source: &str,
+    fragment: bool,
+) -> OracleActionClassification {
+    if !is_complete_single_line(input.exact_source)
+        || !is_complete_single_line(input.normalized_source)
+    {
+        return OracleActionClassification::Rejected(OracleActionRejection::EmptyOrMalformedSource);
+    }
+
+    let parse_source =
+        validated_action_source_without_reminder(parse_source).unwrap_or(parse_source);
     if let Some(reason) = reject_outer_envelope(parse_source) {
         return OracleActionClassification::Rejected(reason);
     }
@@ -790,15 +1154,50 @@ pub fn classify_oracle_action_instruction(
     };
     let mut next_id = 1u32;
     assign_action_ids(&mut root, &mut next_id);
-    let semantic_digest = oracle_action_semantic_digest(
+    let mut semantic_digest = oracle_action_semantic_digest(
         input.exact_source,
         input.normalized_source,
         input.semantic_context,
         &root,
     );
+    if fragment {
+        let mut digest = Sha256::new();
+        for component in ["oracle-action-composition-fragment/v1", &semantic_digest] {
+            digest.update((component.len() as u64).to_le_bytes());
+            digest.update(component.as_bytes());
+        }
+        semantic_digest = format!("{:x}", digest.finalize());
+    }
+    if let Some(proof) = source_name_binding.as_ref() {
+        let mut digest = Sha256::new();
+        for component in [
+            "oracle-action-source-name-binding/v1",
+            &semantic_digest,
+            proof.exact_source_name(),
+            proof.matched_alias(),
+        ] {
+            digest.update((component.len() as u64).to_le_bytes());
+            digest.update(component.as_bytes());
+        }
+        semantic_digest = format!("{:x}", digest.finalize());
+    }
+    if let Some(proof) = leading_label_binding.as_ref() {
+        let mut digest = Sha256::new();
+        for component in [
+            "oracle-action-leading-label-binding/v1",
+            &semantic_digest,
+            proof.exact_label(),
+        ] {
+            digest.update((component.len() as u64).to_le_bytes());
+            digest.update(component.as_bytes());
+        }
+        semantic_digest = format!("{:x}", digest.finalize());
+    }
     OracleActionClassification::Program(OracleActionProgram {
         exact_source: input.exact_source.to_owned(),
         normalized_source: input.normalized_source.to_owned(),
+        source_name_binding,
+        leading_label_binding,
         semantic_context: input.semantic_context,
         semantic_digest,
         root,
@@ -825,7 +1224,22 @@ fn validated_action_source_without_reminder(source: &str) -> Option<&str> {
     })
 }
 
+fn is_exact_damage_redirection_instruction(source: &str) -> bool {
+    matches!(
+        source.strip_suffix('.').unwrap_or(source),
+        "The next 1 damage that would be dealt to this creature this turn is dealt to target creature you control instead"
+    )
+}
+
 fn reject_outer_envelope(source: &str) -> Option<OracleActionRejection> {
+    // This exact activated-ability body is itself the complete instruction
+    // that creates a one-shot replacement. It must be recognized before the
+    // generic replacement-envelope rejection. The bounded native grammar's
+    // reviewed `this object` form intentionally remains rejected here so the
+    // complete exact activated-ability envelope retains ownership.
+    if is_exact_damage_redirection_instruction(source) {
+        return None;
+    }
     let lower = source.to_ascii_lowercase();
     if lower.starts_with("when ")
         || lower.starts_with("whenever ")
@@ -1162,6 +1576,14 @@ fn assign_object_target_slots(kind: &mut ActionKind) {
                 assign(recipient, &mut next_slot);
             }
         }
+        ActionKind::CreateDamageRedirectionShield {
+            protected,
+            recipient,
+            ..
+        } => {
+            assign(protected, &mut next_slot);
+            assign(recipient, &mut next_slot);
+        }
         ActionKind::Fight { first, second } => {
             assign(first, &mut next_slot);
             assign(second, &mut next_slot);
@@ -1280,6 +1702,7 @@ fn parse_atomic_action(source: &str) -> Option<ActionNode> {
         .or_else(|| parse_sacrifice(source))
         .or_else(|| parse_life(source))
         .or_else(|| parse_damage(source))
+        .or_else(|| parse_damage_redirection(source))
         .or_else(|| parse_damage_prevention(source))
         .or_else(|| parse_fight(source))
         .or_else(|| parse_tap_untap(source))
@@ -1532,6 +1955,18 @@ fn parse_damage_prevention(source: &str) -> Option<ActionKind> {
         recipient,
         amount: parse_amount(captures.name("amount")?.as_str())?,
         duration: parse_duration(captures.name("duration")?.as_str())?,
+    })
+}
+
+fn parse_damage_redirection(source: &str) -> Option<ActionKind> {
+    if !is_exact_damage_redirection_instruction(source) {
+        return None;
+    }
+    Some(ActionKind::CreateDamageRedirectionShield {
+        protected: ObjectOperand::Source,
+        recipient: parse_object_operand("target creature you control")?,
+        amount: Amount::Fixed(1),
+        duration: Duration::ThisTurn,
     })
 }
 
@@ -2893,6 +3328,7 @@ fn likely_action_verb(source: &str) -> bool {
         "gain",
         "lose",
         "deals",
+        "dealt",
         "fight",
         "tap",
         "untap",
@@ -3063,6 +3499,17 @@ pub struct DamagePreventionShield {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DamageRedirectionShield {
+    pub protected: ObjectRef,
+    pub recipient: ObjectRef,
+    pub controller: PlayerId,
+    pub remaining: u32,
+    pub duration: Duration,
+    pub source: ObjectRef,
+    pub program_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibilityEvent {
     pub action_id: ActionId,
     pub viewer: Option<PlayerId>,
@@ -3092,6 +3539,7 @@ pub struct OracleActionWorldState {
     pub objects: BTreeMap<ObjectRef, GameObject>,
     pub continuous_effects: Vec<ContinuousActionEffect>,
     pub damage_prevention_shields: Vec<DamagePreventionShield>,
+    pub damage_redirection_shields: Vec<DamageRedirectionShield>,
     pub damage_events: Vec<DamageEvent>,
     pub visibility_events: Vec<VisibilityEvent>,
     pub zone_moves: Vec<ZoneMoveEvent>,
@@ -3112,6 +3560,7 @@ impl Default for OracleActionWorldState {
             objects: BTreeMap::new(),
             continuous_effects: Vec::new(),
             damage_prevention_shields: Vec::new(),
+            damage_redirection_shields: Vec::new(),
             damage_events: Vec::new(),
             visibility_events: Vec::new(),
             zone_moves: Vec::new(),
@@ -3358,6 +3807,12 @@ pub enum ActionReceiptKind {
         amount: u32,
         duration: Duration,
     },
+    DamageRedirectionCreated {
+        protected: ObjectRef,
+        recipient: ObjectRef,
+        amount: u32,
+        duration: Duration,
+    },
     Fought {
         first: ObjectRef,
         second: ObjectRef,
@@ -3445,7 +3900,12 @@ pub fn execute_oracle_action_program_transactionally<S: OracleActionStateAdapter
     {
         let world = staged.action_world_mut();
         validate_world_state(world)?;
-        if !world.no_applicable_replacement_effects {
+        if !world.no_applicable_replacement_effects
+            && !matches!(
+                &program.root.kind,
+                ActionKind::CreateDamageRedirectionShield { .. }
+            )
+        {
             return Err(OracleActionRuntimeError::IncompleteReplacementEffectEvidence);
         }
         if !world.players.contains_key(&bindings.controller) {
@@ -3742,6 +4202,71 @@ fn execute_action_node(
                 },
             });
         }
+        ActionKind::CreateDamageRedirectionShield {
+            protected,
+            recipient,
+            amount,
+            duration,
+        } => {
+            require_battlefield(state)?;
+            let protected = resolve_objects(protected, node.id, bindings, state, memory)?
+                .into_iter()
+                .next()
+                .ok_or(OracleActionRuntimeError::MissingSource)?;
+            let recipient = resolve_objects(recipient, node.id, bindings, state, memory)?
+                .into_iter()
+                .next()
+                .ok_or(OracleActionRuntimeError::MissingTarget(node.id))?;
+            let amount = resolve_amount(amount, node.id, bindings, state, memory)?;
+            let protected_object = state
+                .objects
+                .get(&protected)
+                .ok_or(OracleActionRuntimeError::MissingObject(protected))?;
+            let recipient_object = state
+                .objects
+                .get(&recipient)
+                .ok_or(OracleActionRuntimeError::MissingObject(recipient))?;
+            if !protected_object.is_permanent()
+                || !protected_object.card_types.contains(&CardType::Creature)
+                || protected_object.controller != bindings.controller
+                || !recipient_object.is_permanent()
+                || !recipient_object.card_types.contains(&CardType::Creature)
+                || recipient_object.controller != bindings.controller
+                || amount != 1
+                || *duration != Duration::ThisTurn
+            {
+                return Err(OracleActionRuntimeError::IllegalObjectTarget {
+                    action: node.id,
+                    object: recipient,
+                });
+            }
+            state
+                .damage_redirection_shields
+                .push(DamageRedirectionShield {
+                    protected,
+                    recipient,
+                    controller: bindings.controller,
+                    remaining: amount,
+                    duration: *duration,
+                    source: bindings
+                        .source
+                        .ok_or(OracleActionRuntimeError::MissingSource)?,
+                    program_digest: program_digest.to_owned(),
+                });
+            memory.last_objects = vec![recipient];
+            memory.last_players.clear();
+            memory.last_amount = Some(amount);
+            memory.previous_action_succeeded = true;
+            receipts.push(ActionReceipt {
+                action_id: node.id,
+                kind: ActionReceiptKind::DamageRedirectionCreated {
+                    protected,
+                    recipient,
+                    amount,
+                    duration: *duration,
+                },
+            });
+        }
         ActionKind::DealDamage {
             source,
             recipient,
@@ -3769,6 +4294,7 @@ fn execute_action_node(
                     build_damage_event(node.id, source, recipient, amount, state, program_digest)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            apply_damage_redirection_shields(&mut events, state)?;
             apply_damage_prevention_shields(&mut events, state);
             apply_damage_batch(&events, state)?;
             memory.last_objects = events
@@ -3825,6 +4351,7 @@ fn execute_action_node(
                     program_digest,
                 )?,
             ];
+            apply_damage_redirection_shields(&mut events, state)?;
             apply_damage_prevention_shields(&mut events, state);
             apply_damage_batch(&events, state)?;
             state.damage_events.extend(events.clone());
@@ -5249,6 +5776,66 @@ fn apply_damage_batch(
     Ok(())
 }
 
+fn apply_damage_redirection_shields(
+    events: &mut Vec<DamageEvent>,
+    state: &mut OracleActionWorldState,
+) -> Result<(), OracleActionRuntimeError> {
+    let mut redirected_events = Vec::new();
+    for event in events.iter_mut() {
+        let ResolvedDamageRecipient::Object(protected) = event.recipient else {
+            continue;
+        };
+        let matching = state
+            .damage_redirection_shields
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shield)| {
+                (shield.protected == protected && shield.remaining > 0).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in matching {
+            if event.amount == 0 {
+                break;
+            }
+            let shield = &state.damage_redirection_shields[index];
+            let protected_object = state
+                .objects
+                .get(&shield.protected)
+                .ok_or(OracleActionRuntimeError::StaleObject(shield.protected))?;
+            let recipient_object = state
+                .objects
+                .get(&shield.recipient)
+                .ok_or(OracleActionRuntimeError::StaleObject(shield.recipient))?;
+            if !protected_object.is_permanent()
+                || !protected_object.card_types.contains(&CardType::Creature)
+                || !recipient_object.is_permanent()
+                || !recipient_object.card_types.contains(&CardType::Creature)
+                || recipient_object.controller != shield.controller
+            {
+                return Err(OracleActionRuntimeError::IllegalObjectTarget {
+                    action: event.action_id,
+                    object: shield.recipient,
+                });
+            }
+            let redirected = state.damage_redirection_shields[index]
+                .remaining
+                .min(event.amount);
+            state.damage_redirection_shields[index].remaining -= redirected;
+            event.amount -= redirected;
+            let mut redirected_event = event.clone();
+            redirected_event.recipient =
+                ResolvedDamageRecipient::Object(state.damage_redirection_shields[index].recipient);
+            redirected_event.amount = redirected;
+            redirected_events.push(redirected_event);
+        }
+    }
+    state
+        .damage_redirection_shields
+        .retain(|shield| shield.remaining > 0);
+    events.extend(redirected_events);
+    Ok(())
+}
+
 fn apply_damage_prevention_shields(events: &mut [DamageEvent], state: &mut OracleActionWorldState) {
     for event in events {
         let mut remaining_damage = event.amount;
@@ -5775,5 +6362,8 @@ pub fn expire_oracle_action_effects(boundary: Duration, state: &mut OracleAction
     });
     state
         .damage_prevention_shields
+        .retain(|shield| shield.duration != boundary);
+    state
+        .damage_redirection_shields
         .retain(|shield| shield.duration != boundary);
 }

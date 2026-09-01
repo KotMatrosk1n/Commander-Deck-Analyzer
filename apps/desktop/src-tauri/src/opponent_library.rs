@@ -209,6 +209,7 @@ impl OpponentLibraryTable {
             opponents: upper_bounds.map(OpponentLibraryState::with_upper_bound),
         }
     }
+
     pub(crate) fn draw_loss_receipts(&self) -> [Option<OpponentDrawLossReceipt>; OPPONENT_COUNT] {
         self.opponents.map(|state| state.draw_loss_receipt)
     }

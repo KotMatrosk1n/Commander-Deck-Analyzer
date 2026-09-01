@@ -5,9 +5,10 @@ use crate::ability_program::{
     AbilityCost, AbilityEffect, AbilityTiming, ActivationWindow, CardType as ProgramCardType,
     ControllerRelation, DelayedEvent, DelayedObjectReference, DiscardedObjectReference,
     ExecutableAbilityProgramV1, FaceCastCharacteristicsInput, LibraryPosition,
-    ManaCost as ProgramManaCost, ManaKind as ProgramManaKind, NecropotenceDiscardEvent,
-    OracleCardFaceInput, OracleCardInput, StepProcedure, TargetSelector, TokenKind,
-    TriggerEventKind, TurnStep, VariableCreatureOverrunEffect, VariableCreatureTutorEffect, Zone,
+    ManaCost as ProgramManaCost, ManaKind as ProgramManaKind, ManaModifierPermanentKind,
+    ManaModifierRecipient, NecropotenceDiscardEvent, OracleCardFaceInput, OracleCardInput,
+    StepProcedure, TargetSelector, TokenKind, TriggerEventKind, TurnStep,
+    VariableCreatureOverrunEffect, VariableCreatureTutorEffect, Zone,
     compile_executable_ability_program, compile_face_bound_ability_program_with_characteristics,
 };
 use crate::comprehensive_rules::ComprehensiveRulesSnapshot;
@@ -127,6 +128,7 @@ pub struct SemanticOverrideApplicationSummary {
     pub rules_backed_mechanics: Vec<String>,
     pub rules_report_only_cards: Vec<String>,
 }
+
 #[allow(dead_code)]
 pub fn compile_deck_with_semantic_overrides(
     entries: &[DeckEntry],
@@ -1006,6 +1008,9 @@ fn line_has_typed_infinite_mana_cycle(line: &KnownLine, cards: &[CompiledCard]) 
                         if modifier.additional_amount >= 1
                             && modifier.kind
                                 == ProgramManaKind::AnyTypeProducedByTriggeringPermanent
+                            && modifier.permanent_kind
+                                == ManaModifierPermanentKind::NonlandPermanent
+                            && modifier.recipient == ManaModifierRecipient::AbilityController
                 )
             })
         })

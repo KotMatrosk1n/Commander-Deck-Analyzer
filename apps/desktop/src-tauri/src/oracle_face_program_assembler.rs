@@ -14,9 +14,9 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 
 pub const ORACLE_FACE_PROGRAM_ASSEMBLER_COMPILER_VERSION: &str =
-    "oracle-face-program-assembler-compiler-0.1";
+    "oracle-face-program-assembler-compiler-0.2";
 pub const ORACLE_FACE_PROGRAM_ASSEMBLER_RUNTIME_VERSION: &str =
-    "oracle-face-program-assembler-runtime-0.2";
+    "oracle-face-program-assembler-runtime-0.3";
 pub const ORACLE_FACE_MODAL_RULES_CONTEXT_VERSION: &str =
     "magic-comprehensive-rules-2026-06-19:601.2b,700.2,700.2a-g";
 
@@ -1004,6 +1004,21 @@ fn parse_modal_branch(source: &str, line_span: SourceSpan) -> Option<ParsedModal
 
 fn parse_supported_modal_header(source: &str, line_span: SourceSpan) -> Option<ParsedModalHeader> {
     let line = line_span.slice(source)?;
+    const COMMANDER_CONDITIONAL_HEADER: &str = "choose one. if you control a commander as you cast this spell, you may choose both instead.";
+    if line.to_ascii_lowercase() == COMMANDER_CONDITIONAL_HEADER {
+        return Some(ParsedModalHeader {
+            header_span: line_span,
+            selection_span: SourceSpan::new(line_span.start, line_span.start + "Choose one".len()),
+            // The complete line is a typed header child.  Its cast-time
+            // commander condition, rather than the structural assembler,
+            // decides whether the second branch is legal.
+            envelope_span: Some(line_span),
+            policy: ModalSelectionPolicy {
+                cardinality: ModalCardinality::OneOrBoth,
+                same_mode_may_repeat: false,
+            },
+        });
+    }
     let (header_core_end, has_modal_separator) =
         if let Some(without_dash) = line.strip_suffix('\u{2014}') {
             (without_dash.len(), true)
