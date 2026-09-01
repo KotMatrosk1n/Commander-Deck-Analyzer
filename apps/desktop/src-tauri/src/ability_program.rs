@@ -6107,7 +6107,7 @@ fn parse_fixed_mana_output(lower: &str) -> Option<FixedManaProfile> {
     }
 
     let mut profile = FixedManaProfile::default();
-    for symbol in symbols.as_bytes().chunks_exact(3) {
+    for symbol in symbols.as_bytes().as_chunks::<3>().0 {
         let slot = match symbol {
             b"{w}" => &mut profile.white,
             b"{u}" => &mut profile.blue,

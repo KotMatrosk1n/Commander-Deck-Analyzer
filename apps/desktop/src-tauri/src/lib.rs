@@ -615,7 +615,9 @@ fn cancel_analysis(state: State<'_, AppState>, run_id: String) -> bool {
 fn decode_text_file(bytes: &[u8]) -> Result<String, String> {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let words = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect::<Vec<_>>();
         return String::from_utf16(&words)
@@ -623,7 +625,9 @@ fn decode_text_file(bytes: &[u8]) -> Result<String, String> {
     }
     if bytes.starts_with(&[0xFE, 0xFF]) {
         let words = bytes[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
             .collect::<Vec<_>>();
         return String::from_utf16(&words)

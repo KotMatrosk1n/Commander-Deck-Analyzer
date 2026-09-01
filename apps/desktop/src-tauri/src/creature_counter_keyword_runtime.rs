@@ -89,7 +89,7 @@ impl SourceSemanticContext {
             .split_once(" \u{2014} ")
             .or_else(|| type_line.split_once(" \u{fffd} "))
             .or_else(|| type_line.split_once(" - "))
-            .map_or((type_line, ""), |parts| parts);
+            .unwrap_or((type_line, ""));
         let mut card_types = BTreeSet::new();
         for word in head.split_ascii_whitespace() {
             if let Some(card_type) = match word {
